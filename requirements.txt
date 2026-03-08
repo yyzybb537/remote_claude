@@ -1,0 +1,5 @@
+# Remote Claude 依赖
+
+# 飞书客户端（可选，仅 lark 命令需要）
+lark-oapi>=1.4.24
+python-dotenv>=1.0.0
