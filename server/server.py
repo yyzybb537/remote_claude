@@ -35,7 +35,7 @@ from utils.protocol import (
 )
 from utils.session import (
     get_socket_path, get_pid_file, ensure_socket_dir,
-    generate_client_id, cleanup_session
+    generate_client_id, cleanup_session, _safe_filename
 )
 
 try:
@@ -98,7 +98,7 @@ class OutputWatcher:
         self._on_snapshot = on_snapshot  # 回调：写共享内存
         self._debug_screen = debug_screen  # --debug-screen 开启后才写 _screen.log
         self._debug_verbose = debug_verbose  # --debug-verbose 开启后输出 indicator/repr 等诊断信息
-        safe_name = session_name.replace('/', '_')
+        safe_name = _safe_filename(session_name)
         self._debug_file = f"/tmp/remote-claude/{safe_name}_messages.log"
         # 持久化 pyte 渲染器：PTY 数据直接实时喂入，flush 时直接读 screen
         from rich_text_renderer import RichTextRenderer
@@ -288,7 +288,7 @@ class OutputWatcher:
                 self._on_snapshot(window)
             t4 = time.time()
 
-            with open(f"/tmp/remote-claude/{self._session_name.replace('/', '_')}_flush.log", "a") as _f:
+            with open(f"/tmp/remote-claude/{_safe_filename(self._session_name)}_flush.log", "a") as _f:
                 _f.write(
                     f"[flush] screen_log={1000*(t1-t0):.1f}ms  parse={1000*(t2-t1):.1f}ms  "
                     f"msg_log={1000*(t3-t2):.1f}ms  snapshot={1000*(t4-t3):.1f}ms  "
@@ -413,7 +413,7 @@ class OutputWatcher:
 
     def _write_screen_debug(self, screen):
         """将 pyte 屏幕内容写入调试文件（_screen.log）"""
-        base = f"/tmp/remote-claude/{self._session_name.replace('/', '_')}"
+        base = f"/tmp/remote-claude/{_safe_filename(self._session_name)}"
         try:
             # pyte 屏幕快照（覆盖写，只保留最新一帧）
             screen_path = base + "_screen.log"

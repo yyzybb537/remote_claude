@@ -20,8 +20,8 @@ TMUX_SESSION_PREFIX = "rc-"
 
 
 def _safe_filename(session_name: str) -> str:
-    """将会话名转为安全文件名（/ 替换为 _）"""
-    return session_name.replace('/', '_')
+    """将会话名转为安全文件名（/ 和 . 替换为 _）"""
+    return session_name.replace('/', '_').replace('.', '_')
 
 
 def get_socket_path(session_name: str) -> Path:

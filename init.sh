@@ -242,20 +242,22 @@ configure_shell() {
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     chmod +x "$SCRIPT_DIR/bin/cla" "$SCRIPT_DIR/bin/cl"
 
-    # 优先 /usr/local/bin，权限不够降级 ~/bin
+    # 优先 /usr/local/bin，权限不够则选 ~/bin 或 ~/.local/bin 中已在 PATH 里的
     BIN_DIR="/usr/local/bin"
     if ! ln -sf "$SCRIPT_DIR/bin/cla" "$BIN_DIR/cla" 2>/dev/null; then
-        BIN_DIR="$HOME/bin"
+        if [[ ":$PATH:" == *":$HOME/bin:"* ]]; then
+            BIN_DIR="$HOME/bin"
+        elif [[ ":$PATH:" == *":$HOME/.local/bin:"* ]]; then
+            BIN_DIR="$HOME/.local/bin"
+        else
+            BIN_DIR="$HOME/.local/bin"
+            print_warning "cla/cl 将安装到 $BIN_DIR，但该目录不在 PATH 中"
+            print_info "请将以下行添加到 shell 配置文件（~/.zshrc 或 ~/.bashrc）："
+            echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+        fi
         mkdir -p "$BIN_DIR"
         ln -sf "$SCRIPT_DIR/bin/cla" "$BIN_DIR/cla"
         ln -sf "$SCRIPT_DIR/bin/cl"  "$BIN_DIR/cl"
-
-        # 检查 ~/bin 是否在 PATH 中
-        if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-            print_warning "$BIN_DIR 不在 PATH 中"
-            print_info "请将以下行添加到 shell 配置文件（~/.zshrc 或 ~/.bashrc）："
-            echo "  export PATH=\"\$HOME/bin:\$PATH\""
-        fi
     else
         ln -sf "$SCRIPT_DIR/bin/cl" "$BIN_DIR/cl"
     fi

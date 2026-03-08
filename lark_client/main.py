@@ -139,6 +139,12 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             asyncio.create_task(handler._cmd_attach(user_id, chat_id, session_name))
             return None
 
+        # 列表卡片：断开连接
+        if action_type == "list_detach":
+            print(f"[Lark] list_detach: chat={chat_id[:8]}...")
+            asyncio.create_task(handler._handle_list_detach(user_id, chat_id, message_id=message_id))
+            return None
+
         # 列表卡片：创建群聊
         if action_type == "list_new_group":
             session_name = action_value.get("session", "")
@@ -197,8 +203,18 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, "", tree=True, message_id=message_id))
             return None
 
-        if action_type == "menu_history":
-            asyncio.create_task(handler._cmd_history(user_id, chat_id, "", message_id=message_id))
+        # 流式卡片：断开连接
+        if action_type == "stream_detach":
+            session_name = action_value.get("session", "")
+            print(f"[Lark] stream_detach: session={session_name}")
+            asyncio.create_task(handler._handle_stream_detach(user_id, chat_id, session_name, message_id=message_id))
+            return None
+
+        # 流式卡片：重新连接
+        if action_type == "stream_reconnect":
+            session_name = action_value.get("session", "")
+            print(f"[Lark] stream_reconnect: session={session_name}")
+            asyncio.create_task(handler._handle_stream_reconnect(user_id, chat_id, session_name))
             return None
 
         # 快捷键按钮：发送原始控制键到 Claude CLI（无 toast，依靠快速轮询反馈）

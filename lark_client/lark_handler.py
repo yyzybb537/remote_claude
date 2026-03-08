@@ -25,7 +25,6 @@ from .card_builder import (
     build_session_list_card,
     build_status_card,
     build_help_card,
-    build_history_card,
     build_dir_card,
     build_menu_card,
     build_session_closed_card,
@@ -160,8 +159,6 @@ class LarkHandler:
             await self._cmd_start(user_id, chat_id, args)
         elif command == "/kill":
             await self._cmd_kill(user_id, chat_id, args)
-        elif command == "/history":
-            await self._cmd_history(user_id, chat_id, args)
         elif command in ("/ls", "/tree"):
             await self._cmd_ls(user_id, chat_id, args, tree=(command == "/tree"))
         elif command == "/new-group":
@@ -386,85 +383,40 @@ class LarkHandler:
 
         await card_service.send_text(chat_id, f"✅ 会话 '{session_name}' 已终止")
 
-    async def _cmd_history(self, user_id: str, chat_id: str, args: str,
-                            message_id: Optional[str] = None):
-        """按需查看历史记录（从共享内存读取）"""
-        session_name = self._chat_sessions.get(chat_id)
-        if not session_name:
-            await card_service.send_text(chat_id, "未连接到任何会话，请先使用 /attach <会话名> 连接")
-            return
+    async def _handle_list_detach(self, user_id: str, chat_id: str,
+                                   message_id: Optional[str] = None):
+        """会话列表卡片中断开连接，就地刷新列表"""
+        self._remove_binding_by_chat(chat_id)
+        await self._detach(chat_id)
+        await self._cmd_list(user_id, chat_id, message_id=message_id)
 
-        num_lines = 30
-        if args.strip().isdigit():
-            num_lines = min(int(args.strip()), 200)
-
-        text = self._read_session_history(session_name, num_lines)
-        if not text:
-            await card_service.send_text(chat_id, "暂无历史记录（会话刚启动或历史为空）")
-            return
-
-        card = build_history_card(text, session_name)
-        card["header"]["title"]["content"] = f"📋 历史记录（最近 {num_lines} 行）"
-        await self._send_or_update_card(chat_id, card, message_id)
-
-    @staticmethod
-    def _read_session_history(session_name: str, num_lines: int) -> str:
-        """从共享内存读取会话历史，格式化为纯文本"""
+    async def _handle_stream_detach(self, user_id: str, chat_id: str,
+                                     session_name: str, message_id: Optional[str] = None):
+        """流式卡片中断开连接，就地更新卡片为已断开状态"""
+        # 读取最后一次快照的 blocks 用于展示
+        blocks = []
         try:
             import sys as _sys
-            _sys.path.insert(0, str(Path(__file__).parent.parent))
+            _sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
             from shared_state import SharedStateReader, get_mq_path
             mq_path = get_mq_path(session_name)
-            if not mq_path.exists():
-                return ""
-            reader = SharedStateReader(session_name)
-            state = reader.read()
-            reader.close()
-            blocks = state.get("blocks", [])
-            lines = []
-            for block in blocks:
-                typ = block.get("_type", "")
-                if typ == "UserInput":
-                    text = block.get("text", "")
-                    if text:
-                        lines.append(f"**> {text}**")
-                elif typ == "OutputBlock":
-                    content = block.get("content", "")
-                    if content:
-                        lines.append(content[:500])
-                elif typ == "OptionBlock":
-                    # 向后兼容旧数据中 blocks 里的 OptionBlock
-                    sub = block.get("sub_type", "option")
-                    if sub == "permission":
-                        title = block.get("title", "")
-                        if title:
-                            lines.append(f"🔐 {title}")
-                    else:
-                        question = block.get("question", "")
-                        if question:
-                            lines.append(f"🤔 {question}")
-                elif typ == "PermissionBlock":
-                    # 向后兼容旧 PermissionBlock 类型
-                    title = block.get("title", "")
-                    if title:
-                        lines.append(f"🔐 {title}")
-            # 新版：option_block 作为状态型组件
-            ob = state.get("option_block")
-            if ob:
-                sub = ob.get("sub_type", "option")
-                if sub == "permission":
-                    title = ob.get("title", "")
-                    if title:
-                        lines.append(f"🔐 {title}")
-                else:
-                    question = ob.get("question", "")
-                    if question:
-                        lines.append(f"🤔 {question}")
-            all_text = "\n".join(lines)
-            result_lines = [l for l in all_text.split('\n') if l.strip()]
-            return "\n".join(result_lines[-num_lines:])
+            if mq_path.exists():
+                reader = SharedStateReader(session_name)
+                state = reader.read()
+                reader.close()
+                blocks = state.get("blocks", [])
         except Exception:
-            return ""
+            pass
+
+        self._remove_binding_by_chat(chat_id)
+        await self._detach(chat_id)
+
+        card = build_stream_card(blocks, disconnected=True, session_name=session_name)
+        await self._send_or_update_card(chat_id, card, message_id)
+
+    async def _handle_stream_reconnect(self, user_id: str, chat_id: str, session_name: str):
+        """流式卡片中重新连接"""
+        await self._cmd_attach(user_id, chat_id, session_name)
 
     async def _cmd_help(self, user_id: str, chat_id: str,
                          message_id: Optional[str] = None):

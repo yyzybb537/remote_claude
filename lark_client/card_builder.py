@@ -6,7 +6,7 @@
 
 辅助卡片：
 - build_session_list_card / build_status_card / build_help_card
-- build_history_card / build_dir_card / build_menu_card / build_session_closed_card
+- build_dir_card / build_menu_card / build_session_closed_card
 """
 
 import logging
@@ -189,19 +189,86 @@ def _safe_truncate(text: str, limit: int) -> str:
     return truncated.rstrip() + '\n\n*...（内容过长，仅显示部分）*'
 
 
-def _build_menu_button_row() -> List[Dict[str, Any]]:
-    """底部快捷菜单按钮行（form: 菜单+Enter↵同行 + 输入框 + 折叠快捷键面板），用于流式卡片
+def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False) -> List[Dict[str, Any]]:
+    """底部快捷菜单按钮行，用于流式卡片
 
-    返回 list：[form, 快捷键 collapsible_panel]
-    form 包含：
-    - 行1：column_set（⚡菜单 左对齐，Enter ↵ 右对齐）
-    - 行2：input 输入框（用户直接在卡片中输入消息）
-    快捷键面板（默认折叠）：5 个键（↑ ↓ Ctrl+O Shift+Tab ESC，Enter 已提升到菜单行）
+    - 连接状态（session_name 有值, disconnected=False）:
+      返回 [form, collapsible]，form 包含：⚡菜单 + 🔌断开 + spacer + Enter↵，下方输入框
+    - 断开状态（disconnected=True）:
+      返回 [column_set: ⚡菜单 + 🔗重新连接]，无输入框/Enter/快捷键
+    - 无 session_name：保持原逻辑（只有 ⚡菜单 + spacer + Enter↵）
     """
-    menu_enter_row = {
-        "tag": "column_set",
-        "flex_mode": "none",
-        "columns": [
+    if disconnected:
+        cols = [
+            {
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "⚡ 菜单"},
+                    "type": "default",
+                    "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
+                }]
+            },
+            {
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🔗 重新连接"},
+                    "type": "primary",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "stream_reconnect", "session": session_name or ""
+                    }}]
+                }]
+            },
+        ]
+        return [{"tag": "column_set", "flex_mode": "none", "columns": cols}]
+
+    # 构建菜单行的 columns
+    if session_name:
+        menu_columns = [
+            {
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "⚡ 菜单"},
+                    "type": "default",
+                    "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
+                }]
+            },
+            {
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🔌 断开"},
+                    "type": "danger",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "stream_detach", "session": session_name
+                    }}]
+                }]
+            },
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [{"tag": "markdown", "content": " "}]
+            },
+            {
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Enter ↵"},
+                    "type": "primary",
+                    "action_type": "form_submit",
+                }]
+            },
+        ]
+    else:
+        menu_columns = [
             {
                 "tag": "column",
                 "width": "auto",
@@ -229,7 +296,8 @@ def _build_menu_button_row() -> List[Dict[str, Any]]:
                 }]
             },
         ]
-    }
+
+    menu_enter_row = {"tag": "column_set", "flex_mode": "none", "columns": menu_columns}
 
     input_box = {
         "tag": "input",
@@ -461,8 +529,12 @@ def _determine_header(
     bottom_bar: Optional[dict],
     is_frozen: bool,
     option_block: Optional[dict] = None,
+    disconnected: bool = False,
 ) -> tuple:
     """确定卡片标题和颜色模板，返回 (title, template)"""
+    if disconnected:
+        return "⚪ 已断开", "grey"
+
     if is_frozen:
         return "📋 会话记录", "grey"
 
@@ -517,16 +589,21 @@ def build_stream_card(
     is_frozen: bool = False,
     agent_panel: Optional[dict] = None,
     option_block: Optional[dict] = None,
+    session_name: Optional[str] = None,
+    disconnected: bool = False,
 ) -> Dict[str, Any]:
     """从共享内存 blocks 流构建飞书卡片
 
     四层结构：
     1. 内容区：累积型 blocks
-    2. 状态区：status_line + bottom_bar + agent_panel + option_block 问题文本
-    3. 交互区：option_block 的选项按钮
-    4. 菜单按钮
+    2. 状态区：status_line + bottom_bar + agent_panel + option_block 问题文本（断开时隐藏）
+    3. 交互区：option_block 的选项按钮（断开时隐藏）
+    4. 菜单按钮（断开时变为 [⚡菜单] [🔗重新连接]）
     """
-    title, template = _determine_header(blocks, status_line, bottom_bar, is_frozen, option_block=option_block)
+    title, template = _determine_header(
+        blocks, status_line, bottom_bar, is_frozen,
+        option_block=option_block, disconnected=disconnected
+    )
 
     # === 第一层：内容区 ===
     elements = []
@@ -539,8 +616,8 @@ def build_stream_card(
             elements.append({"tag": "markdown", "content": rendered})
 
 
-    # === 第二层：状态区（仅非冻结时，column_set 灰色背景）===
-    if not is_frozen and (status_line or bottom_bar or agent_panel or option_block):
+    # === 第二层：状态区（仅非冻结且非断开时，column_set 灰色背景）===
+    if not is_frozen and not disconnected and (status_line or bottom_bar or agent_panel or option_block):
         status_elements = []
         if status_line:
             ansi_raw = status_line.get('ansi_raw', '')
@@ -605,15 +682,15 @@ def build_stream_card(
                 }],
             })
 
-    # === 第三层：交互按钮区（仅非冻结时）===
-    if not is_frozen:
+    # === 第三层：交互按钮区（仅非冻结且非断开时）===
+    if not is_frozen and not disconnected:
         buttons = _extract_buttons(blocks, option_block=option_block)
         if buttons:
             elements.extend(_build_buttons_v2(buttons))
 
     # === 第四层：菜单按钮 ===
     elements.append({"tag": "hr"})
-    elements.extend(_build_menu_button_row())
+    elements.extend(_build_menu_button_row(session_name=session_name, disconnected=disconnected))
 
     _cb_logger.debug(
         f"build_stream_card: blocks={len(blocks)} frozen={is_frozen} "
@@ -669,8 +746,14 @@ def build_session_list_card(sessions: List[Dict], current_session: Optional[str]
             if meta_str:
                 header_text += f"\n{meta_str}"
 
-            btn_label = "已连接" if is_current else "进入会话"
-            btn_type = "default" if is_current else "primary"
+            if is_current:
+                btn_label = "断开连接"
+                btn_type = "danger"
+                btn_action = "list_detach"
+            else:
+                btn_label = "进入会话"
+                btn_type = "primary"
+                btn_action = "list_attach"
             columns = [
                 {
                     "tag": "column",
@@ -687,7 +770,7 @@ def build_session_list_card(sessions: List[Dict], current_session: Optional[str]
                         "text": {"tag": "plain_text", "content": btn_label},
                         "type": btn_type,
                         "behaviors": [{"type": "callback", "value": {
-                            "action": "list_attach", "session": name
+                            "action": btn_action, "session": name
                         }}]
                     }]
                 },
@@ -771,35 +854,6 @@ def build_status_card(connected: bool, session_name: Optional[str] = None) -> Di
             {"tag": "hr"},
             _build_menu_button_only(),
         ]}
-    }
-
-
-def build_history_card(content: str, session_name: str = "") -> Dict[str, Any]:
-    """构建历史记录卡片（attach 后展示）"""
-    if session_name:
-        title = f"🟢 已连接 · {session_name}"
-        template = "green"
-        subtitle = f"以下为会话 **{session_name}** 的最近内容："
-    else:
-        title = "📋 会话历史记录"
-        template = "grey"
-        subtitle = "以下为该会话的最近内容："
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": title},
-            "template": template,
-        },
-        "body": {
-            "elements": [
-                {"tag": "markdown", "content": subtitle},
-                {"tag": "hr"},
-                {"tag": "markdown", "content": _safe_truncate(content, 4000)},
-                {"tag": "hr"},
-                _build_menu_button_only(),
-            ]
-        }
     }
 
 
@@ -951,9 +1005,6 @@ def build_help_card() -> Dict[str, Any]:
 • `/ls [路径]` - 查看文件列表
 • `/tree [路径]` - 查看目录树（2 层）
 
-**历史记录**
-• `/history [行数]` - 查看最近历史（默认 30 行）
-
 **群聊协作**
 • `/new-group <会话名>` - 创建专属群聊，多人共用同一 Claude
 
@@ -1104,18 +1155,6 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None)
             }]
         },
     ]
-    if current_session:
-        dir_columns.append({
-            "tag": "column",
-            "width": "weighted",
-            "weight": 1,
-            "elements": [{
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "📜 查看历史"},
-                "type": "default",
-                "behaviors": [{"type": "callback", "value": {"action": "menu_history"}}]
-            }]
-        })
     elements.append({"tag": "column_set", "flex_mode": "none", "columns": dir_columns})
 
     return {
