@@ -1,14 +1,14 @@
 services:
   npm-test:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.test
     container_name: remote-claude-npm-test
     volumes:
       # 只读挂载项目代码（防止测试意外修改源代码）
-      - .:/project:ro
+      - ..:/project:ro
       # 测试结果输出目录（可写）
-      - ./test-results:/home/testuser/test-results
+      - ../test-results:/home/testuser/test-results
     working_dir: /project
     environment:
       - NPM_CONFIG_CACHE=/tmp/npm-cache

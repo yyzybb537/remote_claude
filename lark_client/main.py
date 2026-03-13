@@ -54,11 +54,12 @@ def _setup_logging():
     for _noisy in ('urllib3', 'websockets', 'asyncio'):
         logging.getLogger(_noisy).setLevel(logging.INFO)
 
-    # 控制台输出（仅重要消息，无调试信息）
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    # 控制台输出（仅在终端交互模式下启用，守护进程模式下 stderr 已重定向到日志文件）
+    if sys.stderr.isatty():
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
 
 
 # 在导入 lark SDK 之前配置日志
@@ -303,6 +304,14 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
                     await handler.send_raw_key(user_id, chat_id, k)
                     await asyncio.sleep(0.15)
             asyncio.create_task(_multi_send())
+            return None
+
+        if action_type == "menu_toggle_notify":
+            asyncio.create_task(handler._cmd_toggle_notify(user_id, chat_id, message_id=message_id))
+            return None
+
+        if action_type == "menu_toggle_urgent":
+            asyncio.create_task(handler._cmd_toggle_urgent(user_id, chat_id, message_id=message_id))
             return None
 
         # 各卡片底部菜单按钮：辅助卡片就地→菜单，流式卡片降级新卡

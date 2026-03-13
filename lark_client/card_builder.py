@@ -1201,7 +1201,8 @@ def build_session_closed_card(session_name: str) -> Dict[str, Any]:
 
 
 def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
-                    session_groups: Optional[Dict[str, str]] = None, page: int = 0) -> Dict[str, Any]:
+                    session_groups: Optional[Dict[str, str]] = None, page: int = 0,
+                    notify_enabled: bool = True, urgent_enabled: bool = False) -> Dict[str, Any]:
     """构建快捷操作菜单卡片（/menu 和 /list 共用）：内嵌会话列表 + 快捷操作"""
     elements = []
 
@@ -1247,6 +1248,55 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     "type": "default",
                     "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
                 }]
+            },
+        ]
+    })
+
+    notify_label = "🔔 完成通知: 开" if notify_enabled else "🔕 完成通知: 关"
+    if not notify_enabled:
+        urgent_label = "🔇 加急通知: 关"
+        urgent_button: Dict[str, Any] = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": urgent_label},
+            "type": "default",
+            "disabled": True,
+        }
+    elif urgent_enabled:
+        urgent_label = "🔔 加急通知: 开"
+        urgent_button = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": urgent_label},
+            "type": "default",
+            "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_urgent"}}]
+        }
+    else:
+        urgent_label = "🔕 加急通知: 关"
+        urgent_button = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": urgent_label},
+            "type": "default",
+            "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_urgent"}}]
+        }
+    elements.append({
+        "tag": "column_set",
+        "flex_mode": "none",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": notify_label},
+                    "type": "default",
+                    "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_notify"}}]
+                }]
+            },
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [urgent_button]
             },
         ]
     })

@@ -909,22 +909,43 @@ class ClaudeParser(BaseParser):
         return None
 
     def _extract_input_area_text(self, screen: pyte.Screen, input_rows: List[int]) -> str:
-        """提取输入区 ❯ 提示符后的当前输入文本（空提示符返回空字符串）"""
-        for row in input_rows:
+        """提取输入区 ❯ 提示符后的当前输入文本（空提示符返回空字符串）。
+        多行输入时，收集 ❯ 行之后首列为空的续行，合并为完整文本。
+        """
+        for i, row in enumerate(input_rows):
             if _get_col0(screen, row) == '❯':
                 text = _get_row_text(screen, row)[1:].strip()
                 # 排除纯分割线装饰行（如 ❯─────）
                 if text and not all(c in DIVIDER_CHARS for c in text):
-                    return text
+                    # 收集续行（首列为空的非空文本行）
+                    lines = [text]
+                    for next_row in input_rows[i + 1:]:
+                        col0 = _get_col0(screen, next_row)
+                        if col0.strip():  # 首列有字符，遇到新 block 或新 ❯ 行，停止
+                            break
+                        next_text = _get_row_text(screen, next_row).strip()
+                        if next_text:
+                            lines.append(next_text)
+                    return '\n'.join(lines)
         return ''
 
     def _extract_input_area_ansi_text(self, screen: pyte.Screen, input_rows: List[int]) -> str:
-        """提取输入区 ❯ 提示符后的当前输入文本（ANSI 版本）"""
-        for row in input_rows:
+        """提取输入区 ❯ 提示符后的当前输入文本（ANSI 版本）。
+        多行输入时，收集 ❯ 行之后首列为空的续行，合并为完整文本。
+        """
+        for i, row in enumerate(input_rows):
             if _get_col0(screen, row) == '❯':
                 text = _get_row_text(screen, row)[1:].strip()
                 if text and not all(c in DIVIDER_CHARS for c in text):
-                    return _get_row_ansi_text(screen, row, start_col=1).strip()
+                    lines = [_get_row_ansi_text(screen, row, start_col=1).strip()]
+                    for next_row in input_rows[i + 1:]:
+                        col0 = _get_col0(screen, next_row)
+                        if col0.strip():  # 首列有字符，停止
+                            break
+                        next_text = _get_row_text(screen, next_row).strip()
+                        if next_text:
+                            lines.append(_get_row_ansi_text(screen, next_row).strip())
+                    return '\n'.join(lines)
         return ''
 
     def _parse_permission_area(

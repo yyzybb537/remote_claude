@@ -25,12 +25,13 @@ docker-compose -f docker/docker-compose.test.yml build
 ### 运行测试
 
 ```bash
-# 一次性运行（推荐）
-docker-compose -f docker/docker-compose.test.yml run --rm npm-test
+# 运行测试（测试完成后容器保持运行，可继续进入调试）
+docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
 
-# 交互式运行（便于调试）
-docker-compose -f docker/docker-compose.test.yml run --rm npm-test /bin/bash
-/home/testuser/docker/docker-test.sh
+# 交互式运行（直接进入 bash，手动执行测试）
+docker-compose -f docker/docker-compose.test.yml run npm-test /bin/bash
+# 容器内执行：
+/project/docker/scripts/docker-test.sh
 ```
 
 ### 查看结果

@@ -114,13 +114,24 @@ check_environment() {
         return 1
     fi
 
-    # Claude CLI（可选）
+    # Claude CLI（必需）
     if claude --version &> /dev/null; then
         log_success "Claude CLI: $(claude --version 2>&1 | head -1)"
         report "✓ Claude CLI: $(claude --version 2>&1 | head -1)"
     else
-        log_warning "Claude CLI: 未找到（非必需，npm 包不依赖）"
-        report "⚠ Claude CLI: 未找到（非必需）"
+        log_error "Claude CLI: 未找到"
+        report "✗ Claude CLI: 未找到"
+        return 1
+    fi
+
+    # Codex CLI（必需）
+    if codex --version &> /dev/null; then
+        log_success "Codex CLI: $(codex --version 2>&1 | head -1)"
+        report "✓ Codex CLI: $(codex --version 2>&1 | head -1)"
+    else
+        log_error "Codex CLI: 未找到"
+        report "✗ Codex CLI: 未找到"
+        return 1
     fi
 }
 
@@ -176,6 +187,8 @@ simulate_install() {
 
     # 将安装目录路径写入文件（供后续步骤使用）
     echo "$install_dir" > "$RESULTS_DIR/install_dir.txt"
+    # 导出到外部（供 main 函数使用）
+    INSTALL_DIR="$install_dir"
 }
 
 # 步骤 4：验证 postinstall 执行
@@ -236,9 +249,203 @@ verify_postinstall() {
     fi
 }
 
-# 步骤 5：测试基本命令
+# 步骤 5：配置 mock .env 并测试启动超时行为
+test_env_and_startup() {
+    print_header "步骤 5：env 配置与启动超时测试"
+
+    local install_dir="$1"
+    local env_file="$HOME/.remote-claude/.env"
+    mkdir -p "$HOME/.remote-claude"
+
+    # 5-1：写入 mock 凭证（格式合法但不能真正连接飞书）
+    cat > "$env_file" << 'EOF'
+FEISHU_APP_ID=cli_docker_test_mock
+FEISHU_APP_SECRET=docker_test_secret_mock
+EOF
+    log_success "已创建 mock .env: $env_file"
+    report "✓ mock .env 已创建"
+
+    cd "$install_dir/node_modules/remote-claude"
+
+    # 5-2：验证 check-env.sh 不再交互阻塞
+    log_info "验证 check-env.sh 不阻塞..."
+    if timeout 5 bash scripts/check-env.sh . > "$RESULTS_DIR/check_env.log" 2>&1; then
+        log_success "check-env.sh 在 5s 内正常返回（不阻塞）"
+        report "✓ check-env.sh 不阻塞"
+    else
+        local rc=$?
+        if [ $rc -eq 124 ]; then
+            log_error "check-env.sh 超时（5s）—— 仍在等待交互输入"
+            report "✗ check-env.sh 超时阻塞"
+            return 1
+        else
+            log_error "check-env.sh 返回非零（rc=$rc）"
+            report "✗ check-env.sh 返回非零: rc=$rc"
+            return 1
+        fi
+    fi
+
+    # 5-3：验证 lark start 不会无限卡死（凭证无效应快速报错）
+    log_info "验证 lark start 不会无限卡死（限 20s）..."
+    timeout 20 uv run python3 remote_claude.py lark start > "$RESULTS_DIR/lark_start.log" 2>&1
+    local rc=$?
+    if [ $rc -eq 124 ]; then
+        log_error "lark start 超时（20s）—— 存在无限阻塞问题"
+        report "✗ lark start 超时（20s）"
+        return 1
+    else
+        # 非 124 均可接受（0=成功/已在运行，非零=凭证错误快速退出，两者都 OK）
+        log_success "lark start 在 20s 内退出（rc=$rc），不存在无限卡死"
+        report "✓ lark start 不阻塞（rc=$rc）"
+    fi
+
+    # 5-4：验证 remote-claude start 能成功启动会话
+    # 判断逻辑：
+    #   - start = 启动 server（tmux）+ attach client，正常运行时会阻塞等待 Claude 交互
+    #   - 若 20s 内自然退出 → 说明启动失败，捕获日志报错
+    #   - 若 20s 超时仍在运行 → 再检查 socket 和 remote-claude list，均正常才算成功
+    log_info "验证 remote-claude start 能成功启动会话（预期 20s 内不退出）..."
+
+    local session="docker-test-session"
+    local socket_path="/tmp/remote-claude/${session}.sock"
+    # 清理可能残留的同名会话
+    uv run python3 remote_claude.py kill "$session" > /dev/null 2>&1 || true
+    tmux kill-session -t "rc-$session" 2>/dev/null || true
+
+    # 启动会话，限时 20s；正常情况下 Claude 运行中，timeout 会触发（rc=124）
+    timeout 20 uv run python3 remote_claude.py start "$session" \
+        > "$RESULTS_DIR/start_session.log" 2>&1
+    local rc=$?
+
+    if [ $rc -ne 124 ]; then
+        # 20s 内自然退出 → 启动失败，输出日志诊断
+        log_error "start 命令在 20s 内意外退出（rc=$rc），启动失败"
+        report "✗ start 命令意外退出（rc=$rc）"
+        log_info "=== start_session.log ==="
+        cat "$RESULTS_DIR/start_session.log"
+        # 打印 server 日志辅助诊断
+        local server_log="$HOME/.remote-claude/startup.log"
+        if [ -f "$server_log" ]; then
+            log_info "=== startup.log（最后 20 行）==="
+            tail -20 "$server_log"
+        fi
+        tmux kill-session -t "rc-$session" 2>/dev/null || true
+        return 1
+    fi
+
+    # timeout 触发（rc=124）→ 命令仍在运行，检查 socket 和会话列表
+    log_info "start 命令 20s 后仍在运行（符合预期），检查 socket 和会话列表..."
+
+    if [ ! -S "$socket_path" ]; then
+        log_error "socket 文件不存在: $socket_path"
+        report "✗ start 命令：socket 未创建"
+        tmux kill-session -t "rc-$session" 2>/dev/null || true
+        return 1
+    fi
+    log_success "socket 文件已存在: $socket_path"
+
+    local list_out
+    list_out=$(uv run python3 remote_claude.py list 2>&1)
+    if echo "$list_out" | grep -q "$session"; then
+        log_success "remote-claude list 中可见会话: $session"
+        report "✓ start 命令成功：socket 就绪，会话可见"
+    else
+        log_error "remote-claude list 中未找到会话: $session"
+        log_info "list 输出：$list_out"
+        report "✗ start 命令：会话在 list 中不可见"
+        tmux kill-session -t "rc-$session" 2>/dev/null || true
+        return 1
+    fi
+
+    # 清理测试会话
+    uv run python3 remote_claude.py kill "$session" > /dev/null 2>&1 || true
+
+    # 5-5：负面测试——CLAUDE_COMMAND 设为不存在的命令，验证测试能检测到启动失败
+    log_info "负面测试：CLAUDE_COMMAND=claudeyy 应导致 start 在 20s 内失败退出..."
+
+    # 在 .env 中追加无效命令
+    echo "CLAUDE_COMMAND=claudeyy" >> "$env_file"
+
+    # 清理同名残留会话
+    uv run python3 remote_claude.py kill "$session" > /dev/null 2>&1 || true
+    tmux kill-session -t "rc-$session" 2>/dev/null || true
+
+    timeout 20 uv run python3 remote_claude.py start "$session" \
+        > "$RESULTS_DIR/start_fail.log" 2>&1
+    local fail_rc=$?
+
+    # 还原 .env（移除 CLAUDE_COMMAND 行）
+    sed -i '/^CLAUDE_COMMAND=/d' "$env_file"
+
+    if [ $fail_rc -eq 124 ]; then
+        log_error "负面测试失败：CLAUDE_COMMAND=claudeyy 时 start 未在 20s 内退出（测试有效性存疑）"
+        report "✗ 负面测试：无效命令未被检测到"
+        tmux kill-session -t "rc-$session" 2>/dev/null || true
+        return 1
+    elif [ $fail_rc -eq 0 ]; then
+        log_error "负面测试失败：CLAUDE_COMMAND=claudeyy 时 start 返回 rc=0（不应成功）"
+        report "✗ 负面测试：无效命令返回成功"
+        return 1
+    else
+        log_success "负面测试通过：无效命令导致 start 在 20s 内以 rc=$fail_rc 退出（测试有效）"
+        report "✓ 负面测试：启动失败被正确检测（rc=$fail_rc）"
+    fi
+
+    # 5-6：验证 remote-claude start --cli codex 能成功启动 Codex 会话
+    log_info "验证 remote-claude start --cli codex 能成功启动会话（预期 20s 内不退出）..."
+
+    local codex_session="docker-codex-session"
+    local codex_socket="/tmp/remote-claude/${codex_session}.sock"
+    uv run python3 remote_claude.py kill "$codex_session" > /dev/null 2>&1 || true
+    tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+
+    timeout 20 uv run python3 remote_claude.py start "$codex_session" --cli codex \
+        > "$RESULTS_DIR/start_codex.log" 2>&1
+    local codex_rc=$?
+
+    if [ $codex_rc -ne 124 ]; then
+        log_error "Codex start 在 20s 内意外退出（rc=$codex_rc），启动失败"
+        report "✗ Codex start 意外退出（rc=$codex_rc）"
+        log_info "=== start_codex.log ==="
+        cat "$RESULTS_DIR/start_codex.log"
+        local server_log="$HOME/.remote-claude/startup.log"
+        if [ -f "$server_log" ]; then
+            log_info "=== startup.log（最后 20 行）==="
+            tail -20 "$server_log"
+        fi
+        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+        return 1
+    fi
+
+    log_info "Codex start 20s 后仍在运行（符合预期），检查 socket 和会话列表..."
+
+    if [ ! -S "$codex_socket" ]; then
+        log_error "Codex socket 不存在: $codex_socket"
+        report "✗ Codex start：socket 未创建"
+        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Codex socket 已存在: $codex_socket"
+
+    local codex_list_out
+    codex_list_out=$(uv run python3 remote_claude.py list 2>&1)
+    if echo "$codex_list_out" | grep -q "$codex_session"; then
+        log_success "remote-claude list 中可见 Codex 会话: $codex_session"
+        report "✓ Codex start 成功：socket 就绪，会话可见"
+    else
+        log_error "remote-claude list 中未找到 Codex 会话: $codex_session"
+        log_info "list 输出：$codex_list_out"
+        report "✗ Codex start：会话在 list 中不可见"
+        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+        return 1
+    fi
+
+    uv run python3 remote_claude.py kill "$codex_session" > /dev/null 2>&1 || true
+}
+
+# 步骤 6：测试基本命令
 test_basic_commands() {
-    print_header "步骤 5：测试基本命令"
+    print_header "步骤 6：测试基本命令"
 
     local install_dir="$1"
     cd "$install_dir/node_modules/remote-claude"
@@ -313,9 +520,9 @@ test_basic_commands() {
     fi
 }
 
-# 步骤 6：文件完整性检查
+# 步骤 7：文件完整性检查
 check_file_integrity() {
-    print_header "步骤 6：文件完整性检查"
+    print_header "步骤 7：文件完整性检查"
 
     local install_dir="$1"
     cd "$install_dir/node_modules/remote-claude"
@@ -355,9 +562,9 @@ check_file_integrity() {
     fi
 }
 
-# 步骤 7：生成测试报告
+# 步骤 8：生成测试报告
 generate_report() {
-    print_header "步骤 7：生成测试报告"
+    print_header "步骤 8：生成测试报告"
 
     local report_file="$RESULTS_DIR/test_report.md"
 
@@ -406,9 +613,9 @@ EOF
     report "✓ 测试报告已生成: $report_file"
 }
 
-# 步骤 8：清理
+# 步骤 9：清理
 cleanup() {
-    print_header "步骤 8：清理"
+    print_header "步骤 9：清理"
 
     # 不停止容器和会话，让容器保持运行状态
     log_info "保持容器运行状态（Docker 模式下不自动退出）"
@@ -417,25 +624,29 @@ cleanup() {
     echo -e "${GREEN}容器保持运行状态（Docker 模式下不自动退出）${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    local cid="$HOSTNAME"
     echo -e "${GREEN}进入容器的命令：${NC}"
-    echo -e "  docker exec -it 907063146e1ad43d53cddc51c905eb0c09ae6abce3c7d76c16d3422c66c643s /bin/bash${NC}"
+    echo -e "  docker exec -it ${cid} /bin/bash"
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo -e "${YELLOW}查看测试报告：${NC}"
-    echo -e "  docker exec 907063146e1ad43d53cddc51c905eb0c09ae6abce3c7d76c16d3422c66c643s /bin/bash cat /home/testuser/test-results/test_report.md${NC}"
+    echo -e "  docker exec ${cid} bash -c 'cat /home/testuser/test-results/test_report.md'"
     echo ""
     echo -e "${YELLOW}查看安装目录结构：${NC}"
-    echo -e "  docker exec 907063146e1ad43d53cddc51c905eb0c09ae6abce3c7d76c16d3422c66c643s /bin/bash ls -la /home/testuser/test-npm-install/node_modules/remote-claude/${NC}"
+    echo -e "  docker exec ${cid} bash -c 'ls -la /home/testuser/test-npm-install/node_modules/remote-claude/'"
     echo ""
     echo -e "${YELLOW}手动运行测试：${NC}"
-    echo -e "  docker exec 907063146e1ad43d53cddc51c905eb0c09ae6abce3c7d76c16d3422c66c643s /bin/bash -c 'cd /project && docker/scripts/docker-test.sh'${NC}"
+    echo -e "  docker exec ${cid} bash -c 'cd /project && docker/scripts/docker-test.sh'"
     echo ""
     echo -e "${YELLOW}停止容器：${NC}"
-    echo -e "  docker stop 907063146e1ad43d53cddc51c905eb0c09ae6abce3c7d76c16d3422c66c643s${NC}"
+    echo -e "  docker stop ${cid}"
     echo ""
 
     log_success "清理完成（容器保持运行状态）"
+
+    # 保持容器运行，直到手动 docker stop
+    sleep infinity
 }
 
 # 输出最终结果
@@ -448,6 +659,13 @@ print_results() {
     else
         log_error "存在 $FAILED 个失败测试 ❌"
     fi
+
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  登录测试容器：${NC}"
+    echo -e "  docker exec -it ${HOSTNAME} /bin/bash"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
 }
 
 # 主流程
@@ -467,41 +685,45 @@ main() {
     fi
 
     # 步骤 3：模拟用户安装
-    if ! simulate_install /tmp/remote-claude-0.2.12.tgz; then
+    PACK_FILE_PATH=$(ls /tmp/remote-claude-*.tgz 2>/dev/null | head -1)
+    if [ -z "$PACK_FILE_PATH" ]; then
+        log_error "找不到打包好的 .tgz 文件"
+        exit 1
+    fi
+    if ! simulate_install "$PACK_FILE_PATH"; then
         log_error "npm install 失败，终止测试"
         exit 1
     fi
 
     # 步骤 4：验证 postinstall 执行
-    if ! verify_postinstall; then
+    if ! verify_postinstall "$INSTALL_DIR"; then
         log_error "postinstall 验证失败，终止测试"
         exit 1
     fi
 
-    # 步骤 5：测试基本命令
-    if ! test_basic_commands "$install_dir"; then
+    # 步骤 5：env 配置与启动超时测试
+    if ! test_env_and_startup "$INSTALL_DIR"; then
+        log_error "env/启动超时测试失败，继续执行..."
+    fi
+
+    # 步骤 6：测试基本命令
+    if ! test_basic_commands "$INSTALL_DIR"; then
         log_error "基本命令测试失败，继续执行..."
     fi
 
-    # 步骤 6：文件完整性检查
-    if ! check_file_integrity "$install_dir"; then
+    # 步骤 7：文件完整性检查
+    if ! check_file_integrity "$INSTALL_DIR"; then
         log_error "文件完整性检查失败，继续执行..."
     fi
 
-    # 步骤 7：生成测试报告
+    # 步骤 8：生成测试报告
     generate_report
-
-    # 步骤 8：清理
-    cleanup
 
     # 输出最终结果
     print_results
 
-    if [ $FAILED -eq 0 ]; then
-        exit 0
-    else
-        exit 1
-    fi
+    # 步骤 9：清理（打印操作提示，并保持容器运行）
+    cleanup
 }
 
 # 运行主流程

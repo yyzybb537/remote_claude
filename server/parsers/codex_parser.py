@@ -1,14 +1,11 @@
 """Codex CLI 输出组件解析器
 
-从 ClaudeParser 复制而来，作为独立起点，可根据 Codex CLI 实际终端输出差异逐步调整。
-
-当前解析规则与 ClaudeParser 相同，需在实际观测 Codex 终端输出后针对性修改：
-  - STAR_CHARS：状态行首列字符集（Codex 的"思考中"动画字符）
-  - DOT_CHARS：输出 block 首列指示符字符集
-  - 用户输入指示符（❯ 是否相同）
-  - 分割线识别规则
-  - 欢迎框检测（_trim_welcome 中的 'Claude Code' 字符串）
-  - 选项/权限交互格式
+独立解析器，专门处理 Codex CLI 的终端输出格式。与 ClaudeParser 的关键差异：
+  - STAR_CHARS：不使用星星字符，StatusLine 改为 DOT_CHARS blink 检测
+  - 用户输入指示符：`›` (U+203A) / `>` (U+003E)，与 ClaudeParser 的 `❯` 不同
+  - 区域分割：无 ─━═ 字符分割线，用背景色区域（连续 bg 行 + 首尾纯背景色边界）识别输入区域
+  - 欢迎框：`>_ OpenAI Codex` + `model:` + `directory:` 特征，无固定行号
+  - 选项交互：编号选项 + Enter/Esc 导航提示，通过提示符颜色和上方签名区分普通/选项模式
 """
 
 import re
@@ -35,6 +32,7 @@ STAR_CHARS: Set[str] = set(
     '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     '△'    # Codex 系统警告（不闪烁 → SystemBlock）
     '⚠'    # Codex 警告（不闪烁 → SystemBlock）
+    '■'    # Codex 错误提示（不闪烁 → SystemBlock）
 )
 
 # 圆点字符集（OutputBlock 首列）
@@ -111,9 +109,9 @@ def _strip_inline_boxes_pair(content: str, ansi_content: str) -> tuple:
 
 
 # 编号选项行正则（权限确认对话框特征：> 1. Yes / 2. No 等）
-_NUMBERED_OPTION_RE = re.compile(r'^(?:>\s*)?\d+[.)]\s+.+')
-# 带 > 光标的编号选项行正则（锚点）
-_CURSOR_OPTION_RE = re.compile(r'^>\s*(\d+)[.)]\s+.+')
+_NUMBERED_OPTION_RE = re.compile(r'^(?:[>❯›]\s*)?\d+[.)]\s+.+')
+# 带 > / ❯ / › 光标的编号选项行正则（锚点）
+_CURSOR_OPTION_RE = re.compile(r'^[>❯›]\s*(\d+)[.)]\s+.+')
 
 # Codex 状态行检测（首列 ● blink=True + 内容含 "esc to interrupt"）
 
@@ -197,7 +195,7 @@ def _get_row_ansi_text(screen: pyte.Screen, row: int, start_col: int = 0) -> str
     """提取指定行带 ANSI 转义码的文本。
 
     先确定有效列范围（与 _get_row_text 的 rstrip 等价），仅在有效范围内生成 ANSI 码。
-    start_col 用于跳过首列特殊字符（圆点/星星/❯）。
+    start_col 用于跳过首列特殊字符（圆点/星星/›）。
     """
     buf_row = screen.buffer[row]
 
@@ -293,36 +291,42 @@ def _is_bright_color(color: str) -> bool:
     return True
 
 
-def _is_lit_prompt_row(screen: pyte.Screen, row: int) -> bool:
-    """判断是否为亮起来的 › 行（输入区域首行）。
+def _is_white_color(color: str) -> bool:
+    """判断颜色是否为白色/亮白色"""
+    if not color or color == 'default':
+        return False
+    key = color.lower().replace(' ', '').replace('-', '')
+    if key in ('white', 'brightwhite'):
+        return True
+    # hex 颜色：R/G/B 都 > 200
+    if len(color) == 6:
+        try:
+            r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+            return r > 200 and g > 200 and b > 200
+        except ValueError:
+            pass
+    return False
 
-    条件：
-    1. 行首是 ›（CODEX_PROMPT_CHARS）
-    2. 首字符前景色是亮色（非 default 且非暗色）
-    3. 上一行、当前行、下一行都有整行背景色（严格检查，缺一行则失败）
-    """
-    # 检查行首是 ›
-    if _get_col0(screen, row) not in CODEX_PROMPT_CHARS:
-        return False
 
-    # 检查首字符前景色是亮色
-    try:
-        char = screen.buffer[row][0]
-        fg = getattr(char, 'fg', 'default') or 'default'
-        if not _is_bright_color(fg):
-            return False  # 前景色不是亮色（可能是暗色或 default）
-    except (KeyError, IndexError):
+def _is_light_blue_color(color: str) -> bool:
+    """判断颜色是否为浅蓝色/青色"""
+    if not color or color == 'default':
         return False
-
-    # 严格检查：上一行、当前行、下一行都必须有整行背景色
-    if not _has_full_row_bg(screen, row):
-        return False
-    if row == 0 or not _has_full_row_bg(screen, row - 1):
-        return False
-    if row >= screen.lines - 1 or not _has_full_row_bg(screen, row + 1):
-        return False
-
-    return True
+    key = color.lower().replace(' ', '').replace('-', '')
+    if key in ('cyan', 'brightcyan', 'brightblue'):
+        return True
+    # hex 颜色：偏蓝（B > R 且 B > G 且整体较亮）
+    if len(color) == 6:
+        try:
+            r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+            if b > r and b > g and (r + g + b) > 200:
+                return True
+            # 青色：G 和 B 都高
+            if g > 150 and b > 150 and r < 150:
+                return True
+        except ValueError:
+            pass
+    return False
 
 
 def _get_row_text(screen: pyte.Screen, row: int) -> str:
@@ -351,26 +355,17 @@ def _get_col0_blink(screen: pyte.Screen, row: int) -> bool:
         return False
 
 
-def _is_divider_row(screen: pyte.Screen, row: int) -> bool:
-    """判断整行是否为分割线：所有非空字符均为分割线字符，不限制行长度"""
-    found = False
-    for col in range(screen.columns):
-        c = screen.buffer[row][col].data
-        if not c.strip():
-            continue
-        if c not in DIVIDER_CHARS:
-            return False  # 发现非分割线字符，立即短路
-        found = True
-    return found
 
+def _is_pure_bg_row(screen: pyte.Screen, row: int) -> bool:
+    """纯背景色行：整行有非默认背景色但无文字内容（作为背景色区域的边界标记）。
 
-def _is_bg_divider_row(screen: pyte.Screen, row: int) -> bool:
-    """判断是否为背景色分割线：整行有非默认背景色但无文字内容。
+    等同于 Claude Code 的 ─━═ 字符分割线，但以背景色实现。
+    与底部栏区别：底部栏有文字内容，纯背景色行只有 bg 色的空格。
 
-    Codex 用这类行代替 ─━═ 字符分割线，UserInput 和输入区上下各有一条。
-    与底部栏区别：底部栏有文字内容，背景色分割线只有 bg 色的空格。
+    注意：使用 _has_row_bg（检测所有列含空格）而非 _get_row_dominant_bg
+    （只统计非空格字符），确保纯空格背景行能被正确识别。
     """
-    if _get_row_dominant_bg(screen, row) == 'default':
+    if not _has_row_bg(screen, row):
         return False
     return _get_row_text(screen, row).strip() == ''
 
@@ -471,7 +466,7 @@ def _find_contiguous_options(lines, nav_re):
         line = lines[i]
         if not line or nav_re.search(line):
             continue
-        m = re.match(r'^(?:>\s*)?(\d+)[.)]\s+', line)
+        m = re.match(r'^(?:[>❯›]\s*)?(\d+)[.)]\s+', line)
         if m:
             if int(m.group(1)) == expected:
                 first_option_idx = i
@@ -487,7 +482,7 @@ def _find_contiguous_options(lines, nav_re):
         line = lines[i]
         if not line or nav_re.search(line):
             continue
-        m = re.match(r'^(?:>\s*)?(\d+)[.)]\s+', line)
+        m = re.match(r'^(?:[>❯›]\s*)?(\d+)[.)]\s+', line)
         if m:
             if int(m.group(1)) == expected:
                 last_option_idx = i
@@ -512,13 +507,15 @@ class CodexParser(BaseParser):
         # 星号滑动窗口（1.5秒）：记录每行最近 1.5 秒内出现的 (timestamp, char)，
         # 窗口内 ≥2 种不同字符 → spinner 旋转 → StatusLine；始终只有 1 种字符 → SystemBlock
         self._star_row_history: Dict[int, deque] = {}
-        # 最近一次解析到的输入区 ❯ 文本（用于 MessageQueue 追踪变更）
+        # 最近一次解析到的输入区 › 文本（用于 MessageQueue 追踪变更）
         self.last_input_text: str = ''
         self.last_input_ansi_text: str = ''
         # 最近一次 parse 的内部耗时（供外部写日志用）
         self.last_parse_timing: str = ''
         # 布局模式："normal" | "option" | "detail" | "agent_list" | "agent_detail"
         self.last_layout_mode: str = 'normal'
+        # Pass 1 区域切分确定的布局模式（None 表示 Pass 1 未成功）
+        self._pass1_mode: Optional[str] = None
 
     def parse(self, screen: pyte.Screen) -> List[Component]:
         """解析 pyte 屏幕，返回组件列表"""
@@ -529,11 +526,13 @@ class CodexParser(BaseParser):
         output_rows, input_rows, bottom_rows = self._split_regions(screen)
         _t1 = _time.perf_counter()
 
-        # 布局模式判定
+        # 布局模式判定（优先使用 Pass 1 的结果）
         prev_mode = self.last_layout_mode
-        if input_rows:
+        if self._pass1_mode is not None:
+            self.last_layout_mode = self._pass1_mode
+        elif input_rows:
             if _has_numbered_options(screen, input_rows):
-                self.last_layout_mode = 'option'    # 2 分割线 + 编号选项
+                self.last_layout_mode = 'option'    # 回退路径：编号选项检测
             else:
                 self.last_layout_mode = 'normal'
         elif bottom_rows:
@@ -561,7 +560,7 @@ class CodexParser(BaseParser):
             self._dot_attr_cache.clear()
             self._star_row_history.clear()
 
-        # 提取输入区 ❯ 文本（用于 MessageQueue 追踪变更）
+        # 提取输入区 › 文本（用于 MessageQueue 追踪变更）
         self.last_input_text = self._extract_input_area_text(screen, input_rows)
         self.last_input_ansi_text = self._extract_input_area_ansi_text(screen, input_rows)
 
@@ -611,7 +610,7 @@ class CodexParser(BaseParser):
             if text:
                 bottom_parts.append(text)
                 ansi_bottom_parts.append(_get_row_ansi_text(screen, r).strip())
-        if bottom_parts and not option and not agent_panel:
+        if bottom_parts and not agent_panel:
             bar_text = '\n'.join(bottom_parts)
             bar_ansi = '\n'.join(ansi_bottom_parts)
             has_agents, agent_count, agent_summary = _parse_bottom_bar_agents(bar_text)
@@ -637,58 +636,47 @@ class CodexParser(BaseParser):
     def _split_regions(
         self, screen: pyte.Screen
     ) -> Tuple[List[int], List[int], List[int]]:
-        """Codex 无 ─━═ 分割线，用背景色分割线（整行 bg 色且无文字）定位区域。
+        """Codex 无 ─━═ 分割线，用背景色区域（连续 bg 行 + 首尾纯背景色边界）定位输入区域。
 
-        Codex UserInput 和输入区上下各有一条背景色分割线，效果等同 ─━═。
-        从底部向上找最后两条背景色分割线，按以下结构拆分：
-          [输出区] / [bg divider] / [› 输入行] / [bg divider] / [底部栏]
+        背景色区域：连续 3 行以上都有背景色，且第一行和最后一行是纯背景色（无文字），
+        整个区域即为输入区域。
 
         优先级：
-          1. 背景色分割线（强）：从下往上找最后两条无文字 bg 行
-          2. 精确检测输入区域首行（亮起的 › + 连续三行背景色）：
-             - 行首是 ›（CODEX_PROMPT_CHARS）
-             - 首字符前景色是亮色（非 default 且非暗色）
-             - 上一行、当前行、下一行都有整行背景色（严格检查）
-          3. 位置弱信号（回退）：找最后一个其后无 block 字符的 › 行
+          1. 背景色区域（强）：_find_bg_region 找连续 bg zone 内首尾纯背景色边界对
+          2. 宽松亮色 › 检测（回退）：只检查行首字符和前景色
+          3. 位置弱信号：找最后一个其后无 block 字符的 › 行
           4. 纯背景色兜底：无 › 时用 _find_chrome_boundary
         """
         scan_limit = min(screen.cursor.y + 5, screen.lines - 1)
         _BLOCK_CHARS = DOT_CHARS | CODEX_PROMPT_CHARS | STAR_CHARS
 
-        # Pass 1：背景色分割线（最强信号，等同 ─━═）
-        bg_dividers: List[int] = []
-        for row in range(scan_limit, -1, -1):
-            if _is_bg_divider_row(screen, row):
-                bg_dividers.append(row)
-                if len(bg_dividers) == 2:
-                    break
-        if len(bg_dividers) == 2:
-            div_bottom, div_top = bg_dividers[0], bg_dividers[1]
-            output_rows = self._trim_welcome(screen, list(range(div_top)))
-            input_rows = list(range(div_top + 1, div_bottom))
-            bottom_rows = list(range(div_bottom + 1, scan_limit + 1))
+        # Pass 1：找"背景色区域"（连续 bg zone 内首尾纯背景色边界对，区域 >= 3 行）
+        self._pass1_mode = None
+        bg_region = self._find_bg_region(screen, scan_limit)
+        if bg_region is not None:
+            region_start, region_end = bg_region
+            content_rows = list(range(region_start + 1, region_end))
+            # 确定布局模式
+            mode = self._determine_input_mode(screen, region_start, content_rows)
+            self._pass1_mode = mode
+            output_rows = self._trim_welcome(screen, list(range(region_start)))
+            input_rows = content_rows
+            bottom_rows = list(range(region_end + 1, scan_limit + 1))
             return output_rows, input_rows, bottom_rows
 
-        # Pass 2：精确检测输入区域首行（亮起的 › + 连续三行背景色）
+        # Pass 2：宽松检测亮起的 › 行（只检查行首字符和前景色，不检查背景色）
         input_boundary = None
         for row in range(scan_limit, -1, -1):
-            if _is_lit_prompt_row(screen, row):
-                input_boundary = row
-                break
-
-        # Pass 2.5：宽松检测亮起的 › 行（只检查行首字符和前景色，不检查背景色）
-        if input_boundary is None:
-            for row in range(scan_limit, -1, -1):
-                col0 = _get_col0(screen, row)
-                if col0 in CODEX_PROMPT_CHARS:
-                    try:
-                        char = screen.buffer[row][0]
-                        fg = getattr(char, 'fg', 'default') or 'default'
-                        if _is_bright_color(fg):
-                            input_boundary = row
-                            break
-                    except (KeyError, IndexError):
-                        pass
+            col0 = _get_col0(screen, row)
+            if col0 in CODEX_PROMPT_CHARS:
+                try:
+                    char = screen.buffer[row][0]
+                    fg = getattr(char, 'fg', 'default') or 'default'
+                    if _is_bright_color(fg):
+                        input_boundary = row
+                        break
+                except (KeyError, IndexError):
+                    pass
 
         # Pass 3：位置弱信号
         if input_boundary is None:
@@ -718,6 +706,141 @@ class CodexParser(BaseParser):
         # 最终兜底：全部作为输出区
         output_rows = self._trim_welcome(screen, list(range(scan_limit + 1)))
         return output_rows, [], []
+
+    def _find_bg_region(
+        self, screen: pyte.Screen, scan_limit: int
+    ) -> Optional[Tuple[int, int]]:
+        """在连续 bg zone 内找背景色区域（首尾纯背景色边界对，区域 >= 3 行）。
+
+        算法：
+        1. 从 scan_limit 往上扫描找连续 bg 行 zone（用 _has_row_bg）
+        2. zone 内找所有纯背景色行（用 _is_pure_bg_row）
+        3. 取首条和末条纯背景色行作为边界对
+        4. 验证 region_end - region_start >= 2（至少 3 行：边界 + 内容行）
+
+        Returns: (region_start, region_end) 含边界行，或 None
+        """
+        zone_end: Optional[int] = None
+        zone_start: Optional[int] = None
+        for row in range(scan_limit, -1, -1):
+            if _has_row_bg(screen, row):
+                if zone_end is None:
+                    zone_end = row
+                zone_start = row
+            elif zone_end is not None:
+                break  # 遇到无 bg 行，zone 边界确定
+
+        if zone_start is None or zone_end is None:
+            return None
+
+        # 在 zone 内找所有纯背景色行（背景色区域边界候选）
+        pure_bg_rows = [r for r in range(zone_start, zone_end + 1)
+                        if _is_pure_bg_row(screen, r)]
+        if len(pure_bg_rows) < 2:
+            return None
+
+        region_start, region_end = pure_bg_rows[0], pure_bg_rows[-1]
+        # 区域至少 3 行（边界对 + 至少 1 行内容）
+        if region_end - region_start < 2:
+            return None
+
+        return region_start, region_end
+
+    def _determine_input_mode(
+        self, screen: pyte.Screen, region_start: int, content_rows: List[int]
+    ) -> str:
+        """判断背景色区域的布局模式：'option' 或 'normal'。
+
+        判断优先级：
+        1. 条件 4b：首个内容行行首是 ›，白色/亮色 → 'normal'
+        2. 条件 4a：上方依次是空行+分割线+空行 → 'option'
+        3. 条件 4c：内容行中有浅蓝色 › 且整行同色 → 'option'
+        4. 兜底：_has_numbered_options → 'option'，否则 'normal'
+        """
+        if not content_rows:
+            return 'normal'
+
+        # 条件 4b：首个内容行行首是 › + 白色/亮色 → normal
+        first_content = content_rows[0]
+        col0 = _get_col0(screen, first_content)
+        if col0 in CODEX_PROMPT_CHARS:
+            try:
+                char = screen.buffer[first_content][0]
+                fg = getattr(char, 'fg', 'default') or 'default'
+                if _is_white_color(fg) or _is_bright_color(fg):
+                    return 'normal'
+            except (KeyError, IndexError):
+                pass
+
+        # 条件 4a：上方有空行+分割线+空行 → option
+        if self._has_option_context_above(screen, region_start):
+            return 'option'
+
+        # 条件 4c：内容行中有浅蓝色 › 且整行同色 → option
+        for row in content_rows:
+            col0 = _get_col0(screen, row)
+            if col0 in CODEX_PROMPT_CHARS:
+                try:
+                    char = screen.buffer[row][0]
+                    fg = getattr(char, 'fg', 'default') or 'default'
+                    if _is_light_blue_color(fg) and self._is_whole_row_same_fg(screen, row, fg):
+                        return 'option'
+                except (KeyError, IndexError):
+                    pass
+
+        # 兜底：编号选项检测
+        if _has_numbered_options(screen, content_rows):
+            return 'option'
+
+        return 'normal'
+
+    def _has_option_context_above(self, screen: pyte.Screen, region_start: int) -> bool:
+        """检测条件 4a：背景色区域上方依次是
+        默认背景色空行 → 默认背景色普通分割线（─━═）→ 默认背景色空行
+        """
+        if region_start < 3:
+            return False
+
+        empty_below = region_start - 1
+        divider_row = region_start - 2
+        empty_above = region_start - 3
+
+        # 检查 empty_below：默认 bg + 无文字
+        if _get_row_dominant_bg(screen, empty_below) != 'default':
+            return False
+        if _get_row_text(screen, empty_below).strip():
+            return False
+
+        # 检查 divider_row：默认 bg + 含 ─━═ 字符
+        if _get_row_dominant_bg(screen, divider_row) != 'default':
+            return False
+        divider_text = _get_row_text(screen, divider_row).strip()
+        if not divider_text or not any(c in DIVIDER_CHARS for c in divider_text):
+            return False
+
+        # 检查 empty_above：默认 bg + 无文字
+        if _get_row_dominant_bg(screen, empty_above) != 'default':
+            return False
+        if _get_row_text(screen, empty_above).strip():
+            return False
+
+        return True
+
+    def _is_whole_row_same_fg(self, screen: pyte.Screen, row: int, expected_fg: str) -> bool:
+        """检查整行非空字符是否都有相同的前景色（条件 4c 的整行同色检测）"""
+        has_chars = False
+        for col in range(screen.columns):
+            try:
+                char = screen.buffer[row][col]
+                if not char.data.strip():
+                    continue
+                has_chars = True
+                fg = getattr(char, 'fg', 'default') or 'default'
+                if fg != expected_fg:
+                    return False
+            except (KeyError, IndexError):
+                continue
+        return has_chars
 
     def _find_chrome_boundary(self, screen: pyte.Screen, scan_limit: int) -> Optional[int]:
         """背景色检测：从底部往上找连续的非默认背景行（UI chrome）。
@@ -917,7 +1040,7 @@ class CodexParser(BaseParser):
         # UserInput：› U+203A（Codex 实际使用字符）或 > U+003E（兼容）
         if col0 in CODEX_PROMPT_CHARS:
             first_text = lines[0][1:].strip()
-            # 内容全是分割线字符（如 ❯─────...─）→ 装饰性分隔符，忽略
+            # 内容全是分割线字符（如 ›─────...─）→ 装饰性分隔符，忽略
             if not first_text or all(c in DIVIDER_CHARS for c in first_text):
                 return None
             # 收集后续续行（多行输入 / 屏幕自动换行），过滤尾部空白行
@@ -1092,7 +1215,7 @@ class CodexParser(BaseParser):
         if not input_rows:
             return None
 
-        # 入口检测：是否有编号选项行（需 ❯ 锚点）
+        # 入口检测：是否有编号选项行（需 > 锚点）
         if not _has_numbered_options(screen, input_rows):
             return None
 
@@ -1142,7 +1265,7 @@ class CodexParser(BaseParser):
             if NAV_RE.search(line):
                 continue
             # 编号选项行
-            m = re.match(r'^(?:>\s*)?(\d+)[.)]\s*(.+)', line)
+            m = re.match(r'^(?:[>❯›]\s*)?(\d+)[.)]\s*(.+)', line)
             if m:
                 if current_opt is not None:
                     options.append(current_opt)
@@ -1168,22 +1291,48 @@ class CodexParser(BaseParser):
         return None
 
     def _extract_input_area_text(self, screen: pyte.Screen, input_rows: List[int]) -> str:
-        """提取输入区提示符后的当前输入文本（空提示符返回空字符串）"""
-        for row in input_rows:
+        """提取输入区提示符后的当前输入文本（空提示符返回空字符串）。
+        选项交互模式下不提取输入文本（input_rows 是选项内容，非用户输入）。
+        多行输入时，收集 › 行之后首列为空的续行，合并为完整文本。
+        """
+        if self.last_layout_mode == 'option':
+            return ''
+        for i, row in enumerate(input_rows):
             if _get_col0(screen, row) in CODEX_PROMPT_CHARS:
                 text = _get_row_text(screen, row)[1:].strip()
                 # 排除纯分割线装饰行（如 ›─────）
                 if text and not all(c in DIVIDER_CHARS for c in text):
-                    return text
+                    # 收集续行（首列为空的非空文本行）
+                    lines = [text]
+                    for next_row in input_rows[i + 1:]:
+                        col0 = _get_col0(screen, next_row)
+                        if col0.strip():  # 首列有字符，遇到新 block 或新 › 行，停止
+                            break
+                        next_text = _get_row_text(screen, next_row).strip()
+                        if next_text:
+                            lines.append(next_text)
+                    return '\n'.join(lines)
         return ''
 
     def _extract_input_area_ansi_text(self, screen: pyte.Screen, input_rows: List[int]) -> str:
-        """提取输入区提示符后的当前输入文本（ANSI 版本）"""
-        for row in input_rows:
+        """提取输入区提示符后的当前输入文本（ANSI 版本）。
+        多行输入时，收集 › 行之后首列为空的续行，合并为完整文本。
+        """
+        if self.last_layout_mode == 'option':
+            return ''
+        for i, row in enumerate(input_rows):
             if _get_col0(screen, row) in CODEX_PROMPT_CHARS:
                 text = _get_row_text(screen, row)[1:].strip()
                 if text and not all(c in DIVIDER_CHARS for c in text):
-                    return _get_row_ansi_text(screen, row, start_col=1).strip()
+                    lines = [_get_row_ansi_text(screen, row, start_col=1).strip()]
+                    for next_row in input_rows[i + 1:]:
+                        col0 = _get_col0(screen, next_row)
+                        if col0.strip():  # 首列有字符，停止
+                            break
+                        next_text = _get_row_text(screen, next_row).strip()
+                        if next_text:
+                            lines.append(_get_row_ansi_text(screen, next_row).strip())
+                    return '\n'.join(lines)
         return ''
 
     def _parse_permission_area(
@@ -1193,8 +1342,8 @@ class CodexParser(BaseParser):
     ) -> Optional[OptionBlock]:
         """解析 1 条分割线布局下的权限确认区域，返回 OptionBlock(sub_type="permission")
 
-        检测条件：bottom_rows 中含 ❯ 锚点 + ≥2 个编号选项行。
-        通过 _find_contiguous_options 以 ❯ 为锚点双向扫描，只收集连续编号选项。
+        检测条件：bottom_rows 中含 > 锚点 + ≥2 个编号选项行。
+        通过 _find_contiguous_options 以 > 为锚点双向扫描，只收集连续编号选项。
         """
         if not bottom_rows:
             return None
@@ -1261,7 +1410,7 @@ class CodexParser(BaseParser):
         for i in range(first_opt_idx, last_opt_idx + 1):
             line, cat = classified[i]
             if cat == 'option':
-                m = re.match(r'^(?:>\s*)?(\d+)[.)]\s*(.+)', line)
+                m = re.match(r'^(?:[>❯›]\s*)?(\d+)[.)]\s*(.+)', line)
                 if m:
                     options.append({
                         'label': m.group(2).strip(),

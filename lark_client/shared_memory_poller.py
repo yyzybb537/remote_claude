@@ -35,6 +35,8 @@ try:
 except Exception:
     def _track_stats(*args, **kwargs): pass
 
+from utils.session import ensure_user_data_dir, USER_DATA_DIR
+
 # ── 常量 ──────────────────────────────────────────────────────────────────────
 INITIAL_WINDOW = 30    # 首次 attach 最多显示最近 30 个 blocks
 from .config import MAX_CARD_BLOCKS  # 单张卡片最多 N 个 blocks → 超限冻结（可通过 .env 配置）
@@ -62,6 +64,10 @@ class StreamTracker:
     cards: List[CardSlice] = field(default_factory=list)
     content_hash: str = ""
     reader: Optional[Any] = None  # SharedStateReader，延迟初始化
+    is_group: bool = False         # 是否为群聊
+    prev_is_ready: bool = True     # 上一帧是否就绪（初始 True 避免首次误触发）
+    notify_user_id: Optional[str] = None  # 就绪通知 @ 的用户 open_id
+    last_notify_message_id: Optional[str] = None  # 上一条就绪通知的 message_id（用于后续加急复用）
 
 
 # ── 轮询器 ────────────────────────────────────────────────────────────────────
@@ -81,11 +87,13 @@ class SharedMemoryPoller:
         self._kick_events: Dict[str, asyncio.Event] = {}  # chat_id → Event（唤醒轮询）
         self._rapid_until: Dict[str, float] = {}           # chat_id → 快速模式截止时间
 
-    def start(self, chat_id: str, session_name: str) -> None:
+    def start(self, chat_id: str, session_name: str, is_group: bool = False,
+              notify_user_id: Optional[str] = None) -> None:
         """attach 成功后调用：清空旧状态，启动轮询 Task"""
         self.stop(chat_id)
 
-        tracker = StreamTracker(chat_id=chat_id, session_name=session_name)
+        tracker = StreamTracker(chat_id=chat_id, session_name=session_name, is_group=is_group,
+                                notify_user_id=notify_user_id)
         self._trackers[chat_id] = tracker
         self._kick_events[chat_id] = asyncio.Event()
 
@@ -211,6 +219,9 @@ class SharedMemoryPoller:
         agent_panel = state.get("agent_panel")
         option_block = state.get("option_block")
         cli_type = state.get("cli_type", "claude")
+
+        # 就绪状态转换检测
+        await self._check_ready_notification(tracker, blocks, status_line, option_block, cli_type)
 
         # 获取活跃卡片（最后一张且未冻结）
         active = None
@@ -415,6 +426,84 @@ class SharedMemoryPoller:
                 f"blocks={len(new_blocks)} card_id={new_card_id}"
             )
 
+    async def _check_ready_notification(
+        self, tracker: StreamTracker,
+        blocks: list, status_line: Optional[dict], option_block: Optional[dict],
+        cli_type: str = "claude"
+    ) -> None:
+        """检测就绪状态转换（忙碌→就绪），群聊中发送 @所有人 提醒"""
+        current_ready = _is_ready(blocks, status_line, option_block)
+        prev_ready = tracker.prev_is_ready
+        tracker.prev_is_ready = current_ready
+
+        if current_ready and not prev_ready and tracker.is_group and _notify_enabled:
+            count = _increment_ready_count()
+            uid = tracker.notify_user_id or "all"
+            cli_name = "Claude" if cli_type == "claude" else "Codex"
+            logger.info(f"就绪提醒: chat_id={tracker.chat_id[:8]}..., count={count}, uid={uid}, "
+                        f"last_msg={'有' if tracker.last_notify_message_id else '无'}")
+
+            if tracker.last_notify_message_id and uid != "all" and _urgent_enabled:
+                # 已有通知消息 + 加急开关开启 → 尝试加急
+                try:
+                    ok = await self._card_service.send_urgent_app(
+                        tracker.last_notify_message_id, [uid]
+                    )
+                    if ok:
+                        # 加急成功 → 15 秒后自动取消
+                        asyncio.create_task(self._cancel_urgent_later(
+                            tracker.last_notify_message_id, [uid], delay=5
+                        ))
+                    else:
+                        # 加急失败（权限未开通等）→ 降级发新消息
+                        label = ""
+                        text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪，等待您的输入...（这是第{count}次通知）'
+                        msg_id = await self._card_service.send_text(tracker.chat_id, text)
+                        if msg_id:
+                            tracker.last_notify_message_id = msg_id
+                except Exception as e:
+                    logger.warning(f"加急通知失败: {e}")
+            else:
+                # 首次通知（或无法加急时）→ 发新消息，记录 message_id
+                label = "所有人" if uid == "all" else ""
+                text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪，等待您的输入...（这是第{count}次通知）'
+                try:
+                    msg_id = await self._card_service.send_text(tracker.chat_id, text)
+                    if msg_id:
+                        tracker.last_notify_message_id = msg_id
+                except Exception as e:
+                    logger.warning(f"就绪提醒发送失败: {e}")
+
+    async def _cancel_urgent_later(self, message_id: str, user_ids: list, delay: float = 15) -> None:
+        """延迟取消加急通知"""
+        await asyncio.sleep(delay)
+        try:
+            await self._card_service.cancel_urgent_app(message_id, user_ids)
+        except Exception as e:
+            logger.warning(f"延迟取消加急失败: {e}")
+
+    def get_notify_enabled(self) -> bool:
+        """获取就绪通知开关状态"""
+        return _notify_enabled
+
+    def set_notify_enabled(self, enabled: bool) -> None:
+        """更新就绪通知开关状态并持久化"""
+        global _notify_enabled
+        _notify_enabled = enabled
+        _save_notify_enabled(enabled)
+        logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
+
+    def get_urgent_enabled(self) -> bool:
+        """获取加急通知开关状态"""
+        return _urgent_enabled
+
+    def set_urgent_enabled(self, enabled: bool) -> None:
+        """更新加急通知开关状态并持久化"""
+        global _urgent_enabled
+        _urgent_enabled = enabled
+        _save_urgent_enabled(enabled)
+        logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
+
     @staticmethod
     def _compute_hash(
         blocks: list, status_line: Optional[dict],
@@ -432,3 +521,71 @@ class SharedMemoryPoller:
         return hashlib.md5(
             json.dumps(data, ensure_ascii=False, sort_keys=True).encode()
         ).hexdigest()
+
+
+# ── 模块级辅助函数 ────────────────────────────────────────────────────────────
+
+def _is_ready(blocks: list, status_line: Optional[dict], option_block: Optional[dict]) -> bool:
+    """数据层就绪判断：无 streaming block、无 status_line（option_block 不影响就绪）"""
+    has_streaming = any(b.get("is_streaming", False) for b in blocks)
+    return not has_streaming and status_line is None
+
+
+_READY_COUNT_FILE = USER_DATA_DIR / "ready_notify_count"
+_NOTIFY_ENABLED_FILE = USER_DATA_DIR / "ready_notify_enabled"
+_URGENT_ENABLED_FILE = USER_DATA_DIR / "urgent_notify_enabled"
+
+
+def _load_notify_enabled() -> bool:
+    """读取就绪通知开关状态，不存在或解析失败返回 True（默认开启）"""
+    try:
+        return _NOTIFY_ENABLED_FILE.read_text().strip() == "1"
+    except Exception:
+        return True
+
+
+def _save_notify_enabled(enabled: bool) -> None:
+    """持久化就绪通知开关状态"""
+    try:
+        ensure_user_data_dir()
+        _NOTIFY_ENABLED_FILE.write_text("1" if enabled else "0")
+    except Exception as e:
+        logger.warning(f"_save_notify_enabled 失败: {e}")
+
+
+def _load_urgent_enabled() -> bool:
+    """读取加急通知开关状态，不存在或解析失败返回 False（默认关闭）"""
+    try:
+        return _URGENT_ENABLED_FILE.read_text().strip() == "1"
+    except Exception:
+        return False
+
+
+def _save_urgent_enabled(enabled: bool) -> None:
+    """持久化加急通知开关状态"""
+    try:
+        ensure_user_data_dir()
+        _URGENT_ENABLED_FILE.write_text("1" if enabled else "0")
+    except Exception as e:
+        logger.warning(f"_save_urgent_enabled 失败: {e}")
+
+
+# 模块级开关状态：启动时加载一次
+_notify_enabled: bool = _load_notify_enabled()
+_urgent_enabled: bool = _load_urgent_enabled()
+
+
+def _increment_ready_count() -> int:
+    """原子递增全局就绪提醒计数器，返回新值（持久化到文件）"""
+    try:
+        ensure_user_data_dir()
+        try:
+            count = int(_READY_COUNT_FILE.read_text().strip())
+        except Exception:
+            count = 0
+        count += 1
+        _READY_COUNT_FILE.write_text(str(count))
+        return count
+    except Exception as e:
+        logger.warning(f"_increment_ready_count 失败: {e}")
+        return 1

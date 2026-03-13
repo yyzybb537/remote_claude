@@ -115,7 +115,8 @@ class LarkHandler:
 
     # ── 统一 attach / detach / on_disconnect ────────────────────────────────
 
-    async def _attach(self, chat_id: str, session_name: str) -> bool:
+    async def _attach(self, chat_id: str, session_name: str,
+                      user_id: Optional[str] = None) -> bool:
         """统一 attach 逻辑（私聊/群聊共用）"""
         # 在断开旧连接之前，先更新旧流式卡片为已断开状态
         old_session = self._chat_sessions.get(chat_id)
@@ -138,7 +139,8 @@ class LarkHandler:
         if await bridge.connect():
             self._bridges[chat_id] = bridge
             self._chat_sessions[chat_id] = session_name
-            self._poller.start(chat_id, session_name)
+            self._poller.start(chat_id, session_name, is_group=(chat_id in self._group_chat_ids),
+                               notify_user_id=user_id)
             _track_stats('lark', 'attach', session_name=session_name,
                          chat_id=chat_id)
             return True
@@ -244,7 +246,7 @@ class LarkHandler:
             )
             return
 
-        ok = await self._attach(chat_id, session_name)
+        ok = await self._attach(chat_id, session_name, user_id=user_id)
         if ok:
             self._chat_bindings[chat_id] = session_name
             self._save_chat_bindings()
@@ -374,7 +376,7 @@ class LarkHandler:
                 await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
                 return
 
-            ok = await self._attach(chat_id, session_name)
+            ok = await self._attach(chat_id, session_name, user_id=user_id)
             if ok:
                 self._chat_bindings[chat_id] = session_name
                 self._save_chat_bindings()
@@ -603,8 +605,24 @@ class LarkHandler:
             for cid in self._group_chat_ids
             if cid in self._chat_bindings
         }
-        card = build_menu_card(sessions, current_session=current, session_groups=session_groups, page=page)
+        card = build_menu_card(sessions, current_session=current, session_groups=session_groups, page=page,
+                               notify_enabled=self._poller.get_notify_enabled(),
+                               urgent_enabled=self._poller.get_urgent_enabled())
         await self._send_or_update_card(chat_id, card, message_id)
+
+    async def _cmd_toggle_notify(self, user_id: str, chat_id: str,
+                                  message_id: Optional[str] = None):
+        """切换就绪通知开关并刷新菜单卡片"""
+        new_value = not self._poller.get_notify_enabled()
+        self._poller.set_notify_enabled(new_value)
+        await self._cmd_menu(user_id, chat_id, message_id=message_id)
+
+    async def _cmd_toggle_urgent(self, user_id: str, chat_id: str,
+                                  message_id: Optional[str] = None):
+        """切换加急通知开关并刷新菜单卡片"""
+        new_value = not self._poller.get_urgent_enabled()
+        self._poller.set_urgent_enabled(new_value)
+        await self._cmd_menu(user_id, chat_id, message_id=message_id)
 
     async def _cmd_ls(self, user_id: str, chat_id: str, args: str,
                        tree: bool = False, message_id: Optional[str] = None, page: int = 0):
@@ -715,7 +733,7 @@ class LarkHandler:
             self._group_chat_ids.add(group_chat_id)
             self._save_group_chat_ids()
             # 立即 attach，让新群即刻开始接收 Claude 输出
-            await self._attach(group_chat_id, session_name)
+            await self._attach(group_chat_id, session_name, user_id=user_id)
 
             # 刷新会话列表卡片，使"创建群聊"按钮变为"进入群聊"
             await self._cmd_list(user_id, chat_id, message_id=message_id)
@@ -804,7 +822,7 @@ class LarkHandler:
             saved_session = self._chat_bindings.get(chat_id)
             if saved_session:
                 logger.info(f"自动恢复绑定: chat_id={chat_id[:8]}..., session={saved_session}")
-                ok = await self._attach(chat_id, saved_session)
+                ok = await self._attach(chat_id, saved_session, user_id=user_id)
                 if not ok:
                     self._group_chat_ids.discard(chat_id)
                     self._save_group_chat_ids()

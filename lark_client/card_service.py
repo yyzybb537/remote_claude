@@ -223,11 +223,69 @@ class CardService:
         _track_stats('error', 'card_api', detail='update_card')
         return False
 
-    async def send_text(self, chat_id: str, text: str):
-        """发送纯文本消息（备用）"""
+    async def send_urgent_app(self, message_id: str, user_ids: list) -> bool:
+        """对已有消息发送应用内加急通知，避免发新消息顶高流式卡片"""
+        if not self.client:
+            return False
+
+        import asyncio
+        from lark_oapi.api.im.v1 import UrgentAppMessageRequest, UrgentReceivers
+
+        try:
+            request = UrgentAppMessageRequest.builder() \
+                .message_id(message_id) \
+                .user_id_type("open_id") \
+                .request_body(
+                    UrgentReceivers.builder()
+                    .user_id_list(user_ids)
+                    .build()
+                ) \
+                .build()
+
+            response = await asyncio.to_thread(self.client.im.v1.message.urgent_app, request)
+            if response.success():
+                logger.info(f"加急通知成功: message_id={message_id}, users={user_ids}")
+                return True
+            else:
+                logger.warning(f"加急通知失败: code={response.code} msg={response.msg}")
+                return False
+        except Exception as e:
+            logger.error(f"加急通知异常: {e}")
+            return False
+
+    async def cancel_urgent_app(self, message_id: str, user_ids: list) -> bool:
+        """取消已有消息的应用内加急通知"""
+        if not self.client:
+            return False
+
+        import asyncio
+        from lark_oapi.core.model import BaseRequest
+        from lark_oapi.core.enum import HttpMethod, AccessTokenType
+
+        try:
+            request = BaseRequest()
+            request.http_method = HttpMethod.POST
+            request.uri = "/open-apis/im/v2/urgent/batch_cancel"
+            request.token_types = {AccessTokenType.TENANT}
+            request.queries = [("user_id_type", "open_id")]
+            request.body = {"message_id": message_id, "receiver_user_ids": user_ids}
+
+            response = await asyncio.to_thread(self.client.request, request)
+            if response.success():
+                logger.info(f"取消加急成功: message_id={message_id}, code={response.code}")
+                return True
+            else:
+                logger.warning(f"取消加急失败: code={response.code} msg={response.msg}")
+                return False
+        except Exception as e:
+            logger.error(f"取消加急异常: {e}")
+            return False
+
+    async def send_text(self, chat_id: str, text: str) -> Optional[str]:
+        """发送纯文本消息，返回 message_id（失败返回 None）"""
         if not self.client:
             print(f"[Lark] 消息: {text}")
-            return
+            return None
 
         try:
             import asyncio
@@ -247,10 +305,14 @@ class CardService:
                 self.client.im.v1.message.create, request
             )
 
-            if not response.success():
+            if response.success():
+                return getattr(getattr(response, "data", None), "message_id", None)
+            else:
                 logger.warning(f"发送文本失败: code={response.code} msg={response.msg}")
+                return None
         except Exception as e:
             logger.error(f"发送文本异常: {e}")
+            return None
 
     # 管理活跃卡片的方法
     def get_active_card(self, chat_id: str) -> Optional[CardState]:
