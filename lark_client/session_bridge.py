@@ -119,22 +119,16 @@ class SessionBridge:
         if not self.writer or not self.running:
             return False
         try:
+            # 分两步发送：先发文本，等 Ink 框架处理完毕，再发 Enter
+            # 不能合并为 text+\r 一次写入（Ink 同一 tick 处理时 \r 会被提前消费，导致需要两次 Enter）
+            # 不能在文本前/后加 ESC（ESC+Enter 被终端解释为 Alt+Enter，导致换行而非提交）
             msg = InputMessage(text.encode('utf-8'), self.client_id)
             self.writer.write(encode_message(msg))
             await self.writer.drain()
-
-            # 发送 Escape 退出多行模式
-            await asyncio.sleep(0.1)
-            msg = InputMessage(b"\x1b", self.client_id)
-            self.writer.write(encode_message(msg))
-            await self.writer.drain()
-
-            # 发送 Enter 提交
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
             msg = InputMessage(b"\r", self.client_id)
             self.writer.write(encode_message(msg))
             await self.writer.drain()
-
             return True
         except Exception as e:
             logger.error(f"发送失败: {e}")

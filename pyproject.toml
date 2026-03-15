@@ -8,6 +8,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pyte>=0.8.0",
     "mixpanel>=5.0.0",
+    "python-socks[asyncio]>=2.0.0",
 ]
 
 [project.scripts]

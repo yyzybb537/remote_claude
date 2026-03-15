@@ -11,8 +11,11 @@
 import asyncio
 import json
 import logging
+import os as _os
 import subprocess
 import sys
+import time
+from datetime import datetime as _datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -30,7 +33,23 @@ from .card_builder import (
 from .shared_memory_poller import SharedMemoryPoller, CardSlice
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, ensure_user_data_dir
+from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, ensure_user_data_dir, USER_DATA_DIR
+
+
+def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
+    """读取 startup.log 中 since 时间点之后的日志行"""
+    if not log_path.exists():
+        return ""
+    lines = []
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            ts = _datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
+            if ts >= since:
+                lines.append(line)
+        except ValueError:
+            if lines:
+                lines.append(line)
+    return "\n".join(lines)
 
 try:
     from stats import track as _track_stats
@@ -66,6 +85,8 @@ class LarkHandler:
         self._group_chat_ids: set = self._load_group_chat_ids()
         # chat_id → CardSlice（用户主动断开后保留，供重连时冻结旧卡片）
         self._detached_slices: Dict[str, CardSlice] = {}
+        # 正在启动中的会话名集合（防止并发点击触发竞态）
+        self._starting_sessions: set = set()
 
     # ── 持久化绑定 ──────────────────────────────────────────────────────────
 
@@ -167,6 +188,9 @@ class LarkHandler:
 
         if active_slice:
             await self._update_card_disconnected(chat_id, session_name, active_slice)
+
+        # 会话退出时自动解散绑定到该会话的所有专属群聊
+        await self._disband_groups_for_session(session_name, source="disconnect")
 
     # ── 消息入口 ────────────────────────────────────────────────────────────
 
@@ -316,45 +340,36 @@ class LarkHandler:
             )
             return
 
+        if session_name in self._starting_sessions:
+            await card_service.send_text(chat_id, f"会话 '{session_name}' 正在启动中，请稍候")
+            return
+        self._starting_sessions.add(session_name)
+
         script_dir = Path(__file__).parent.parent.absolute()
         server_script = script_dir / "server" / "server.py"
-        cmd = [sys.executable, str(server_script), session_name]
+        cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
+        if self._poller.get_bypass_enabled():
+            cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
 
         logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}, 命令: {' '.join(cmd)}")
         _track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
 
         try:
-            import os as _os
-            from datetime import datetime as _datetime
             env = _os.environ.copy()
             env.pop("CLAUDECODE", None)
 
-            from utils.session import USER_DATA_DIR
             log_path = USER_DATA_DIR / "startup.log"
             start_time = _datetime.now()
 
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                cwd=work_dir,
-                env=env,
-            )
-
-            def _read_log_since(since):
-                if not log_path.exists():
-                    return ""
-                lines = []
-                for line in log_path.read_text(encoding="utf-8").splitlines():
-                    try:
-                        ts = _datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
-                        if ts >= since:
-                            lines.append(line)
-                    except ValueError:
-                        if lines:
-                            lines.append(line)
-                return "\n".join(lines)
+            with open(log_path, 'a') as stderr_fd:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_fd,
+                    start_new_session=True,
+                    cwd=work_dir,
+                    env=env,
+                )
 
             socket_path = get_socket_path(session_name)
             for i in range(120):
@@ -365,13 +380,13 @@ class LarkHandler:
                     elapsed = (i + 1) // 10
                     rc = proc.poll()
                     if rc is not None:
-                        log_content = _read_log_since(start_time)
+                        log_content = _read_log_since(start_time, log_path)
                         logger.warning(f"会话启动失败: server 进程已退出 (exitcode={rc}, elapsed={elapsed}s)\n{log_content}")
                         await card_service.send_text(chat_id, f"错误: Server 进程意外退出 (code={rc})\n\n{log_content}")
                         return
                     logger.info(f"等待 server socket... ({elapsed}s)")
             else:
-                log_content = _read_log_since(start_time)
+                log_content = _read_log_since(start_time, log_path)
                 logger.error(f"会话启动超时 (12s), session={session_name}\n{log_content}")
                 await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
                 return
@@ -389,42 +404,61 @@ class LarkHandler:
         except Exception as e:
             logger.error(f"启动会话失败: {e}")
             await card_service.send_text(chat_id, f"错误: 启动失败 - {e}")
+        finally:
+            self._starting_sessions.discard(session_name)
 
     async def _cmd_start_and_new_group(self, user_id: str, chat_id: str,
                                        session_name: str, path: str):
         """在指定目录启动会话并创建专属群聊"""
-        sessions = list_active_sessions()
-        if any(s["name"] == session_name for s in sessions):
-            # 会话已存在，直接创建群聊
-            await self._cmd_new_group(user_id, chat_id, session_name)
-            return
-
         work_path = Path(path).expanduser()
         if not work_path.is_dir():
             await card_service.send_text(chat_id, f"错误: 路径无效: {path}")
             return
 
+        sessions = list_active_sessions()
+        active_names = {s["name"] for s in sessions}
+        if session_name in active_names or session_name in self._starting_sessions:
+            session_name = f"{session_name}_{_datetime.now().strftime('%m%d_%H%M%S')}"
+
+        self._starting_sessions.add(session_name)
+
         work_dir = str(work_path.absolute())
         script_dir = Path(__file__).parent.parent.absolute()
         server_script = script_dir / "server" / "server.py"
-        cmd = [sys.executable, str(server_script), session_name]
+        cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
+        if self._poller.get_bypass_enabled():
+            cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
 
         try:
-            import os as _os
             env = _os.environ.copy()
             env.pop("CLAUDECODE", None)
-            subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True, cwd=work_dir, env=env,
-            )
+
+            log_path = USER_DATA_DIR / "startup.log"
+            start_time = _datetime.now()
+
+            with open(log_path, 'a') as stderr_fd:
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=stderr_fd,
+                    start_new_session=True, cwd=work_dir, env=env,
+                )
 
             socket_path = get_socket_path(session_name)
-            for _ in range(120):
+            for i in range(120):
                 await asyncio.sleep(0.1)
                 if socket_path.exists():
                     break
+                if (i + 1) % 10 == 0:
+                    elapsed = (i + 1) // 10
+                    rc = proc.poll()
+                    if rc is not None:
+                        log_content = _read_log_since(start_time, log_path)
+                        logger.warning(f"启动并创建群聊失败: server 进程已退出 (exitcode={rc}, elapsed={elapsed}s)\n{log_content}")
+                        await card_service.send_text(chat_id, f"错误: Server 进程意外退出 (code={rc})\n\n{log_content}")
+                        return
             else:
-                await card_service.send_text(chat_id, "错误: 会话启动超时")
+                log_content = _read_log_since(start_time, log_path)
+                logger.error(f"启动并创建群聊超时 (12s), session={session_name}\n{log_content}")
+                await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
                 return
 
             await self._cmd_new_group(user_id, chat_id, session_name)
@@ -432,6 +466,8 @@ class LarkHandler:
         except Exception as e:
             logger.error(f"启动并创建群聊失败: {e}")
             await card_service.send_text(chat_id, f"操作失败：{e}")
+        finally:
+            self._starting_sessions.discard(session_name)
 
     async def _cmd_kill(self, user_id: str, chat_id: str, args: str,
                         message_id: Optional[str] = None):
@@ -607,7 +643,8 @@ class LarkHandler:
         }
         card = build_menu_card(sessions, current_session=current, session_groups=session_groups, page=page,
                                notify_enabled=self._poller.get_notify_enabled(),
-                               urgent_enabled=self._poller.get_urgent_enabled())
+                               urgent_enabled=self._poller.get_urgent_enabled(),
+                               bypass_enabled=self._poller.get_bypass_enabled())
         await self._send_or_update_card(chat_id, card, message_id)
 
     async def _cmd_toggle_notify(self, user_id: str, chat_id: str,
@@ -622,6 +659,13 @@ class LarkHandler:
         """切换加急通知开关并刷新菜单卡片"""
         new_value = not self._poller.get_urgent_enabled()
         self._poller.set_urgent_enabled(new_value)
+        await self._cmd_menu(user_id, chat_id, message_id=message_id)
+
+    async def _cmd_toggle_bypass(self, user_id: str, chat_id: str,
+                                  message_id: Optional[str] = None):
+        """切换新会话 bypass 开关并刷新菜单卡片"""
+        new_value = not self._poller.get_bypass_enabled()
+        self._poller.set_bypass_enabled(new_value)
         await self._cmd_menu(user_id, chat_id, message_id=message_id)
 
     async def _cmd_ls(self, user_id: str, chat_id: str, args: str,
@@ -779,6 +823,32 @@ class LarkHandler:
         except Exception as e:
             return False, str(e)
 
+    async def _disband_groups_for_session(self, session_name: str, source: str = ""):
+        """解散绑定到指定会话的所有专属群聊"""
+        disbanded = []
+        for cid in list(self._group_chat_ids):
+            if self._chat_bindings.get(cid) == session_name:
+                log_prefix = f"[{source}] " if source else ""
+                logger.info(f"{log_prefix}自动解散群聊: chat_id={cid[:8]}..., session={session_name}")
+                # 先清理本地状态（防止并发协程重入时重复处理）
+                self._group_chat_ids.discard(cid)
+                self._chat_bindings.pop(cid, None)
+                disbanded.append(cid)
+                # 停止轮询 + 断开 bridge
+                self._poller.stop(cid)
+                bridge = self._bridges.pop(cid, None)
+                if bridge:
+                    await bridge.disconnect()
+                self._chat_sessions.pop(cid, None)
+                self._detached_slices.pop(cid, None)
+                # 调用飞书 API 解散
+                ok, err = await self._disband_group_via_api(cid)
+                if not ok:
+                    logger.warning(f"{log_prefix}解散群 {cid[:8]}... API 失败: {err}")
+        if disbanded:
+            self._save_chat_bindings()
+            self._save_group_chat_ids()
+
     async def _cmd_disband_group(self, user_id: str, chat_id: str, session_name: str,
                                   message_id: Optional[str] = None):
         """解散与指定会话绑定的专属群聊"""
@@ -830,6 +900,8 @@ class LarkHandler:
                     await card_service.send_text(
                         chat_id, f"会话 '{saved_session}' 已不存在，请重新 /attach"
                     )
+                    # 会话已不存在，解散绑定到该会话的所有专属群聊
+                    await self._disband_groups_for_session(saved_session, source="lazy")
                     return
                 bridge = self._bridges.get(chat_id)
             else:
@@ -849,12 +921,11 @@ class LarkHandler:
 
     # ── 选项处理 ─────────────────────────────────────────────────────────────
 
-    async def handle_option_select(self, user_id: str, chat_id: str, option_value: str, option_total: int = 0):
-        """处理用户选择的选项（按钮点击）
+    async def handle_option_select(self, user_id: str, chat_id: str, option_value: str, option_total: int = 0, *, needs_input: bool = False):
+        """闭环选项选择：箭头键导航 + 共享内存验证
 
-        最后一个选项特殊处理：Claude CLI 的光标选择模式中，最后一个选项
-        直接发数字键无效。改为先发倒数第二项的数字跳转，再发 ↓ 移到最后一项，
-        最后发 Enter 确认。
+        发箭头键导航到目标选项，每步从共享内存读取 selected_value 确认是否到位，
+        到位后发 Enter 确认。避免数字键在溢出选项上无效的问题。
         """
         logger.info(f"处理选项选择: user={user_id[:8]}..., option={option_value}, total={option_total}")
         _track_stats('lark', 'option_select',
@@ -866,37 +937,99 @@ class LarkHandler:
             await card_service.send_text(chat_id, "未连接到任何会话，请先使用 /attach <会话名> 连接")
             return
 
-        key_mapping = {
-            "yes": "y",
-            "no": "n",
-            "allow_once": "y",
-            "allow_always": "a",
-            "deny": "n",
-        }
-        key_to_send = key_mapping.get(option_value.lower())
+        target = option_value  # 目标选项 value（如 "2"）
+        max_steps = max(option_total, 10) if option_total > 0 else 10
 
-        if key_to_send:
-            # 固定映射的选项（permission 类型）
-            logger.info(f"发送按键到 Claude: {key_to_send}")
-            success = await bridge.send_key(key_to_send)
-        elif option_total > 1 and option_value == str(option_total):
-            # 最后一个选项：发 (N-1) 次 ↓ → Enter
-            import asyncio
-            steps = option_total - 1
-            logger.info(f"最后一个选项，发送: {steps}次↓ → Enter")
-            for _ in range(steps):
-                await bridge.send_raw(b"\x1b[B")  # ↓ 箭头
-                await asyncio.sleep(0.05)
-            success = await bridge.send_raw(b"\r")
-        else:
-            # 普通数字选项
-            logger.info(f"发送按键到 Claude: {option_value}")
-            success = await bridge.send_key(option_value)
+        # 记录初始 option_block 的 block_id，防止跨选项交互误操作
+        initial_snapshot = self._poller.read_snapshot(chat_id)
+        if not initial_snapshot:
+            return
+        initial_ob = initial_snapshot.get('option_block')
+        if not initial_ob:
+            return
+        initial_block_id = initial_ob.get('block_id', '')
 
-        if success:
-            self._poller.kick(chat_id)
-        else:
-            await card_service.send_text(chat_id, "发送选择失败")
+        for step in range(max_steps):
+            # 1. 读取当前选中项
+            snapshot = self._poller.read_snapshot(chat_id)
+            if not snapshot:
+                break
+            ob = snapshot.get('option_block')
+            if not ob:
+                break  # option_block 已消失（CLI 已进入下一状态）
+
+            # 检查 block_id 一致性
+            if initial_block_id and ob.get('block_id', '') != initial_block_id:
+                logger.warning(f"option_block 已切换，中止选项选择")
+                break
+
+            current = ob.get('selected_value', '')
+
+            # 闪烁帧重试：❯ 光标字符会时隐时现，selected_value 为空时短暂重试
+            if not current:
+                for _retry in range(5):  # 最多重试 5 次，共 500ms
+                    await asyncio.sleep(0.1)
+                    snap = self._poller.read_snapshot(chat_id)
+                    if not snap:
+                        break
+                    retry_ob = snap.get('option_block')
+                    if not retry_ob:
+                        break
+                    current = retry_ob.get('selected_value', '')
+                    if current:
+                        break
+
+            # 2. 已到位 → 发 Enter（自由输入选项只导航不发 Enter）
+            if current == target:
+                if needs_input:
+                    logger.info(f"自由输入选项已到位: target={target}，不发送 Enter")
+                    self._poller.kick(chat_id)
+                    return
+                logger.info(f"选项已到位: current={current} == target={target}，发送 Enter")
+                success = await bridge.send_raw(b"\r")
+                if success:
+                    self._poller.kick(chat_id)
+                else:
+                    await card_service.send_text(chat_id, "发送选择失败")
+                return
+
+            # 3. 未到位 → 发箭头键
+            if current and target:
+                try:
+                    if int(current) < int(target):
+                        logger.info(f"步骤{step}: current={current} < target={target}，发送 ↓")
+                        await bridge.send_raw(b"\x1b[B")  # ↓
+                    else:
+                        logger.info(f"步骤{step}: current={current} > target={target}，发送 ↑")
+                        await bridge.send_raw(b"\x1b[A")  # ↑
+                except ValueError:
+                    logger.warning(f"步骤{step}: 无法比较 current={current!r} 和 target={target!r}，发送 ↓")
+                    await bridge.send_raw(b"\x1b[B")
+            else:
+                # selected_value 重试后仍为空（真正的初始状态），默认向下
+                logger.info(f"步骤{step}: selected_value 重试后仍为空，发送 ↓")
+                await bridge.send_raw(b"\x1b[B")
+
+            # 4. 等待共享内存更新（轮询直到 selected_value 变为另一个非空值或超时）
+            old_selected = current
+            deadline = time.time() + 2.0  # 单步超时 2s
+            while time.time() < deadline:
+                await asyncio.sleep(0.1)  # 100ms 轮询
+                snap = self._poller.read_snapshot(chat_id)
+                if not snap:
+                    break
+                new_ob = snap.get('option_block')
+                if not new_ob:
+                    break  # option_block 消失，退出
+                if initial_block_id and new_ob.get('block_id', '') != initial_block_id:
+                    break  # block_id 变了，外层会处理
+                new_selected = new_ob.get('selected_value', '')
+                # 忽略闪烁帧：只有变为另一个非空值才视为真正变化
+                if new_selected and new_selected != old_selected:
+                    break
+
+        # 超过 max_steps 仍未到位，记录警告
+        logger.warning(f"选项选择超步数: target={target}, steps={max_steps}")
 
     # ── 快捷键发送 ─────────────────────────────────────────────────────────────
 

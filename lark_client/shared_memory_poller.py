@@ -40,6 +40,7 @@ from utils.session import ensure_user_data_dir, USER_DATA_DIR
 # ── 常量 ──────────────────────────────────────────────────────────────────────
 INITIAL_WINDOW = 30    # 首次 attach 最多显示最近 30 个 blocks
 from .config import MAX_CARD_BLOCKS  # 单张卡片最多 N 个 blocks → 超限冻结（可通过 .env 配置）
+CARD_SIZE_LIMIT = 25 * 1024  # 25KB，飞书限制 30KB，留 5KB 余量
 POLL_INTERVAL = 1.0    # 轮询间隔（秒）
 RAPID_INTERVAL = 0.2   # 快速轮询间隔（秒）
 RAPID_DURATION = 2.0   # 快速轮询持续时间（秒）
@@ -153,6 +154,16 @@ class SharedMemoryPoller:
         if exc:
             logger.error(f"轮询 Task 异常: chat_id={chat_id[:8]}..., {exc}", exc_info=exc)
 
+    def read_snapshot(self, chat_id: str) -> Optional[dict]:
+        """直接读取指定 chat_id 的当前共享内存快照（供 handle_option_select 等即时查询使用）"""
+        tracker = self._trackers.get(chat_id)
+        if tracker and tracker.reader:
+            try:
+                return tracker.reader.read()
+            except Exception as e:
+                logger.warning(f"read_snapshot 失败: {e}")
+        return None
+
     def kick(self, chat_id: str) -> None:
         """触发立即轮询并进入快速轮询模式"""
         self._rapid_until[chat_id] = time.time() + RAPID_DURATION
@@ -191,8 +202,8 @@ class SharedMemoryPoller:
                 logger.error(f"_poll_once 异常: {e}", exc_info=True)
 
     async def _poll_once(self, tracker: StreamTracker) -> None:
-        """单次轮询：读取共享内存 → diff → 创建/更新卡片"""
-        # 延迟初始化 Reader
+        """单次轮询：读取共享内存 → diff → 创建/更新卡片 → 就绪通知"""
+        # 步骤 1：延迟初始化 Reader
         if tracker.reader is None:
             try:
                 from shared_state import get_mq_path, SharedStateReader
@@ -220,9 +231,23 @@ class SharedMemoryPoller:
         option_block = state.get("option_block")
         cli_type = state.get("cli_type", "claude")
 
-        # 就绪状态转换检测
-        await self._check_ready_notification(tracker, blocks, status_line, option_block, cli_type)
+        # 步骤 2：仅计算就绪状态，不发送通知
+        should_notify = self._update_ready_state(tracker, blocks, status_line, option_block)
 
+        # 步骤 3：卡片操作（含创建/更新/拆分）
+        await self._do_card_update(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type)
+
+        # 步骤 4：通知在卡片操作之后发送，确保新卡先出现
+        if should_notify:
+            await self._send_ready_notification(tracker, cli_type)
+
+    async def _do_card_update(
+        self, tracker: StreamTracker, blocks: List[dict],
+        status_line: Optional[dict], bottom_bar: Optional[dict],
+        agent_panel: Optional[dict], option_block: Optional[dict],
+        cli_type: str,
+    ) -> None:
+        """卡片操作主体：获取活跃卡片 → 创建/更新/拆分"""
         # 获取活跃卡片（最后一张且未冻结）
         active = None
         if tracker.cards and not tracker.cards[-1].frozen:
@@ -234,69 +259,80 @@ class SharedMemoryPoller:
         if active is None:
             # 需要创建新卡片
             await self._create_new_card(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type=cli_type)
+            return
+
+        # 有活跃卡片，检查是否需要更新
+        blocks_slice = blocks[active.start_idx:]
+
+        # blocks 骤降检测（compact/重启导致 blocks 从头累积）
+        if len(blocks) < active.start_idx:
+            logger.warning(
+                f"[blocks regression] len(blocks)={len(blocks)} < start_idx={active.start_idx}, "
+                f"resetting start_idx to 0 (session={tracker.session_name})"
+            )
+            active.start_idx = 0
+            blocks_slice = blocks[0:]
+            tracker.content_hash = ""  # 强制刷新
+
+        # 超限检查
+        if len(blocks_slice) > MAX_CARD_BLOCKS:
+            await self._freeze_and_split(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type=cli_type)
+            return
+
+        # hash diff
+        new_hash = self._compute_hash(blocks_slice, status_line, bottom_bar, agent_panel, option_block)
+        if new_hash == tracker.content_hash:
+            return  # 无变化
+
+        # 更新卡片
+        from .card_builder import build_stream_card
+        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+
+        # 大小超限检查（与 blocks 数量超限同一套逻辑）
+        card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
+        if card_size > CARD_SIZE_LIMIT:
+            freeze_count = self._find_freeze_count(blocks_slice, tracker.session_name)
+            await self._freeze_and_split(
+                tracker, blocks, status_line, bottom_bar, agent_panel, option_block,
+                cli_type=cli_type, freeze_count=freeze_count,
+            )
+            return
+
+        active.sequence += 1
+        success = await self._card_service.update_card(
+            card_id=active.card_id,
+            sequence=active.sequence,
+            card_content=card_dict,
+        )
+
+        if getattr(success, 'is_element_limit', False):
+            # 元素超限：冻结旧卡 + 推新流式卡
+            await self._handle_element_limit(
+                tracker, blocks, status_line, bottom_bar, agent_panel, option_block,
+                cli_type=cli_type,
+            )
+            return
+        elif not success:
+            # 降级：创建新卡片替代
+            logger.warning(
+                f"update_card 失败 card_id={active.card_id} seq={active.sequence}，降级为新卡片"
+            )
+            _track_stats('card', 'fallback', session_name=tracker.session_name,
+                         chat_id=tracker.chat_id)
+            new_card_id = await self._card_service.create_card(card_dict)
+            if new_card_id:
+                await self._card_service.send_card(tracker.chat_id, new_card_id)
+                active.card_id = new_card_id
+                active.sequence = 0
         else:
-            # 有活跃卡片，检查是否需要更新
-            blocks_slice = blocks[active.start_idx:]
+            _track_stats('card', 'update', session_name=tracker.session_name,
+                         chat_id=tracker.chat_id)
 
-            # blocks 骤降检测（compact/重启导致 blocks 从头累积）
-            if len(blocks) < active.start_idx:
-                logger.warning(
-                    f"[blocks regression] len(blocks)={len(blocks)} < start_idx={active.start_idx}, "
-                    f"resetting start_idx to 0 (session={tracker.session_name})"
-                )
-                active.start_idx = 0
-                blocks_slice = blocks[0:]
-                tracker.content_hash = ""  # 强制刷新
-
-            # 超限检查
-            if len(blocks_slice) > MAX_CARD_BLOCKS:
-                await self._freeze_and_split(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type=cli_type)
-                return
-
-            # hash diff
-            new_hash = self._compute_hash(blocks_slice, status_line, bottom_bar, agent_panel, option_block)
-            if new_hash == tracker.content_hash:
-                return  # 无变化
-
-            # 更新卡片
-            from .card_builder import build_stream_card
-            card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
-
-            active.sequence += 1
-            success = await self._card_service.update_card(
-                card_id=active.card_id,
-                sequence=active.sequence,
-                card_content=card_dict,
-            )
-
-            if getattr(success, 'is_element_limit', False):
-                # 元素超限：冻结旧卡 + 推新流式卡
-                await self._handle_element_limit(
-                    tracker, blocks, status_line, bottom_bar, agent_panel, option_block,
-                    cli_type=cli_type,
-                )
-                return
-            elif not success:
-                # 降级：创建新卡片替代
-                logger.warning(
-                    f"update_card 失败 card_id={active.card_id} seq={active.sequence}，降级为新卡片"
-                )
-                _track_stats('card', 'fallback', session_name=tracker.session_name,
-                             chat_id=tracker.chat_id)
-                new_card_id = await self._card_service.create_card(card_dict)
-                if new_card_id:
-                    await self._card_service.send_card(tracker.chat_id, new_card_id)
-                    active.card_id = new_card_id
-                    active.sequence = 0
-            else:
-                _track_stats('card', 'update', session_name=tracker.session_name,
-                             chat_id=tracker.chat_id)
-
-            tracker.content_hash = new_hash
-            logger.debug(
-                f"[UPDATE] session={tracker.session_name} blocks={len(blocks_slice)} "
-                f"seq={active.sequence} hash={new_hash[:8]}"
-            )
+        tracker.content_hash = new_hash
+        logger.debug(
+            f"[UPDATE] session={tracker.session_name} blocks={len(blocks_slice)} "
+            f"seq={active.sequence} hash={new_hash[:8]}"
+        )
 
     async def _create_new_card(
         self, tracker: StreamTracker, blocks: List[dict],
@@ -326,6 +362,15 @@ class SharedMemoryPoller:
 
         from .card_builder import build_stream_card
         card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+
+        # 新卡大小检查：超限则从头部裁剪
+        card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
+        while card_size > CARD_SIZE_LIMIT and len(blocks_slice) > 1:
+            blocks_slice = blocks_slice[1:]
+            start_idx += 1
+            card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+            card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
+
         card_id = await self._card_service.create_card(card_dict)
 
         if card_id:
@@ -384,6 +429,24 @@ class SharedMemoryPoller:
                 f"[ELEMENT_LIMIT_SPLIT] session={tracker.session_name} "
                 f"new_start={new_start} blocks={len(new_blocks)} card_id={new_card_id}"
             )
+            tracker.last_notify_message_id = None
+
+    def _find_freeze_count(self, blocks_slice: List[dict], session_name: str) -> int:
+        """二分查找冻结卡片能容纳的最大 blocks 数（保证卡片 JSON 大小 ≤ CARD_SIZE_LIMIT）"""
+        from .card_builder import build_stream_card
+        lo, hi = 1, len(blocks_slice)
+        result = 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            card = build_stream_card(blocks_slice[:mid], None, None,
+                                     is_frozen=True, session_name=session_name)
+            size = len(json.dumps(card, ensure_ascii=False).encode('utf-8'))
+            if size <= CARD_SIZE_LIMIT:
+                result = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return result
 
     async def _freeze_and_split(
         self, tracker: StreamTracker, blocks: List[dict],
@@ -391,12 +454,15 @@ class SharedMemoryPoller:
         agent_panel: Optional[dict] = None,
         option_block: Optional[dict] = None,
         cli_type: str = "claude",
+        freeze_count: Optional[int] = None,
     ) -> None:
         """冻结当前卡片 + 开新卡"""
         active = tracker.cards[-1]
+        count = freeze_count if freeze_count is not None else MAX_CARD_BLOCKS
+        reason = 'size' if freeze_count is not None else 'count'
 
-        # 冻结当前卡片（只保留前 MAX_CARD_BLOCKS 个 blocks，移除状态区和按钮）
-        frozen_blocks = blocks[active.start_idx:active.start_idx + MAX_CARD_BLOCKS]
+        # 冻结当前卡片（只保留前 count 个 blocks，移除状态区和按钮）
+        frozen_blocks = blocks[active.start_idx:active.start_idx + count]
         from .card_builder import build_stream_card
         frozen_card = build_stream_card(frozen_blocks, None, None, is_frozen=True)
         active.sequence += 1
@@ -406,16 +472,25 @@ class SharedMemoryPoller:
                      chat_id=tracker.chat_id)
         logger.info(
             f"[FREEZE] session={tracker.session_name} card_id={active.card_id} "
-            f"blocks=[{active.start_idx}:{active.start_idx + MAX_CARD_BLOCKS}]"
+            f"blocks=[{active.start_idx}:{active.start_idx + count}] reason={reason}"
         )
 
         # 创建新卡片
-        new_start = active.start_idx + MAX_CARD_BLOCKS
+        new_start = active.start_idx + count
         new_blocks = blocks[new_start:]
         if not new_blocks:
             return
 
         new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+
+        # 新卡大小检查：超限则从头部裁剪
+        new_card_size = len(json.dumps(new_card_dict, ensure_ascii=False).encode('utf-8'))
+        while new_card_size > CARD_SIZE_LIMIT and len(new_blocks) > 1:
+            new_blocks = new_blocks[1:]
+            new_start += 1
+            new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+            new_card_size = len(json.dumps(new_card_dict, ensure_ascii=False).encode('utf-8'))
+
         new_card_id = await self._card_service.create_card(new_card_dict)
         if new_card_id:
             await self._card_service.send_card(tracker.chat_id, new_card_id)
@@ -425,54 +500,58 @@ class SharedMemoryPoller:
                 f"[NEW after FREEZE] session={tracker.session_name} start_idx={new_start} "
                 f"blocks={len(new_blocks)} card_id={new_card_id}"
             )
+            tracker.last_notify_message_id = None
 
-    async def _check_ready_notification(
+    def _update_ready_state(
         self, tracker: StreamTracker,
         blocks: list, status_line: Optional[dict], option_block: Optional[dict],
-        cli_type: str = "claude"
-    ) -> None:
-        """检测就绪状态转换（忙碌→就绪），群聊中发送 @所有人 提醒"""
+    ) -> bool:
+        """更新就绪状态，返回是否需要发送就绪通知（不执行发送）"""
         current_ready = _is_ready(blocks, status_line, option_block)
         prev_ready = tracker.prev_is_ready
         tracker.prev_is_ready = current_ready
+        return current_ready and not prev_ready and tracker.is_group and _notify_enabled
 
-        if current_ready and not prev_ready and tracker.is_group and _notify_enabled:
-            count = _increment_ready_count()
-            uid = tracker.notify_user_id or "all"
-            cli_name = "Claude" if cli_type == "claude" else "Codex"
-            logger.info(f"就绪提醒: chat_id={tracker.chat_id[:8]}..., count={count}, uid={uid}, "
-                        f"last_msg={'有' if tracker.last_notify_message_id else '无'}")
+    async def _send_ready_notification(
+        self, tracker: StreamTracker, cli_type: str = "claude"
+    ) -> None:
+        """发送就绪通知（加急或新消息），应在卡片操作完成后调用"""
+        count = _increment_ready_count()
+        uid = tracker.notify_user_id or "all"
+        cli_name = "Claude" if cli_type == "claude" else "Codex"
+        logger.info(f"就绪提醒: chat_id={tracker.chat_id[:8]}..., count={count}, uid={uid}, "
+                    f"last_msg={'有' if tracker.last_notify_message_id else '无'}")
 
-            if tracker.last_notify_message_id and uid != "all" and _urgent_enabled:
-                # 已有通知消息 + 加急开关开启 → 尝试加急
-                try:
-                    ok = await self._card_service.send_urgent_app(
-                        tracker.last_notify_message_id, [uid]
-                    )
-                    if ok:
-                        # 加急成功 → 15 秒后自动取消
-                        asyncio.create_task(self._cancel_urgent_later(
-                            tracker.last_notify_message_id, [uid], delay=5
-                        ))
-                    else:
-                        # 加急失败（权限未开通等）→ 降级发新消息
-                        label = ""
-                        text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪，等待您的输入...（这是第{count}次通知）'
-                        msg_id = await self._card_service.send_text(tracker.chat_id, text)
-                        if msg_id:
-                            tracker.last_notify_message_id = msg_id
-                except Exception as e:
-                    logger.warning(f"加急通知失败: {e}")
-            else:
-                # 首次通知（或无法加急时）→ 发新消息，记录 message_id
-                label = "所有人" if uid == "all" else ""
-                text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪，等待您的输入...（这是第{count}次通知）'
-                try:
+        if tracker.last_notify_message_id and uid != "all" and _urgent_enabled:
+            # 已有通知消息 + 加急开关开启 → 尝试加急
+            try:
+                ok = await self._card_service.send_urgent_app(
+                    tracker.last_notify_message_id, [uid]
+                )
+                if ok:
+                    # 加急成功 → 5 秒后自动取消
+                    asyncio.create_task(self._cancel_urgent_later(
+                        tracker.last_notify_message_id, [uid], delay=5
+                    ))
+                else:
+                    # 加急失败（权限未开通等）→ 降级发新消息
+                    label = ""
+                    text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪，等待您的输入...（这是第{count}次通知）'
                     msg_id = await self._card_service.send_text(tracker.chat_id, text)
                     if msg_id:
                         tracker.last_notify_message_id = msg_id
-                except Exception as e:
-                    logger.warning(f"就绪提醒发送失败: {e}")
+            except Exception as e:
+                logger.warning(f"加急通知失败: {e}")
+        else:
+            # 首次通知（或无法加急时）→ 发新消息，记录 message_id
+            label = "所有人" if uid == "all" else ""
+            text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪，等待您的输入...（这是第{count}次通知）'
+            try:
+                msg_id = await self._card_service.send_text(tracker.chat_id, text)
+                if msg_id:
+                    tracker.last_notify_message_id = msg_id
+            except Exception as e:
+                logger.warning(f"就绪提醒发送失败: {e}")
 
     async def _cancel_urgent_later(self, message_id: str, user_ids: list, delay: float = 15) -> None:
         """延迟取消加急通知"""
@@ -504,6 +583,17 @@ class SharedMemoryPoller:
         _save_urgent_enabled(enabled)
         logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
 
+    def get_bypass_enabled(self) -> bool:
+        """获取新会话 bypass 开关状态"""
+        return _bypass_enabled
+
+    def set_bypass_enabled(self, enabled: bool) -> None:
+        """更新新会话 bypass 开关状态并持久化"""
+        global _bypass_enabled
+        _bypass_enabled = enabled
+        _save_bypass_enabled(enabled)
+        logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
+
     @staticmethod
     def _compute_hash(
         blocks: list, status_line: Optional[dict],
@@ -534,6 +624,7 @@ def _is_ready(blocks: list, status_line: Optional[dict], option_block: Optional[
 _READY_COUNT_FILE = USER_DATA_DIR / "ready_notify_count"
 _NOTIFY_ENABLED_FILE = USER_DATA_DIR / "ready_notify_enabled"
 _URGENT_ENABLED_FILE = USER_DATA_DIR / "urgent_notify_enabled"
+_BYPASS_ENABLED_FILE = USER_DATA_DIR / "bypass_enabled"
 
 
 def _load_notify_enabled() -> bool:
@@ -570,9 +661,27 @@ def _save_urgent_enabled(enabled: bool) -> None:
         logger.warning(f"_save_urgent_enabled 失败: {e}")
 
 
+def _load_bypass_enabled() -> bool:
+    """读取新会话 bypass 开关状态，不存在或解析失败返回 False（默认关闭）"""
+    try:
+        return _BYPASS_ENABLED_FILE.read_text().strip() == "1"
+    except Exception:
+        return False
+
+
+def _save_bypass_enabled(enabled: bool) -> None:
+    """持久化新会话 bypass 开关状态"""
+    try:
+        ensure_user_data_dir()
+        _BYPASS_ENABLED_FILE.write_text("1" if enabled else "0")
+    except Exception as e:
+        logger.warning(f"_save_bypass_enabled 失败: {e}")
+
+
 # 模块级开关状态：启动时加载一次
 _notify_enabled: bool = _load_notify_enabled()
 _urgent_enabled: bool = _load_urgent_enabled()
+_bypass_enabled: bool = _load_bypass_enabled()
 
 
 def _increment_ready_count() -> int:

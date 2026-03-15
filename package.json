@@ -1,6 +1,6 @@
 {
   "name": "remote-claude",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "双端共享 Claude CLI 工具",
   "bin": {
     "remote-claude": "bin/remote-claude",
@@ -8,6 +8,7 @@
     "cl": "bin/cl"
   },
   "scripts": {
+    "preinstall": "bash scripts/preinstall.sh",
     "postinstall": "bash scripts/postinstall.sh"
   },
   "files": [

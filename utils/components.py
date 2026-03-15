@@ -79,6 +79,7 @@ class OptionBlock:
     ansi_raw: str = ""         # 整个选项区域的 ANSI 原始文本
     indicator: str = ""        # 首列字符原文
     ansi_indicator: str = ""   # 带 ANSI 颜色的首列字符
+    selected_value: str = ""   # 当前 ❯ 光标所在选项的 value（数字字符串）
 
 
 # 向后兼容别名

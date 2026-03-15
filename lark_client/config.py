@@ -48,3 +48,7 @@ LARK_LOG_LEVEL = {
     "WARNING": 30,
     "ERROR": 40,
 }.get(_LARK_LOG_LEVEL, 20)  # 默认 INFO
+
+# SOCKS 代理兼容（可选，默认 False）
+# 系统有 SOCKS 代理但飞书可直连时，设为 1 绕过代理
+LARK_NO_PROXY = os.getenv("LARK_NO_PROXY", "").strip() in ("1", "true", "yes")

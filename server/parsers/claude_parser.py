@@ -258,6 +258,40 @@ def _get_row_text(screen: pyte.Screen, row: int) -> str:
     return ''.join(buf).rstrip()
 
 
+def _is_dim_fg(fg_color: str) -> bool:
+    """判断前景色是否为灰色/暗色（placeholder 风格）。"""
+    if not fg_color or fg_color == 'default':
+        return False
+    name = fg_color.lower().replace(' ', '').replace('-', '')
+    if name in ('brightblack', 'black'):  # bright_black = gray
+        return True
+    if len(fg_color) == 6:
+        try:
+            r, g, b = int(fg_color[0:2], 16), int(fg_color[2:4], 16), int(fg_color[4:6], 16)
+            L = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            # 灰色调（R≈G≈B）且非纯白 → inactive/placeholder 颜色（如 999999 亮度 153 > 128）
+            if max(r, g, b) - min(r, g, b) <= 30 and L < 230:
+                return True
+            # 非灰色但较暗
+            return L < 128
+        except ValueError:
+            pass
+    return False
+
+
+def _option_label_is_dim(screen: pyte.Screen, row: int) -> bool:
+    """检查选项行 label 部分前景色是否为暗色（自由输入 placeholder 风格）。"""
+    text = _get_row_text(screen, row)
+    m = re.match(r'^[\s❯]*\d+[.)]\s+', text)
+    if not m:
+        return False
+    col = m.end()
+    buf_row = screen.buffer[row]
+    if col not in buf_row or not buf_row[col].data.strip():
+        return False
+    return _is_dim_fg(buf_row[col].fg)
+
+
 def _get_col0(screen: pyte.Screen, row: int) -> str:
     """获取指定行第一列字符（col=0）"""
     try:
@@ -874,6 +908,7 @@ class ClaudeParser(BaseParser):
 
         options: List[dict] = []
         current_opt: Optional[dict] = None
+        selected_value = ""
         ansi_raw_lines = [_get_row_ansi_text(screen, r) for r in input_rows + overflow]
 
         for row in all_option_rows:
@@ -891,7 +926,10 @@ class ClaudeParser(BaseParser):
                     'label': m.group(2).strip(),
                     'value': m.group(1),
                     'description': '',
+                    'needs_input': _option_label_is_dim(screen, row),  # 自由输入选项检测
                 }
+                if line.startswith('❯'):
+                    selected_value = m.group(1)
             elif current_opt is not None and line:
                 # 描述行
                 current_opt['description'] = (
@@ -905,6 +943,7 @@ class ClaudeParser(BaseParser):
             return OptionBlock(
                 sub_type='option', tag=tag, question=question, options=options,
                 ansi_raw='\n'.join(ansi_raw_lines).rstrip(),
+                selected_value=selected_value,
             )
         return None
 
@@ -1020,6 +1059,7 @@ class ClaudeParser(BaseParser):
                 content_lines = pre_option_contents[1:-1]
 
         # 只收集范围内的 options
+        selected_value = ""
         for i in range(first_opt_idx, last_opt_idx + 1):
             line, cat = classified[i]
             if cat == 'option':
@@ -1029,6 +1069,8 @@ class ClaudeParser(BaseParser):
                         'label': m.group(2).strip(),
                         'value': m.group(1),
                     })
+                    if line.startswith('❯'):
+                        selected_value = m.group(1)
 
         return OptionBlock(
             sub_type='permission',
@@ -1037,6 +1079,7 @@ class ClaudeParser(BaseParser):
             question=question,
             options=options,
             ansi_raw='\n'.join(ansi_lines).rstrip(),
+            selected_value=selected_value,
         )
 
     def _parse_agent_list_panel(
