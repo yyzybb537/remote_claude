@@ -179,7 +179,6 @@ remote-claude attach <会话名>
       "im:message:recall",
       "im:message:update",
       "search:docs:read",
-      "search:suite_dataset:readonly",
       "sheets:spreadsheet.meta:read",
       "sheets:spreadsheet.meta:write_only",
       "sheets:spreadsheet:create",
@@ -191,7 +190,6 @@ remote-claude attach <会话名>
       "task:task:write",
       "task:task:writeonly",
       "task:tasklist:read",
-      "task:tasklist:writeonly",
       "wiki:wiki:readonly"
     ]
   }

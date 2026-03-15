@@ -8,8 +8,10 @@ Remote Claude 飞书客户端
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
+import urllib.request
 from pathlib import Path
 
 
@@ -183,8 +185,9 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         if action_type == "select_option":
             option_value = action_value.get("value", "")
             option_total = int(action_value.get("total", "0"))
-            print(f"[Lark] 用户选择了选项: {option_value} (total={option_total})")
-            asyncio.create_task(handler.handle_option_select(user_id, chat_id, option_value, option_total))
+            needs_input = action_value.get("needs_input", False)
+            print(f"[Lark] 用户选择了选项: {option_value} (total={option_total}, needs_input={needs_input})")
+            asyncio.create_task(handler.handle_option_select(user_id, chat_id, option_value, option_total, needs_input=needs_input))
             return None
 
         # 列表卡片：进入会话
@@ -314,6 +317,10 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             asyncio.create_task(handler._cmd_toggle_urgent(user_id, chat_id, message_id=message_id))
             return None
 
+        if action_type == "menu_toggle_bypass":
+            asyncio.create_task(handler._cmd_toggle_bypass(user_id, chat_id, message_id=message_id))
+            return None
+
         # 各卡片底部菜单按钮：辅助卡片就地→菜单，流式卡片降级新卡
         if action_type == "menu_open":
             asyncio.create_task(handler._cmd_menu(user_id, chat_id, message_id=message_id))
@@ -370,6 +377,21 @@ class LarkBot:
             event_handler=event_handler,
             log_level=lark.LogLevel.INFO,
         )
+
+        # 代理兼容：检测 SOCKS 代理，按配置决定是否绕过
+        proxy_info = urllib.request.getproxies()
+        socks_proxy = (proxy_info.get('socks') or proxy_info.get('all')
+                       or proxy_info.get('https') or proxy_info.get('http'))
+        if socks_proxy and 'socks' in socks_proxy.lower():
+            if config.LARK_NO_PROXY:
+                # 用户选择绕过代理 → 清除代理环境变量
+                for var in ('ALL_PROXY', 'all_proxy', 'HTTPS_PROXY', 'https_proxy',
+                            'HTTP_PROXY', 'http_proxy', 'SOCKS_PROXY', 'socks_proxy'):
+                    os.environ.pop(var, None)
+                print(f"检测到 SOCKS 代理 ({socks_proxy})，已按 LARK_NO_PROXY=1 绕过")
+            else:
+                print(f"检测到 SOCKS 代理 ({socks_proxy})，将通过代理连接")
+                print("  如连接失败，可在 .env 中设置 LARK_NO_PROXY=1 绕过代理")
 
         self.running = True
         print("\n机器人已启动，等待消息...")

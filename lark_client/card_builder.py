@@ -427,6 +427,7 @@ def _build_buttons_v2(options: List[Dict[str, str]]) -> List[Dict[str, Any]]:
                                     "value": {
                                         "action": "select_option",
                                         "value": opt["value"],
+                                        "needs_input": opt.get("needs_input", False),
                                         "total": str(total),
                                     }
                                 }
@@ -1022,16 +1023,22 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
 
         if is_dir and depth == 0:
             auto_session = _dir_session_name(full_path)
+            # 前缀匹配：找 session_groups 中精确匹配或以 auto_session + "_" 开头的条目（取最后一个，即最新的）
+            matched_group_cid = None
+            if session_groups:
+                for sn, cid in session_groups.items():
+                    if sn == auto_session or sn.startswith(auto_session + "_"):
+                        matched_group_cid = cid
             group_btn = {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "进入群聊" if (session_groups and auto_session in session_groups) else "创建群聊"},
+                "text": {"tag": "plain_text", "content": "进入群聊" if matched_group_cid else "创建群聊"},
                 "type": "default",
                 "behaviors": [{"type": "open_url",
-                               "default_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}",
-                               "android_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}",
-                               "ios_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}",
-                               "pc_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}"}]
-                if (session_groups and auto_session in session_groups) else
+                               "default_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
+                               "android_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
+                               "ios_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
+                               "pc_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}"}]
+                if matched_group_cid else
                 [{"type": "callback", "value": {
                     "action": "dir_new_group",
                     "path": full_path,
@@ -1202,7 +1209,8 @@ def build_session_closed_card(session_name: str) -> Dict[str, Any]:
 
 def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     session_groups: Optional[Dict[str, str]] = None, page: int = 0,
-                    notify_enabled: bool = True, urgent_enabled: bool = False) -> Dict[str, Any]:
+                    notify_enabled: bool = True, urgent_enabled: bool = False,
+                    bypass_enabled: bool = False) -> Dict[str, Any]:
     """构建快捷操作菜单卡片（/menu 和 /list 共用）：内嵌会话列表 + 快捷操作"""
     elements = []
 
@@ -1299,6 +1307,14 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                 "elements": [urgent_button]
             },
         ]
+    })
+
+    bypass_label = "🔓 新会话bypass: 开" if bypass_enabled else "🔒 新会话bypass: 关"
+    elements.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": bypass_label},
+        "type": "default",
+        "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_bypass"}}]
     })
 
     return {

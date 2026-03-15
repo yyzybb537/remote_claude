@@ -795,6 +795,7 @@ from lark_client.shared_memory_poller import (
     SharedMemoryPoller,
     INITIAL_WINDOW,
     MAX_CARD_BLOCKS,
+    CARD_SIZE_LIMIT,
 )
 
 
@@ -1035,6 +1036,129 @@ class TestComputeHash(unittest.TestCase):
         h1 = SharedMemoryPoller._compute_hash(blocks, None, None, option_block={"sub_type": "option", "question": "A"})
         h2 = SharedMemoryPoller._compute_hash(blocks, None, None, option_block={"sub_type": "permission", "question": "B"})
         self.assertNotEqual(h1, h2)
+
+
+class TestCardSizeLimit(unittest.TestCase):
+    """测试卡片大小超限处理"""
+
+    def setUp(self):
+        self.card_service = AsyncMock()
+        self.card_service.create_card = AsyncMock(return_value="card_001")
+        self.card_service.send_card = AsyncMock(return_value="msg_001")
+        self.card_service.update_card = AsyncMock(return_value=True)
+        self.poller = SharedMemoryPoller(self.card_service)
+
+    def _make_reader(self, state: dict):
+        reader = MagicMock()
+        reader.read.return_value = state
+        reader.close = MagicMock()
+        return reader
+
+    def _make_large_block(self, size_bytes: int) -> dict:
+        """生成指定大小的 OutputBlock"""
+        content = "x" * size_bytes
+        return {"_type": "OutputBlock", "content": content, "indicator": "●", "is_streaming": False}
+
+    def test_find_freeze_count_small_blocks(self):
+        """_find_freeze_count：小 blocks 全部能放入"""
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(10)]
+        count = self.poller._find_freeze_count(blocks, "test")
+        # 10 个小 blocks 远未超限，应全部放入
+        self.assertEqual(count, 10)
+
+    def test_find_freeze_count_large_blocks(self):
+        """_find_freeze_count：超大 blocks 时二分查找返回能容纳的数量"""
+        # 每个 block 约 3KB，10 个共 30KB > 25KB，应该能放入约 8 个
+        block_size = 3 * 1024
+        blocks = [self._make_large_block(block_size) for _ in range(10)]
+        count = self.poller._find_freeze_count(blocks, "test")
+        # 结果应在 1~9 范围内（具体取决于 card 结构开销）
+        self.assertGreaterEqual(count, 1)
+        self.assertLess(count, 10)
+
+        # 验证：count 个 blocks 构建的冻结卡片不超限
+        from lark_client.card_builder import build_stream_card
+        card = build_stream_card(blocks[:count], None, None, is_frozen=True, session_name="test")
+        size = len(json.dumps(card, ensure_ascii=False).encode('utf-8'))
+        self.assertLessEqual(size, CARD_SIZE_LIMIT)
+
+        # 验证：count+1 个 blocks 构建的冻结卡片超限
+        if count + 1 <= len(blocks):
+            card_plus = build_stream_card(blocks[:count + 1], None, None, is_frozen=True, session_name="test")
+            size_plus = len(json.dumps(card_plus, ensure_ascii=False).encode('utf-8'))
+            self.assertGreater(size_plus, CARD_SIZE_LIMIT)
+
+    def test_find_freeze_count_returns_at_least_1(self):
+        """_find_freeze_count：即使单个 block 超限，也返回 1"""
+        # 单个 block 就超过 25KB
+        blocks = [self._make_large_block(26 * 1024)]
+        count = self.poller._find_freeze_count(blocks, "test")
+        self.assertEqual(count, 1)
+
+    def test_size_limit_triggers_freeze_and_split(self):
+        """卡片大小超限 → 冻结+开新卡（blocks 数量未超限）"""
+        # 首先创建一张卡片
+        small_blocks = [{"_type": "OutputBlock", "content": "hello", "indicator": "●"}]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": small_blocks, "status_line": None, "bottom_bar": None})
+        asyncio.run(self.poller._poll_once(tracker))
+        self.assertEqual(len(tracker.cards), 1)
+
+        # 再加一个超大 block，让卡片整体超出大小限制
+        large_content = "y" * (26 * 1024)
+        large_blocks = small_blocks + [
+            {"_type": "OutputBlock", "content": large_content, "indicator": "●", "is_streaming": False}
+        ]
+        # blocks 数量仍 < MAX_CARD_BLOCKS，但大小超过 25KB
+        self.assertLess(len(large_blocks), MAX_CARD_BLOCKS)
+
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+        tracker.reader = self._make_reader({"blocks": large_blocks, "status_line": None, "bottom_bar": None})
+        asyncio.run(self.poller._poll_once(tracker))
+
+        # 应触发冻结：2 张卡片，第一张冻结
+        self.assertEqual(len(tracker.cards), 2)
+        self.assertTrue(tracker.cards[0].frozen)
+        self.assertFalse(tracker.cards[1].frozen)
+
+    def test_size_limit_freeze_count_less_than_block_count(self):
+        """大小超限时冻结的 blocks 数 < blocks 总数，新卡从正确位置开始"""
+        # 创建首张卡片（1 个小 block）
+        first_block = {"_type": "OutputBlock", "content": "init", "indicator": "●"}
+        tracker = StreamTracker(chat_id="c2", session_name="s2")
+        tracker.reader = self._make_reader({"blocks": [first_block], "status_line": None, "bottom_bar": None})
+        asyncio.run(self.poller._poll_once(tracker))
+
+        # 现在加入大量大 block，触发大小超限
+        big_block = self._make_large_block(4 * 1024)  # 每个 4KB
+        many_blocks = [first_block] + [big_block] * 8  # 总计 9 个，约 32KB+ 超限
+        self.card_service.create_card = AsyncMock(return_value="card_003")
+        tracker.reader = self._make_reader({"blocks": many_blocks, "status_line": None, "bottom_bar": None})
+        asyncio.run(self.poller._poll_once(tracker))
+
+        # 应触发冻结
+        self.assertEqual(len(tracker.cards), 2)
+        self.assertTrue(tracker.cards[0].frozen)
+        # 新卡 start_idx 必须 >= 1（至少冻结了第一个 block）
+        self.assertGreaterEqual(tracker.cards[1].start_idx, 1)
+
+    def test_create_new_card_trims_oversized(self):
+        """_create_new_card：新卡超限时从头部裁剪"""
+        # 构造 50 个小 block 的历史，然后一次性 attach（取最近 INITIAL_WINDOW=30 个）
+        # 但最近 30 个已经超出大小限制
+        big_block = self._make_large_block(1024)  # 每个 1KB，30 个约 30KB+ 超限
+        blocks = [big_block] * 50
+
+        tracker = StreamTracker(chat_id="c3", session_name="s3")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+        asyncio.run(self.poller._poll_once(tracker))
+
+        # 应创建一张卡片，start_idx >= 50 - INITIAL_WINDOW = 20（可能因裁剪更大）
+        self.assertEqual(len(tracker.cards), 1)
+        self.assertGreaterEqual(tracker.cards[0].start_idx, 50 - INITIAL_WINDOW)
+
+        # 验证创建的卡片大小在限制内（send_card 被调用说明卡片创建成功）
+        self.card_service.send_card.assert_called_once()
 
 
 if __name__ == '__main__':

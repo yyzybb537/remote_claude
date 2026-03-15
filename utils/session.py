@@ -6,6 +6,7 @@
 - 通用工具
 """
 
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -18,6 +19,11 @@ import uuid
 SOCKET_DIR = Path("/tmp/remote-claude")
 USER_DATA_DIR = Path.home() / ".remote-claude"
 TMUX_SESSION_PREFIX = "rc-"
+
+# macOS AF_UNIX sun_path 限制 104 字节
+# /tmp/remote-claude/ = 19 字节, .sock = 5 字节
+_MAX_SOCKET_PATH = 104
+_MAX_FILENAME = _MAX_SOCKET_PATH - len(str(SOCKET_DIR)) - 1 - len(".sock")
 
 
 def get_env_file() -> Path:
@@ -41,8 +47,12 @@ def ensure_user_data_dir():
 
 
 def _safe_filename(session_name: str) -> str:
-    """将会话名转为安全文件名（/ 和 . 替换为 _）"""
-    return session_name.replace('/', '_').replace('.', '_')
+    """将会话名转为安全文件名（/ 和 . 替换为 _），超长时用完整 MD5"""
+    name = session_name.replace('/', '_').replace('.', '_')
+    if len(name) <= _MAX_FILENAME:
+        return name
+    # 超长：直接用完整 32 字符 MD5，彻底避免路径超限
+    return hashlib.md5(session_name.encode()).hexdigest()
 
 
 def get_socket_path(session_name: str) -> Path:

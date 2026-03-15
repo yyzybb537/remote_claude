@@ -1256,6 +1256,7 @@ class CodexParser(BaseParser):
 
         options: List[dict] = []
         current_opt: Optional[dict] = None
+        selected_value = ""
         ansi_raw_lines = [_get_row_ansi_text(screen, r) for r in input_rows + overflow]
 
         for row in all_option_rows:
@@ -1274,6 +1275,8 @@ class CodexParser(BaseParser):
                     'value': m.group(1),
                     'description': '',
                 }
+                if line[0:1] in CODEX_PROMPT_CHARS or line.startswith('❯'):
+                    selected_value = m.group(1)
             elif current_opt is not None and line:
                 # 描述行
                 current_opt['description'] = (
@@ -1287,6 +1290,7 @@ class CodexParser(BaseParser):
             return OptionBlock(
                 sub_type='option', tag=tag, question=question, options=options,
                 ansi_raw='\n'.join(ansi_raw_lines).rstrip(),
+                selected_value=selected_value,
             )
         return None
 
@@ -1407,6 +1411,7 @@ class CodexParser(BaseParser):
                 content_lines = pre_option_contents[1:-1]
 
         # 只收集范围内的 options
+        selected_value = ""
         for i in range(first_opt_idx, last_opt_idx + 1):
             line, cat = classified[i]
             if cat == 'option':
@@ -1416,6 +1421,8 @@ class CodexParser(BaseParser):
                         'label': m.group(2).strip(),
                         'value': m.group(1),
                     })
+                    if line[0:1] in CODEX_PROMPT_CHARS or line.startswith('❯'):
+                        selected_value = m.group(1)
 
         return OptionBlock(
             sub_type='permission',
@@ -1424,6 +1431,7 @@ class CodexParser(BaseParser):
             question=question,
             options=options,
             ansi_raw='\n'.join(ansi_lines).rstrip(),
+            selected_value=selected_value,
         )
 
     def _parse_agent_list_panel(
