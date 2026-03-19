@@ -53,7 +53,14 @@ except Exception:
 
 def cmd_start(args):
     """启动新会话"""
-    session_name = args.name
+    original_session_name = args.name
+
+    # 使用 resolve_session_name() 处理名称截断和冲突
+    from utils.runtime_config import load_runtime_config, save_runtime_config
+    config = load_runtime_config()
+    from utils.session import resolve_session_name
+    session_name = resolve_session_name(original_session_name, config)
+    save_runtime_config(config)
 
     # 检查会话是否已存在
     if is_session_active(session_name):
@@ -186,19 +193,27 @@ def cmd_list(args):
         print("没有活跃的会话")
         return 0
 
+    # 加载运行时配置获取会话映射
+    from utils.runtime_config import load_runtime_config
+    config = load_runtime_config()
+
     # ANSI 颜色码
     YELLOW = "\033[33m"
     GREEN = "\033[32m"
     RESET = "\033[0m"
 
     print("活跃会话:")
-    print("-" * 50)
-    print(f"{'类型':<8} {'PID':<10} {'tmux':<10} {'名称'}")
-    print("-" * 50)
+    print("-" * 80)
+    print(f"{'类型':<8} {'PID':<8} {'tmux':<6} {'名称':<20} {'原始路径'}")
+    print("-" * 80)
 
     for s in sessions:
         tmux_status = "是" if s["tmux"] else "否"
         cli_type = s.get('cli_type', 'claude')
+        session_name = s['name']
+        # 从映射中获取原始路径
+        original_path = config.get_session_mapping(session_name) or "-"
+
         # 根据类型选择颜色
         if cli_type == 'codex':
             cli_colored = f"{GREEN}{cli_type}{RESET}"
@@ -206,9 +221,11 @@ def cmd_list(args):
             cli_colored = f"{YELLOW}{cli_type}{RESET}"
         # 带颜色的字段需要单独计算宽度
         padding = " " * (8 - len(cli_type))
-        print(f"{cli_colored}{padding} {s['pid']:<10} {tmux_status:<10} {s['name']}")
+        name_display = session_name[:18] + ".." if len(session_name) > 20 else session_name
+        path_display = original_path[:50] + ".." if len(original_path) > 52 else original_path
+        print(f"{cli_colored}{padding} {s['pid']:<8} {tmux_status:<6} {name_display:<20} {path_display}")
 
-    print("-" * 50)
+    print("-" * 80)
     print(f"共 {len(sessions)} 个会话")
 
     return 0
@@ -233,6 +250,10 @@ def cmd_kill(args):
     # 清理文件
     cleanup_session(session_name)
     print("  - 文件已清理")
+
+    # 删除会话映射
+    from utils.runtime_config import remove_session_mapping
+    remove_session_mapping(session_name)
 
     print("完成")
     return 0
@@ -263,6 +284,24 @@ def cmd_lark_start(args):
             print(f"运行时长: {status['uptime']}")
         print("\n使用 'remote-claude lark stop' 停止")
         return 1
+
+    # 检测残留的 bak 文件
+    from utils.runtime_config import check_stale_backup, prompt_backup_action, cleanup_backup_after_migration, migrate_runtime_to_user_config
+    bak_file = check_stale_backup()
+    if bak_file:
+        action = prompt_backup_action(bak_file)
+        if action == 'overwrite':
+            # 从 bak 恢复（重新迁移）
+            print("正在从备份恢复配置...")
+        else:
+            # 跳过：删除 bak 文件
+            bak_file.unlink()
+            print(f"已删除备份文件: {bak_file}")
+
+    # 执行配置迁移（从 runtime.json 提取 ui_settings 到 config.json）
+    migrate_runtime_to_user_config()
+    # 清理迁移后的 bak 文件
+    cleanup_backup_after_migration()
 
     print("正在启动飞书客户端...")
 

@@ -33,7 +33,7 @@ from .card_builder import (
 from .shared_memory_poller import SharedMemoryPoller, CardSlice
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, ensure_user_data_dir, USER_DATA_DIR
+from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, ensure_user_data_dir, USER_DATA_DIR, get_process_cwd
 
 
 def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
@@ -558,6 +558,25 @@ class LarkHandler:
     async def _handle_stream_detach(self, user_id: str, chat_id: str,
                                      session_name: str, message_id: Optional[str] = None):
         """流式卡片中断开连接，就地更新卡片为已断开状态"""
+        # T059: 显示 loading 状态
+        card_id = self._poller.get_active_card_id(chat_id)
+        snapshot = self._poller.read_snapshot(chat_id) if card_id else None
+        if card_id and snapshot:
+            loading_card = build_stream_card(
+                blocks=snapshot.get("blocks", []),
+                status_line=snapshot.get("status_line"),
+                bottom_bar=snapshot.get("bottom_bar"),
+                agent_panel=snapshot.get("agent_panel"),
+                option_block=snapshot.get("option_block"),
+                session_name=session_name,
+                disconnected=False,
+                cli_type=snapshot.get("cli_type", "claude"),
+                runtime_config=self._runtime_config,
+                is_loading=True,
+                loading_text="正在断开连接...",
+            )
+            await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
+
         # 停止轮询并获取活跃 CardSlice（原子操作）
         active_slice = self._poller.stop_and_get_active_slice(chat_id)
 
@@ -604,22 +623,29 @@ class LarkHandler:
     async def _handle_stream_reconnect(self, user_id: str, chat_id: str,
                                        session_name: str, message_id: Optional[str] = None):
         """流式卡片中重新连接：冻结旧断开卡片 → 重新 attach"""
-        # 冻结旧断开卡片
+        # T059: 显示 loading 状态（重连中）
+        loading_card = build_stream_card(
+            blocks=[],
+            session_name=session_name,
+            disconnected=True,
+            is_loading=True,
+            loading_text="正在重新连接...",
+        )
+
+        # 冻结旧断开卡片并显示 loading
         old_slice = self._detached_slices.pop(chat_id, None)
         if old_slice:
             try:
-                frozen_card = build_stream_card([], is_frozen=True, session_name=session_name)
                 await card_service.update_card(
                     card_id=old_slice.card_id,
                     sequence=old_slice.sequence + 1,
-                    card_content=frozen_card,
+                    card_content=loading_card,
                 )
             except Exception as e:
                 logger.warning(f"_handle_stream_reconnect 冻结旧卡片失败: {e}")
         elif message_id:
             try:
-                frozen_card = build_stream_card([], is_frozen=True, session_name=session_name)
-                await card_service.update_card_by_message_id(message_id, frozen_card)
+                await card_service.update_card_by_message_id(message_id, loading_card)
             except Exception as e:
                 logger.warning(f"_handle_stream_reconnect 按 message_id 冻结失败: {e}")
 
@@ -675,13 +701,13 @@ class LarkHandler:
         sessions_info = []
         for s in all_sessions:
             pid = s.get("pid")
-            cwd = self._get_pid_cwd(pid) if pid else None
+            cwd = get_process_cwd(pid) if pid else None
             sessions_info.append({"name": s["name"], "cwd": cwd or ""})
 
         bound_session = self._chat_sessions.get(chat_id)
         if bound_session:
             pid = next((s.get("pid") for s in all_sessions if s["name"] == bound_session), None)
-            session_cwd = self._get_pid_cwd(pid) if pid else None
+            session_cwd = get_process_cwd(pid) if pid else None
             root = Path(session_cwd) if session_cwd else Path.home()
         else:
             root = Path.home()
@@ -731,7 +757,7 @@ class LarkHandler:
 
         session = next((s for s in sessions if s["name"] == session_name), None)
         pid = session.get("pid") if session else None
-        cwd = self._get_pid_cwd(pid) if pid else None
+        cwd = get_process_cwd(pid) if pid else None
         dir_label = cwd.rstrip("/").rsplit("/", 1)[-1] if cwd else session_name
 
         from . import config
@@ -949,6 +975,25 @@ class LarkHandler:
             return
         initial_block_id = initial_ob.get('block_id', '')
 
+        # T058: 使用 update_card 显示 loading 状态
+        card_id = self._poller.get_active_card_id(chat_id)
+        if card_id:
+            # 构建带 loading 状态的卡片（禁用所有选项按钮）
+            loading_card = build_stream_card(
+                blocks=initial_snapshot.get("blocks", []),
+                status_line=initial_snapshot.get("status_line"),
+                bottom_bar=initial_snapshot.get("bottom_bar"),
+                agent_panel=initial_snapshot.get("agent_panel"),
+                option_block=initial_ob,
+                session_name=self._chat_sessions.get(chat_id),
+                disconnected=False,
+                cli_type=initial_snapshot.get("cli_type", "claude"),
+                runtime_config=self._runtime_config,
+                is_loading=True,
+                loading_text="正在选择...",
+            )
+            await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
+
         for step in range(max_steps):
             # 1. 读取当前选中项
             snapshot = self._poller.read_snapshot(chat_id)
@@ -1063,6 +1108,71 @@ class LarkHandler:
         else:
             logger.warning(f"发送快捷键 {key_name} 失败")
 
+    # ── 快捷命令处理 ─────────────────────────────────────────────────────────────
+
+    async def handle_quick_command(self, user_id: str, chat_id: str, command: str):
+        """处理快捷命令选择事件
+
+        Args:
+            user_id: 用户 ID
+            chat_id: 聊天 ID
+            command: 命令字符串（如 "/clear"）
+        """
+        logger.info(f"处理快捷命令: user={user_id[:8]}..., command={command}")
+        _track_stats('lark', 'quick_command',
+                     session_name=self._chat_sessions.get(chat_id, ''),
+                     chat_id=chat_id, detail=command)
+
+        bridge = self._bridges.get(chat_id)
+        if not bridge or not bridge.running:
+            # 尝试从持久化绑定自动恢复
+            saved_session = self._chat_bindings.get(chat_id)
+            if saved_session:
+                logger.info(f"快捷命令自动恢复绑定: chat_id={chat_id[:8]}..., session={saved_session}")
+                ok = await self._attach(chat_id, saved_session, user_id=user_id)
+                if not ok:
+                    await card_service.send_text(chat_id, f"会话 '{saved_session}' 已不存在，请重新 /attach")
+                    return
+                bridge = self._bridges.get(chat_id)
+            else:
+                await card_service.send_text(chat_id, "未连接到任何会话，请先使用 /attach <会话名> 连接")
+                return
+
+        if not bridge:
+            return
+
+        # T057: 使用 update_card 显示 loading 状态
+        card_id = self._poller.get_active_card_id(chat_id)
+        snapshot = self._poller.read_snapshot(chat_id) if card_id else None
+
+        if card_id and snapshot:
+            # 构建带 loading 状态的卡片
+            loading_card = build_stream_card(
+                blocks=snapshot.get("blocks", []),
+                status_line=snapshot.get("status_line"),
+                bottom_bar=snapshot.get("bottom_bar"),
+                agent_panel=snapshot.get("agent_panel"),
+                option_block=snapshot.get("option_block"),
+                session_name=self._chat_sessions.get(chat_id),
+                disconnected=False,
+                cli_type=snapshot.get("cli_type", "claude"),
+                runtime_config=self._runtime_config,
+                is_loading=True,
+                loading_text=f"执行命令 {command}...",
+            )
+            # 就地更新卡片，不等待结果
+            await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
+
+        # 发送命令到 Claude（命令已包含换行符，如 "/clear\n"）
+        success = await bridge.send_input(command)
+        if success:
+            self._poller.kick(chat_id)
+            logger.info(f"快捷命令已发送: {command}")
+        else:
+            logger.warning(f"快捷命令发送失败: {command}")
+            # 失败时降级为发送文本提示，poller 会自动刷新卡片
+            await card_service.send_text(chat_id, f"命令发送失败，请重试")
+
     # ── 辅助方法 ─────────────────────────────────────────────────────────────
 
     async def _send_or_update_card(
@@ -1130,21 +1240,6 @@ class LarkHandler:
             active_slice = self._poller.stop_and_get_active_slice(chat_id)
             if active_slice and session_name:
                 await self._update_card_disconnected(chat_id, session_name, active_slice)
-
-    @staticmethod
-    def _get_pid_cwd(pid: int) -> Optional[str]:
-        """获取进程的工作目录（macOS/Linux）"""
-        try:
-            result = subprocess.run(
-                ["lsof", "-p", str(pid), "-a", "-d", "cwd", "-F", "n"],
-                capture_output=True, text=True, timeout=5
-            )
-            for line in result.stdout.splitlines():
-                if line.startswith("n"):
-                    return line[1:].strip()
-        except Exception:
-            pass
-        return None
 
 
 # 全局处理器实例

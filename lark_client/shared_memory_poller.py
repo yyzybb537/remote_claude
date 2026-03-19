@@ -36,6 +36,10 @@ except Exception:
     def _track_stats(*args, **kwargs): pass
 
 from utils.session import ensure_user_data_dir, USER_DATA_DIR
+from utils.runtime_config import load_user_config
+
+# 模块级用户配置（从 config.json 加载，用于快捷命令选择器）
+_user_config = load_user_config()
 
 # ── 常量 ──────────────────────────────────────────────────────────────────────
 INITIAL_WINDOW = 30    # 首次 attach 最多显示最近 30 个 blocks
@@ -171,6 +175,13 @@ class SharedMemoryPoller:
         if ev:
             ev.set()
 
+    def get_active_card_id(self, chat_id: str) -> Optional[str]:
+        """获取活跃（未冻结）卡片的 card_id，用于就地更新。不停止轮询。"""
+        tracker = self._trackers.get(chat_id)
+        if tracker and tracker.cards and not tracker.cards[-1].frozen:
+            return tracker.cards[-1].card_id
+        return None
+
     async def _poll_loop(self, chat_id: str) -> None:
         """轮询循环：支持 kick 唤醒 + 快速轮询模式"""
         while True:
@@ -286,7 +297,7 @@ class SharedMemoryPoller:
 
         # 更新卡片
         from .card_builder import build_stream_card
-        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, runtime_config=_user_config)
 
         # 大小超限检查（与 blocks 数量超限同一套逻辑）
         card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
@@ -361,14 +372,14 @@ class SharedMemoryPoller:
             return
 
         from .card_builder import build_stream_card
-        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, runtime_config=_user_config)
 
         # 新卡大小检查：超限则从头部裁剪
         card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
         while card_size > CARD_SIZE_LIMIT and len(blocks_slice) > 1:
             blocks_slice = blocks_slice[1:]
             start_idx += 1
-            card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+            card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, runtime_config=_user_config)
             card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
 
         card_id = await self._card_service.create_card(card_dict)
@@ -417,6 +428,7 @@ class SharedMemoryPoller:
             agent_panel=agent_panel, option_block=option_block,
             session_name=tracker.session_name,
             cli_type=cli_type,
+            runtime_config=_user_config,
         )
         new_card_id = await self._card_service.create_card(new_card_dict)
         if new_card_id:
@@ -481,14 +493,14 @@ class SharedMemoryPoller:
         if not new_blocks:
             return
 
-        new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+        new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, runtime_config=_user_config)
 
         # 新卡大小检查：超限则从头部裁剪
         new_card_size = len(json.dumps(new_card_dict, ensure_ascii=False).encode('utf-8'))
         while new_card_size > CARD_SIZE_LIMIT and len(new_blocks) > 1:
             new_blocks = new_blocks[1:]
             new_start += 1
-            new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+            new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, runtime_config=_user_config)
             new_card_size = len(json.dumps(new_card_dict, ensure_ascii=False).encode('utf-8'))
 
         new_card_id = await self._card_service.create_card(new_card_dict)

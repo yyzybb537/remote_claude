@@ -18,6 +18,7 @@ from pathlib import Path
 # 设置 sys.path 以导入 utils 模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.session import USER_DATA_DIR
+from utils.runtime_config import migrate_legacy_config
 
 
 def _setup_logging():
@@ -179,7 +180,13 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
                 asyncio.create_task(handler.send_raw_key(user_id, chat_id, "enter"))
             return None
 
-        action_type = action_value.get("action", "")
+        action_type = action_value.get("action", "") if isinstance(action_value, dict) else ""
+
+        # 处理快捷命令选择器回调（select_static 返回的 value 是命令字符串，如 "/clear"）
+        if isinstance(action_value, str) and action_value.startswith("/"):
+            print(f"[Lark] 快捷命令选择: command={action_value}")
+            asyncio.create_task(handler.handle_quick_command(user_id, chat_id, action_value))
+            return None
 
         # 处理选项选择动作
         if action_type == "select_option":
@@ -345,6 +352,9 @@ class LarkBot:
 
     def start(self):
         """启动机器人"""
+        # 执行旧配置迁移
+        migrate_legacy_config()
+
         # 检查配置
         if not config.FEISHU_APP_ID or not config.FEISHU_APP_SECRET:
             print("错误: 请配置 FEISHU_APP_ID 和 FEISHU_APP_SECRET")

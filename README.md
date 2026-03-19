@@ -237,6 +237,42 @@ remote-claude lark status        # 查看状态
 
 ## 高级配置
 
+### 配置文件
+
+Remote Claude 使用两个配置文件：
+
+| 文件 | 用途 | 说明 |
+|------|------|------|
+| `~/.remote-claude/config.json` | 用户配置 | 存储用户可编辑的 UI 设置（如快捷命令配置） |
+| `~/.remote-claude/runtime.json` | 运行时状态 | 存储程序自动管理的状态（会话映射、飞书群组绑定） |
+
+**config.json 结构示例**：
+```json
+{
+  "version": "1.0",
+  "ui_settings": {
+    "quick_commands": {
+      "enabled": false,
+      "commands": [
+        {"label": "清空对话", "value": "/clear", "icon": "🗑️"},
+        {"label": "压缩上下文", "value": "/consume", "icon": "📦"},
+        {"label": "退出会话", "value": "/exit", "icon": "🚪"},
+        {"label": "帮助", "value": "/help", "icon": "❓"}
+      ]
+    }
+  }
+}
+```
+
+**快捷命令配置说明**：
+- `enabled`: 是否启用快捷命令选择器（默认 `false`）
+- `commands`: 快捷命令列表，最多 20 条
+- `label`: 显示名称，最长 20 字符
+- `value`: 命令值，必须以 `/` 开头，最长 32 字符
+- `icon`: 图标 emoji（可选）
+
+### 环境变量配置
+
 在 `~/.remote-claude/.env` 中可配置以下选项：
 
 | 配置项 | 默认值 | 说明 |
@@ -246,6 +282,7 @@ remote-claude lark status        # 查看状态
 | `FEISHU_APP_SECRET` | — | 飞书应用密钥 |
 | `ENABLE_USER_WHITELIST` | `false` | 是否启用用户白名单 |
 | `ALLOWED_USERS` | — | 白名单用户 ID，逗号分隔 |
+| `LARK_LOG_LEVEL` | `WARNING` | 飞书客户端日志级别（DEBUG/INFO/WARNING/ERROR） |
 
 ### 自定义 Claude CLI 命令
 
