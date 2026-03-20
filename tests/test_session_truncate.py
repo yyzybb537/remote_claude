@@ -218,17 +218,13 @@ def test_quick_commands_config_visibility():
 
 
 def test_runtime_config_json_roundtrip():
-    """测试配置序列化/反序列化"""
+    """测试 RuntimeConfig 序列化/反序列化"""
     import json
 
-    # 创建配置
+    # 创建配置（RuntimeConfig 不含 ui_settings）
     config = RuntimeConfig()
     config.set_session_mapping("test_session", "/path/to/test")
     config.lark_group_mappings["oc_123"] = "my-session"
-    config.ui_settings.quick_commands.enabled = True
-    config.ui_settings.quick_commands.commands = [
-        QuickCommand("清空", "/clear", "🗑️")
-    ]
 
     # 序列化
     data = config.to_dict()
@@ -241,8 +237,6 @@ def test_runtime_config_json_roundtrip():
     # 验证
     assert config2.get_session_mapping("test_session") == "/path/to/test"
     assert config2.lark_group_mappings["oc_123"] == "my-session"
-    assert config2.is_quick_commands_visible()
-    assert len(config2.get_quick_commands()) == 1
 
     print("✓ 配置序列化/反序列化")
 

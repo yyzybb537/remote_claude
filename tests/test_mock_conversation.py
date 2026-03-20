@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lark_client.session_bridge import SessionBridge, SessionManager
+from lark_client.session_bridge import SessionBridge
 
 
 class MockConversation:

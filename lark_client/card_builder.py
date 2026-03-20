@@ -13,7 +13,10 @@ import logging
 import re as _re
 import pathlib as _pl
 import json as _json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from utils.runtime_config import UserConfig
 
 _cb_logger = logging.getLogger('CardBuilder')
 
@@ -722,7 +725,7 @@ def build_stream_card(
     session_name: Optional[str] = None,
     disconnected: bool = False,
     cli_type: str = "claude",
-    runtime_config: Optional[Any] = None,
+    user_config: Optional["UserConfig"] = None,
     is_loading: bool = False,
     disabled_buttons: Optional[List[str]] = None,
     loading_text: str = "处理中...",
@@ -745,7 +748,7 @@ def build_stream_card(
         session_name: 会话名
         disconnected: 是否断开连接
         cli_type: CLI 类型（claude/codex）
-        runtime_config: 运行时配置对象（用于快捷命令选择器）
+        user_config: 用户配置对象（用于快捷命令选择器）
         is_loading: 是否处于 loading 状态（按钮禁用、显示处理中）
         disabled_buttons: 需要禁用的按钮动作列表（如 ["menu_open", "stream_detach"]）
         loading_text: loading 状态时的提示文本
@@ -866,8 +869,8 @@ def build_stream_card(
 
     # 快捷命令选择器（仅连接状态且配置启用时显示）
     quick_command_elements = []
-    if not disconnected and runtime_config and runtime_config.is_quick_commands_visible():
-        quick_commands = runtime_config.get_quick_commands()
+    if not disconnected and user_config and user_config.is_quick_commands_visible():
+        quick_commands = user_config.get_quick_commands()
         if quick_commands:
             quick_command_elements.append(_build_quick_command_selector(quick_commands))
 

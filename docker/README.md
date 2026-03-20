@@ -50,7 +50,7 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 3. **模拟用户安装** - 在临时目录执行 `npm install <packaged_file>`
 4. **验证 postinstall** - 检查 .venv、pyproject.toml、Python 依赖
 5. **测试基本命令** - 验证 `remote-claude --help`、`remote-claude list`、`cla` 脚本
-6. **执行单元测试** - 运行独立单元测试（不需要活跃会话）
+6. **执行独立单元测试** - 运行核心测试（失败终止）和非核心测试（失败继续）
 7. **文件完整性检查** - 验证关键文件是否存在
 8. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
 9. **清理** - 停止会话、清理 socket 文件、清理 npm 缓存
@@ -59,10 +59,19 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 
 以下单元测试不需要活跃的会话：
 
-- `test_format_unit.py` - 格式化逻辑单元测试
+**核心测试**（失败终止整个测试流程）：
+- `test_session_truncate.py` - 会话名称截断测试
+- `test_runtime_config.py` - 运行时配置管理测试
+
+> 注：`test_format_unit.py` 已从核心测试中移除，因为测试的方法 `_format_plain_output` 从未实现。
+
+**非核心测试**（失败继续执行，记录警告）：
 - `test_stream_poller.py` - 流式卡片模型测试
+- `test_card_interaction.py` - 卡片交互优化测试
+- `test_list_display.py` - List 命令展示测试
+- `test_log_level.py` - 日志级别处理测试
+- `test_disconnected_state.py` - 断开状态提示测试
 - `test_renderer.py` - 终端渲染器测试
-- `test_output_clean.py` - 输出清理器测试
 - `lark_client/test_mock_output.py` - 飞书客户端输出模拟测试
 - `lark_client/test_cjk_width.py` - CJK 字符宽度测试
 - `lark_client/test_full_simulation.py` - 完整模拟测试

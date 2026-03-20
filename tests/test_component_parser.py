@@ -1547,7 +1547,7 @@ class TestPlanBlockParser:
     def test_plan_block_block_id_prefix(self):
         """PlanBlock block_id 应以 PL: 为前缀"""
         sys.path.insert(0, str(Path(__file__).parent.parent / 'server'))
-        from shared_state import _block_id_from_dict
+        from server.shared_state import _block_id_from_dict
         d = {
             '_type': 'PlanBlock',
             'title': 'My plan title',
@@ -1832,7 +1832,7 @@ class TestSystemBlockParser:
     def test_system_block_block_id_prefix(self):
         """SystemBlock 的 block_id 应使用 S: 前缀"""
         sys.path.insert(0, str(Path(__file__).parent.parent / 'server'))
-        from shared_state import _block_id_from_dict
+        from server.shared_state import _block_id_from_dict
         d = {"_type": "SystemBlock", "content": "Context loaded from CLAUDE.md"}
         bid = _block_id_from_dict(d)
         if not bid.startswith("S:"):

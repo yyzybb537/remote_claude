@@ -23,16 +23,21 @@ if _PROJECT_ROOT not in sys.path:
 
 from utils.runtime_config import (
     RuntimeConfig,
+    UserConfig,
     QuickCommand,
     QuickCommandsConfig,
     UISettings,
     load_runtime_config,
     save_runtime_config,
+    load_user_config,
+    save_user_config,
     migrate_legacy_config,
     CURRENT_VERSION,
+    USER_CONFIG_VERSION,
     MAX_SESSION_MAPPINGS,
     USER_DATA_DIR,
     RUNTIME_CONFIG_FILE,
+    USER_CONFIG_FILE,
     LEGACY_LARK_GROUP_MAPPING_FILE,
 )
 
@@ -56,12 +61,14 @@ class TestEnv:
         self.old_env = {
             'USER_DATA_DIR': config_module.USER_DATA_DIR,
             'RUNTIME_CONFIG_FILE': config_module.RUNTIME_CONFIG_FILE,
+            'USER_CONFIG_FILE': config_module.USER_CONFIG_FILE,
             'LEGACY_LARK_GROUP_MAPPING_FILE': config_module.LEGACY_LARK_GROUP_MAPPING_FILE,
         }
 
         # 临时替换路径
         config_module.USER_DATA_DIR = self.temp_dir
         config_module.RUNTIME_CONFIG_FILE = self.temp_dir / "runtime.json"
+        config_module.USER_CONFIG_FILE = self.temp_dir / "config.json"
         config_module.LEGACY_LARK_GROUP_MAPPING_FILE = self.temp_dir / "lark_group_mapping.json"
 
     def teardown(self):
@@ -89,7 +96,6 @@ def test_load_config_not_exists():
         assert config.version == CURRENT_VERSION
         assert config.session_mappings == {}
         assert config.lark_group_mappings == {}
-        assert not config.is_quick_commands_visible()
         print("✓ 配置加载：文件不存在返回默认配置")
     finally:
         env.teardown()
@@ -100,17 +106,11 @@ def test_load_config_valid():
     env = TestEnv()
     env.setup()
     try:
-        # 创建配置文件
+        # 创建配置文件（RuntimeConfig 不含 ui_settings）
         data = {
             "version": "1.0",
             "session_mappings": {"test": "/path/to/test"},
-            "lark_group_mappings": {"oc_123": "my-session"},
-            "ui_settings": {
-                "quick_commands": {
-                    "enabled": True,
-                    "commands": [{"label": "清空", "value": "/clear", "icon": "🗑️"}]
-                }
-            }
+            "lark_group_mappings": {"oc_123": "my-session"}
         }
         import utils.runtime_config as config_module
         config_module.RUNTIME_CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False))
@@ -118,7 +118,6 @@ def test_load_config_valid():
         config = load_runtime_config()
         assert config.get_session_mapping("test") == "/path/to/test"
         assert config.lark_group_mappings["oc_123"] == "my-session"
-        assert config.is_quick_commands_visible()
         print("✓ 配置加载：有效配置文件")
     finally:
         env.teardown()
@@ -157,7 +156,7 @@ def test_load_config_partial():
     try:
         import utils.runtime_config as config_module
 
-        # 创建部分配置文件（缺少 ui_settings）
+        # 创建部分配置文件（只有 session_mappings）
         data = {
             "version": "1.0",
             "session_mappings": {"test": "/path/to/test"}
@@ -167,7 +166,6 @@ def test_load_config_partial():
         config = load_runtime_config()
         assert config.get_session_mapping("test") == "/path/to/test"
         assert config.lark_group_mappings == {}  # 使用默认值
-        assert not config.is_quick_commands_visible()  # 默认不显示
         print("✓ 配置加载：部分字段缺失使用默认值")
     finally:
         env.teardown()
@@ -227,26 +225,100 @@ def test_save_config_overwrite():
 
 
 def test_save_config_with_quick_commands():
-    """测试保存包含快捷命令的配置"""
+    """测试保存包含快捷命令的用户配置"""
     env = TestEnv()
     env.setup()
     try:
         import utils.runtime_config as config_module
 
-        config = RuntimeConfig()
+        config = UserConfig()
         config.ui_settings.quick_commands.enabled = True
         config.ui_settings.quick_commands.commands = [
             QuickCommand("清空", "/clear", "🗑️"),
             QuickCommand("退出", "/exit", "🚪")
         ]
 
-        save_runtime_config(config)
+        save_user_config(config)
 
         # 验证快捷命令保存正确
-        data = json.loads(config_module.RUNTIME_CONFIG_FILE.read_text(encoding="utf-8"))
+        data = json.loads(config_module.USER_CONFIG_FILE.read_text(encoding="utf-8"))
         assert data["ui_settings"]["quick_commands"]["enabled"] is True
         assert len(data["ui_settings"]["quick_commands"]["commands"]) == 2
         print("✓ 配置保存：快捷命令配置")
+    finally:
+        env.teardown()
+
+
+def test_load_user_config_from_file():
+    """测试从文件加载用户配置"""
+    env = TestEnv()
+    env.setup()
+    try:
+        import utils.runtime_config as config_module
+
+        # 创建用户配置文件
+        data = {
+            "version": "1.0",
+            "ui_settings": {
+                "quick_commands": {
+                    "enabled": True,
+                    "commands": [
+                        {"label": "测试", "value": "/test", "icon": "🧪"},
+                        {"label": "清空", "value": "/clear", "icon": "🗑️"}
+                    ]
+                }
+            }
+        }
+        config_module.USER_CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False))
+
+        config = load_user_config()
+        assert config.is_quick_commands_visible()
+        assert len(config.get_quick_commands()) == 2
+        assert config.get_quick_commands()[0].label == "测试"
+        assert config.get_quick_commands()[0].value == "/test"
+        print("✓ 用户配置加载：从文件加载成功")
+    finally:
+        env.teardown()
+
+
+def test_load_user_config_not_exists():
+    """测试用户配置文件不存在时返回默认配置"""
+    env = TestEnv()
+    env.setup()
+    try:
+        import utils.runtime_config as config_module
+
+        # 确保文件不存在
+        if config_module.USER_CONFIG_FILE.exists():
+            config_module.USER_CONFIG_FILE.unlink()
+
+        config = load_user_config()
+        assert config.version == USER_CONFIG_VERSION
+        assert not config.is_quick_commands_visible()
+        assert config.get_quick_commands() == []
+        print("✓ 用户配置加载：文件不存在返回默认配置")
+    finally:
+        env.teardown()
+
+
+def test_load_user_config_corrupted():
+    """测试用户配置文件损坏时备份并返回默认配置"""
+    env = TestEnv()
+    env.setup()
+    try:
+        import utils.runtime_config as config_module
+
+        # 创建损坏的配置文件
+        config_module.USER_CONFIG_FILE.write_text("invalid json {{{")
+
+        config = load_user_config()
+        # 应返回默认配置
+        assert not config.is_quick_commands_visible()
+
+        # 应创建备份文件
+        bak_files = list(config_module.USER_DATA_DIR.glob("config.json.bak*"))
+        assert len(bak_files) > 0
+        print("✓ 用户配置加载：文件损坏时备份并返回默认配置")
     finally:
         env.teardown()
 
@@ -373,18 +445,18 @@ def test_migrate_corrupted_legacy_file():
         env.teardown()
 
 
-# ============== 快捷命令可见性测试 ==============
+# ============== 快捷命令可见性测试（UserConfig）==============
 
 def test_quick_commands_visibility_disabled():
     """测试快捷命令默认不可见"""
-    config = RuntimeConfig()
+    config = UserConfig()
     assert not config.is_quick_commands_visible()
     print("✓ 快捷命令可见性：默认禁用")
 
 
 def test_quick_commands_visibility_enabled_no_commands():
     """测试启用但无命令时不可见"""
-    config = RuntimeConfig()
+    config = UserConfig()
     config.ui_settings.quick_commands.enabled = True
     assert not config.is_quick_commands_visible()
     print("✓ 快捷命令可见性：启用但无命令")
@@ -392,7 +464,7 @@ def test_quick_commands_visibility_enabled_no_commands():
 
 def test_quick_commands_visibility_enabled_with_commands():
     """测试启用且有命令时可见"""
-    config = RuntimeConfig()
+    config = UserConfig()
     config.ui_settings.quick_commands.enabled = True
     config.ui_settings.quick_commands.commands = [
         QuickCommand("清空", "/clear")
@@ -403,7 +475,7 @@ def test_quick_commands_visibility_enabled_with_commands():
 
 def test_quick_commands_visibility_disabled_with_commands():
     """测试禁用但有命令时不可见"""
-    config = RuntimeConfig()
+    config = UserConfig()
     config.ui_settings.quick_commands.enabled = False
     config.ui_settings.quick_commands.commands = [
         QuickCommand("清空", "/clear")
@@ -414,7 +486,7 @@ def test_quick_commands_visibility_disabled_with_commands():
 
 def test_get_quick_commands():
     """测试获取快捷命令列表"""
-    config = RuntimeConfig()
+    config = UserConfig()
     config.ui_settings.quick_commands.enabled = True
     config.ui_settings.quick_commands.commands = [
         QuickCommand("清空", "/clear", "🗑️"),
@@ -430,7 +502,7 @@ def test_get_quick_commands():
 
 def test_get_quick_commands_disabled():
     """测试禁用时获取快捷命令返回空列表"""
-    config = RuntimeConfig()
+    config = UserConfig()
     config.ui_settings.quick_commands.enabled = False
     config.ui_settings.quick_commands.commands = [
         QuickCommand("清空", "/clear")
@@ -575,6 +647,10 @@ def run_all_tests():
         test_save_config_new,
         test_save_config_overwrite,
         test_save_config_with_quick_commands,
+        # 用户配置加载
+        test_load_user_config_from_file,
+        test_load_user_config_not_exists,
+        test_load_user_config_corrupted,
         # 迁移逻辑
         test_migrate_no_legacy_file,
         test_migrate_empty_legacy_file,

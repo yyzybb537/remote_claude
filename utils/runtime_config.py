@@ -84,14 +84,17 @@ def prompt_backup_action(bak_path: Path) -> str:
         str: 'overwrite'（从 bak 恢复）或 'skip'（删除 bak 继续）
     """
     print(f"检测到残留的备份文件: {bak_path}")
-    print("1. 覆盖当前配置并重新迁移")
+    print("1. 从备份恢复配置")
     print("2. 跳过（删除备份文件继续）")
     choice = input("请选择 [1/2]: ").strip()
     return 'overwrite' if choice == '1' else 'skip'
 
 
-def cleanup_backup_after_migration() -> None:
-    """配置迁移成功后清理所有 `.bak` 备份文件"""
+def cleanup_backup_files() -> None:
+    """清理所有 `.bak` 备份文件
+
+    用于清理损坏配置文件的备份（由 _backup_corrupted_file 产生）。
+    """
     for bak_file in USER_DATA_DIR.glob("*.json.bak*"):
         bak_file.unlink()
         logger.info(f"已删除备份文件: {bak_file}")
@@ -190,11 +193,13 @@ class UISettings:
 
 @dataclass
 class RuntimeConfig:
-    """运行时配置对象"""
+    """运行时配置对象（存储于 runtime.json，程序自动管理）
+
+    仅包含运行时状态，不包含用户可编辑配置。
+    """
     version: str = CURRENT_VERSION
     session_mappings: Dict[str, str] = field(default_factory=dict)
     lark_group_mappings: Dict[str, str] = field(default_factory=dict)
-    ui_settings: UISettings = field(default_factory=lambda: UISettings())
 
     def get_session_mapping(self, truncated_name: str) -> Optional[str]:
         """获取截断名称对应的原始路径
@@ -270,42 +275,21 @@ class RuntimeConfig:
             return True
         return False
 
-    def is_quick_commands_visible(self) -> bool:
-        """判断快捷命令选择器是否应该显示
-
-        Returns:
-            enabled=True 且 commands 非空时返回 True
-        """
-        return self.ui_settings.quick_commands.is_visible()
-
-    def get_quick_commands(self) -> List[QuickCommand]:
-        """获取快捷命令列表
-
-        Returns:
-            快捷命令列表（已启用时），未启用或列表为空时返回空列表
-        """
-        if self.ui_settings.quick_commands.enabled:
-            return self.ui_settings.quick_commands.commands
-        return []
-
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
             "version": self.version,
             "session_mappings": self.session_mappings,
             "lark_group_mappings": self.lark_group_mappings,
-            "ui_settings": self.ui_settings.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RuntimeConfig":
         """从字典创建"""
-        ui_data = data.get("ui_settings", {})
         return cls(
             version=data.get("version", CURRENT_VERSION),
             session_mappings=data.get("session_mappings", {}),
             lark_group_mappings=data.get("lark_group_mappings", {}),
-            ui_settings=UISettings.from_dict(ui_data),
         )
 
 
@@ -506,6 +490,9 @@ def load_user_config() -> UserConfig:
 def save_user_config(config: UserConfig) -> None:
     """保存用户配置到文件（config.json）
 
+    使用文件锁（fcntl.flock）保护并发写入。
+    锁文件命名为 config.json.lock，包含详细注释。
+
     Args:
         config: 用户配置对象
 
@@ -513,58 +500,31 @@ def save_user_config(config: UserConfig) -> None:
         IOError: 文件写入失败
     """
     ensure_user_data_dir()
+    lock_path = USER_DATA_DIR / "config.json.lock"
+
+    # 创建锁文件（带注释）
+    lock_content = f"""# Remote Claude 用户配置文件锁
+# 用途: 防止并发写入导致配置损坏
+# 创建进程 PID: {os.getpid()}
+# 创建时间: {datetime.now().isoformat()}
+# 说明: 此文件在配置写入时自动创建，写入完成后自动删除
+#       如果程序异常退出，此文件可能残留，可安全删除
+"""
+    lock_path.write_text(lock_content, encoding="utf-8")
 
     try:
         content = json.dumps(config.to_dict(), indent=2, ensure_ascii=False)
-        USER_CONFIG_FILE.write_text(content, encoding="utf-8")
+        with open(USER_CONFIG_FILE, 'w', encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(content)
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         logger.debug(f"保存用户配置成功: {USER_CONFIG_FILE}")
     except PermissionError:
         logger.warning("配置目录权限不足，用户配置将仅在内存中保留")
         raise
-
-
-def migrate_runtime_to_user_config() -> None:
-    """迁移 runtime.json 中的 ui_settings 到 config.json
-
-    - 检查 runtime.json 是否包含 ui_settings
-    - 提取 ui_settings 到 config.json
-    - 从 runtime.json 中移除 ui_settings 字段
-    - 迁移完成后删除 bak 文件
-    """
-    if not RUNTIME_CONFIG_FILE.exists():
-        return
-
-    try:
-        data = json.loads(RUNTIME_CONFIG_FILE.read_text(encoding="utf-8"))
-
-        # 检查是否有 ui_settings 需要迁移
-        if "ui_settings" not in data:
-            return
-
-        ui_settings = data["ui_settings"]
-        if not ui_settings:
-            return
-
-        # 加载或创建 config.json
-        user_config = load_user_config()
-
-        # 检查是否已有配置
-        if user_config.ui_settings.quick_commands.enabled or user_config.ui_settings.quick_commands.commands:
-            # config.json 已有配置，跳过迁移
-            logger.info("[迁移] config.json 已有 ui_settings，跳过从 runtime.json 迁移")
-            return
-
-        # 迁移 ui_settings
-        user_config.ui_settings = UISettings.from_dict(ui_settings)
-        save_user_config(user_config)
-
-        # 从 runtime.json 中移除 ui_settings
-        del data["ui_settings"]
-        RUNTIME_CONFIG_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        logger.info("[迁移] 已将 runtime.json 中的 ui_settings 迁移到 config.json")
-
-    except json.JSONDecodeError as e:
-        logger.warning(f"[迁移] runtime.json 格式错误，跳过迁移: {e}")
-    except Exception as e:
-        logger.error(f"[迁移] 迁移 ui_settings 失败: {e}")
+    finally:
+        # 删除锁文件
+        if lock_path.exists():
+            lock_path.unlink()

@@ -10,9 +10,12 @@
 """
 
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock, call
 import asyncio
+import sys
+from unittest.mock import MagicMock, patch, AsyncMock
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 class TestCardInteraction(unittest.TestCase):
     """卡片交互测试"""
@@ -28,7 +31,8 @@ class TestCardInteraction(unittest.TestCase):
         )
         # 检查 card 结构
         self.assertIn("header", normal_card)
-        self.assertIn("elements", normal_card)
+        self.assertIn("body", normal_card)
+        self.assertIn("elements", normal_card["body"])
 
         # loading 状态
         loading_card = build_stream_card(
@@ -49,7 +53,7 @@ class TestCardInteraction(unittest.TestCase):
         option_block = {
             "sub_type": "option",
             "question": "选择一个选项",
-            "options": [
+            "options" : [
                 {"label": "选项 1", "value": "1"},
                 {"label": "选项 2", "value": "2"},
             ]
@@ -62,15 +66,12 @@ class TestCardInteraction(unittest.TestCase):
             session_name="test-session",
         )
         # 检查按钮未被禁用
-        elements = normal_card["elements"]
-        button_found = False
+        elements = normal_card["body"]["elements"]
         for elem in elements:
             if elem.get("tag") == "action":
                 for action in elem.get("actions", []):
                     if action.get("tag") == "button":
-                        button_found = True
                         self.assertNotIn("disabled", action)
-        # 如果没有找到按钮，跳过此断言
 
         # loading 状态
         loading_card = build_stream_card(
@@ -81,7 +82,7 @@ class TestCardInteraction(unittest.TestCase):
             loading_text="处理中...",
         )
         # 检查按钮被禁用
-        elements = loading_card["elements"]
+        elements = loading_card["body"]["elements"]
         for elem in elements:
             if elem.get("tag") == "action":
                 for action in elem.get("actions", []):
@@ -132,7 +133,7 @@ class TestQuickCommandLoading(unittest.TestCase):
         handler._poller = MagicMock()
         handler._poller.get_active_card_id = MagicMock(return_value="card_123")
         handler._poller.read_snapshot = MagicMock(return_value={
-            "blocks": [{"_type": "OutputBlock", "content": "test"}],
+            "blocks"  : [{"_type": "OutputBlock", "content": "test"}],
             "cli_type": "claude",
         })
         handler._poller.kick = MagicMock()
@@ -140,7 +141,7 @@ class TestQuickCommandLoading(unittest.TestCase):
         mock_bridge = handler._bridges["test_chat"]
         mock_bridge.send_input = AsyncMock(return_value=True)
 
-        mock_build_card.return_value = {"header": {}, "elements": []}
+        mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
         mock_card_service.update_card = AsyncMock(return_value=True)
 
         # 运行测试
@@ -178,25 +179,25 @@ class TestOptionSelectLoading(unittest.TestCase):
         handler._poller = MagicMock()
         handler._poller.get_active_card_id = MagicMock(return_value="card_123")
         handler._poller.read_snapshot = MagicMock(return_value={
-            "blocks": [],
+            "blocks"      : [],
             "option_block": {
-                "sub_type": "option",
-                "block_id": "Q:test",
+                "sub_type"      : "option",
+                "block_id"      : "Q:test",
                 "selected_value": "1",
-                "question": "选择一个选项",
-                "options": [
+                "question"      : "选择一个选项",
+                "options"       : [
                     {"label": "选项 1", "value": "1"},
                     {"label": "选项 2", "value": "2"},
                 ]
             },
-            "cli_type": "claude",
+            "cli_type"    : "claude",
         })
         handler._poller.kick = MagicMock()
 
         mock_bridge = handler._bridges["test_chat"]
         mock_bridge.send_raw = AsyncMock(return_value=True)
 
-        mock_build_card.return_value = {"header": {}, "elements": []}
+        mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
         mock_card_service.update_card = AsyncMock(return_value=True)
 
         # 运行测试
@@ -223,7 +224,7 @@ class TestStreamDetachLoading(unittest.TestCase):
         handler._poller = MagicMock()
         handler._poller.get_active_card_id = MagicMock(return_value="card_123")
         handler._poller.read_snapshot = MagicMock(return_value={
-            "blocks": [],
+            "blocks"  : [],
             "cli_type": "claude",
         })
         handler._poller.stop_and_get_active_slice = MagicMock(return_value=MagicMock(
@@ -235,7 +236,7 @@ class TestStreamDetachLoading(unittest.TestCase):
         handler._bridges = {}
         handler._detached_slices = {}
 
-        mock_build_card.return_value = {"header": {}, "elements": []}
+        mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
         mock_card_service.update_card = AsyncMock(return_value=True)
 
         # Mock _remove_binding_by_chat 和 _detach

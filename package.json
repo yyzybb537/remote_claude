@@ -26,7 +26,8 @@
     "stats/__init__.py",
     "stats/*.py",
     "pyproject.toml",
-    ".env.example"
+    ".env.example",
+    "tests/"
   ],
   "os": [
     "darwin",

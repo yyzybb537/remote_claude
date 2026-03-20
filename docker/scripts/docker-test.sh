@@ -562,9 +562,103 @@ check_file_integrity() {
     fi
 }
 
-# 步骤 8：生成测试报告
+# 步骤 8：执行独立单元测试
+run_unit_tests() {
+    print_header "步骤 8：执行独立单元测试"
+
+    local install_dir="$1"
+    cd "$install_dir/node_modules/remote-claude"
+
+    # 核心测试列表（失败终止）
+    local core_tests=(
+        "tests/test_session_truncate.py"
+        "tests/test_runtime_config.py"
+    )
+
+    # 非核心测试列表（失败继续）
+    local non_core_tests=(
+        "tests/test_stream_poller.py"
+        "tests/test_card_interaction.py"
+        "tests/test_list_display.py"
+        "tests/test_log_level.py"
+        "tests/test_disconnected_state.py"
+        "tests/test_renderer.py"
+        "tests/lark_client/test_mock_output.py"
+        "tests/lark_client/test_cjk_width.py"
+        "tests/lark_client/test_full_simulation.py"
+    )
+
+    local core_failed=0
+    local non_core_failed=0
+    local unit_passed=0
+    local unit_total=0
+
+    # 执行核心测试
+    log_info "执行核心测试（失败将终止）..."
+    for test in "${core_tests[@]}"; do
+        if [ -f "$test" ]; then
+            unit_total=$((unit_total + 1))
+            log_info "运行核心测试: $test"
+            if .venv/bin/python "$test" > "$RESULTS_DIR/$(basename $test .py).log" 2>&1; then
+                log_success "核心测试通过: $test"
+                report "✓ 核心测试通过: $test"
+                unit_passed=$((unit_passed + 1))
+            else
+                log_error "核心测试失败: $test"
+                report "✗ 核心测试失败: $test"
+                core_failed=$((core_failed + 1))
+            fi
+        else
+            log_warning "测试文件不存在: $test"
+            report "⚠ 测试文件不存在: $test"
+            core_failed=$((core_failed + 1))
+        fi
+    done
+
+    # 核心测试失败则终止
+    if [ $core_failed -gt 0 ]; then
+        log_error "$core_failed 个核心测试失败，终止测试流程"
+        report "✗ $core_failed 个核心测试失败，测试终止"
+        return 1
+    fi
+
+    # 执行非核心测试
+    log_info "执行非核心测试（失败继续）..."
+    for test in "${non_core_tests[@]}"; do
+        if [ -f "$test" ]; then
+            unit_total=$((unit_total + 1))
+            log_info "运行非核心测试: $test"
+            if .venv/bin/python "$test" > "$RESULTS_DIR/$(basename $test .py).log" 2>&1; then
+                log_success "非核心测试通过: $test"
+                report "✓ 非核心测试通过: $test"
+                unit_passed=$((unit_passed + 1))
+            else
+                log_warning "非核心测试失败: $test（继续执行）"
+                report "⚠ 非核心测试失败: $test"
+                non_core_failed=$((non_core_failed + 1))
+            fi
+        else
+            log_warning "测试文件不存在: $test"
+            report "⚠ 测试文件不存在: $test"
+            non_core_failed=$((non_core_failed + 1))
+        fi
+    done
+
+    # 汇总单元测试结果
+    log_info "单元测试汇总: 通过 $unit_passed/$unit_total"
+    report "📊 单元测试汇总: 通过 $unit_passed/$unit_total（核心失败: $core_failed，非核心失败: $non_core_failed）"
+
+    if [ $non_core_failed -gt 0 ]; then
+        log_warning "$non_core_failed 个非核心测试失败"
+        return 0  # 非核心测试失败不终止
+    fi
+
+    return 0
+}
+
+# 步骤 9：生成测试报告
 generate_report() {
-    print_header "步骤 8：生成测试报告"
+    print_header "步骤 9：生成测试报告"
 
     local report_file="$RESULTS_DIR/test_report.md"
 
@@ -593,7 +687,7 @@ generate_report() {
 
 ## 测试详情
 
-$TEST_REPORT
+`echo -e $TEST_REPORT`
 
 ## 测试日志
 
@@ -613,9 +707,9 @@ EOF
     report "✓ 测试报告已生成: $report_file"
 }
 
-# 步骤 9：清理
+# 步骤 10：清理
 cleanup() {
-    print_header "步骤 9：清理"
+    print_header "步骤 10：清理"
 
     # 不停止容器和会话，让容器保持运行状态
     log_info "保持容器运行状态（Docker 模式下不自动退出）"
@@ -716,13 +810,19 @@ main() {
         log_error "文件完整性检查失败，继续执行..."
     fi
 
-    # 步骤 8：生成测试报告
+    # 步骤 8：执行独立单元测试
+    if ! run_unit_tests "$INSTALL_DIR"; then
+        log_error "核心单元测试失败，终止测试"
+        exit 1
+    fi
+
+    # 步骤 9：生成测试报告
     generate_report
 
     # 输出最终结果
     print_results
 
-    # 步骤 9：清理（打印操作提示，并保持容器运行）
+    # 步骤 10：清理（打印操作提示，并保持容器运行）
     cleanup
 }
 

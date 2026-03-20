@@ -34,6 +34,7 @@ from .shared_memory_poller import SharedMemoryPoller, CardSlice
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, ensure_user_data_dir, USER_DATA_DIR, get_process_cwd
+from utils.runtime_config import load_user_config
 
 
 def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
@@ -87,6 +88,8 @@ class LarkHandler:
         self._detached_slices: Dict[str, CardSlice] = {}
         # 正在启动中的会话名集合（防止并发点击触发竞态）
         self._starting_sessions: set = set()
+        # 用户配置（用于快捷命令选择器等 UI 设置）
+        self._user_config = load_user_config()
 
     # ── 持久化绑定 ──────────────────────────────────────────────────────────
 
@@ -306,6 +309,117 @@ class LarkHandler:
         if card_id:
             await card_service.send_card(chat_id, card_id)
 
+    async def _start_server_session(
+        self,
+        session_name: str,
+        work_dir: Optional[str],
+        chat_id: str,
+    ) -> bool:
+        """启动 server 进程并等待 socket 就绪
+
+        Args:
+            session_name: 会话名称
+            work_dir: 工作目录（可选）
+            chat_id: 飞书聊天 ID（用于错误通知）
+
+        Returns:
+            bool: True 表示启动成功，False 表示失败
+        """
+        script_dir = Path(__file__).parent.parent.absolute()
+        server_script = script_dir / "server" / "server.py"
+        cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
+        if self._poller.get_bypass_enabled():
+            cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
+
+        logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}, 命令: {' '.join(cmd)}")
+        _track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
+
+        try:
+            env = _os.environ.copy()
+            env.pop("CLAUDECODE", None)
+
+            log_path = USER_DATA_DIR / "startup.log"
+            start_time = _datetime.now()
+
+            with open(log_path, 'a') as stderr_fd:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_fd,
+                    start_new_session=True,
+                    cwd=work_dir,
+                    env=env,
+                )
+
+            socket_path = get_socket_path(session_name)
+            for i in range(120):
+                await asyncio.sleep(0.1)
+                if socket_path.exists():
+                    return True
+                if (i + 1) % 10 == 0:
+                    elapsed = (i + 1) // 10
+                    rc = proc.poll()
+                    if rc is not None:
+                        log_content = _read_log_since(start_time, log_path)
+                        logger.warning(f"会话启动失败: server 进程已退出 (exitcode={rc}, elapsed={elapsed}s)\n{log_content}")
+                        await card_service.send_text(chat_id, f"错误: Server 进程意外退出 (code={rc})\n\n{log_content}")
+                        return False
+                    logger.info(f"等待 server socket... ({elapsed}s)")
+            else:
+                log_content = _read_log_since(start_time, log_path)
+                logger.error(f"会话启动超时 (12s), session={session_name}\n{log_content}")
+                await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
+                return False
+
+        except Exception as e:
+            logger.error(f"启动会话失败: {e}")
+            await card_service.send_text(chat_id, f"错误: 启动失败 - {e}")
+            return False
+
+    def _build_loading_card(
+        self,
+        snapshot: Optional[dict],
+        session_name: str,
+        loading_text: str,
+        **kwargs,
+    ) -> dict:
+        """构建带 loading 状态的流式卡片
+
+        Args:
+            snapshot: 共享内存快照（可为 None）
+            session_name: 会话名称
+            loading_text: loading 提示文本
+            **kwargs: 其他传递给 build_stream_card 的参数（如 disconnected）
+
+        Returns:
+            飞书卡片 dict
+        """
+        if snapshot:
+            option_block = kwargs.pop("option_block", None)
+            if not option_block:
+                option_block = snapshot.get('option_block')
+            return build_stream_card(
+                blocks=snapshot.get("blocks", []),
+                status_line=snapshot.get("status_line"),
+                bottom_bar=snapshot.get("bottom_bar"),
+                agent_panel=snapshot.get("agent_panel"),
+                option_block=option_block,
+                session_name=session_name,
+                cli_type=snapshot.get("cli_type", "claude"),
+                user_config=self._user_config,
+                is_loading=True,
+                loading_text=loading_text,
+                **kwargs,
+            )
+        else:
+            return build_stream_card(
+                blocks=[],
+                session_name=session_name,
+                is_loading=True,
+                loading_text=loading_text,
+                **kwargs,
+            )
+
     async def _cmd_start(self, user_id: str, chat_id: str, args: str):
         """启动新会话"""
         parts = args.strip().split(maxsplit=1)
@@ -345,50 +459,8 @@ class LarkHandler:
             return
         self._starting_sessions.add(session_name)
 
-        script_dir = Path(__file__).parent.parent.absolute()
-        server_script = script_dir / "server" / "server.py"
-        cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
-        if self._poller.get_bypass_enabled():
-            cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
-
-        logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}, 命令: {' '.join(cmd)}")
-        _track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
-
         try:
-            env = _os.environ.copy()
-            env.pop("CLAUDECODE", None)
-
-            log_path = USER_DATA_DIR / "startup.log"
-            start_time = _datetime.now()
-
-            with open(log_path, 'a') as stderr_fd:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=stderr_fd,
-                    start_new_session=True,
-                    cwd=work_dir,
-                    env=env,
-                )
-
-            socket_path = get_socket_path(session_name)
-            for i in range(120):
-                await asyncio.sleep(0.1)
-                if socket_path.exists():
-                    break
-                if (i + 1) % 10 == 0:
-                    elapsed = (i + 1) // 10
-                    rc = proc.poll()
-                    if rc is not None:
-                        log_content = _read_log_since(start_time, log_path)
-                        logger.warning(f"会话启动失败: server 进程已退出 (exitcode={rc}, elapsed={elapsed}s)\n{log_content}")
-                        await card_service.send_text(chat_id, f"错误: Server 进程意外退出 (code={rc})\n\n{log_content}")
-                        return
-                    logger.info(f"等待 server socket... ({elapsed}s)")
-            else:
-                log_content = _read_log_since(start_time, log_path)
-                logger.error(f"会话启动超时 (12s), session={session_name}\n{log_content}")
-                await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
+            if not await self._start_server_session(session_name, work_dir, chat_id):
                 return
 
             ok = await self._attach(chat_id, session_name, user_id=user_id)
@@ -400,10 +472,6 @@ class LarkHandler:
                     chat_id,
                     f"会话已启动但连接失败\n使用 /attach {session_name} 重试"
                 )
-
-        except Exception as e:
-            logger.error(f"启动会话失败: {e}")
-            await card_service.send_text(chat_id, f"错误: 启动失败 - {e}")
         finally:
             self._starting_sessions.discard(session_name)
 
@@ -421,46 +489,11 @@ class LarkHandler:
             session_name = f"{session_name}_{_datetime.now().strftime('%m%d_%H%M%S')}"
 
         self._starting_sessions.add(session_name)
-
         work_dir = str(work_path.absolute())
-        script_dir = Path(__file__).parent.parent.absolute()
-        server_script = script_dir / "server" / "server.py"
-        cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
-        if self._poller.get_bypass_enabled():
-            cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
 
         try:
-            env = _os.environ.copy()
-            env.pop("CLAUDECODE", None)
-
-            log_path = USER_DATA_DIR / "startup.log"
-            start_time = _datetime.now()
-
-            with open(log_path, 'a') as stderr_fd:
-                proc = subprocess.Popen(
-                    cmd, stdout=subprocess.DEVNULL, stderr=stderr_fd,
-                    start_new_session=True, cwd=work_dir, env=env,
-                )
-
-            socket_path = get_socket_path(session_name)
-            for i in range(120):
-                await asyncio.sleep(0.1)
-                if socket_path.exists():
-                    break
-                if (i + 1) % 10 == 0:
-                    elapsed = (i + 1) // 10
-                    rc = proc.poll()
-                    if rc is not None:
-                        log_content = _read_log_since(start_time, log_path)
-                        logger.warning(f"启动并创建群聊失败: server 进程已退出 (exitcode={rc}, elapsed={elapsed}s)\n{log_content}")
-                        await card_service.send_text(chat_id, f"错误: Server 进程意外退出 (code={rc})\n\n{log_content}")
-                        return
-            else:
-                log_content = _read_log_since(start_time, log_path)
-                logger.error(f"启动并创建群聊超时 (12s), session={session_name}\n{log_content}")
-                await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
+            if not await self._start_server_session(session_name, work_dir, chat_id):
                 return
-
             await self._cmd_new_group(user_id, chat_id, session_name)
 
         except Exception as e:
@@ -534,7 +567,7 @@ class LarkHandler:
         try:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
-            from shared_state import SharedStateReader, get_mq_path
+            from server.shared_state import SharedStateReader, get_mq_path
             mq_path = get_mq_path(session_name)
             if mq_path.exists():
                 reader = SharedStateReader(session_name)
@@ -562,19 +595,7 @@ class LarkHandler:
         card_id = self._poller.get_active_card_id(chat_id)
         snapshot = self._poller.read_snapshot(chat_id) if card_id else None
         if card_id and snapshot:
-            loading_card = build_stream_card(
-                blocks=snapshot.get("blocks", []),
-                status_line=snapshot.get("status_line"),
-                bottom_bar=snapshot.get("bottom_bar"),
-                agent_panel=snapshot.get("agent_panel"),
-                option_block=snapshot.get("option_block"),
-                session_name=session_name,
-                disconnected=False,
-                cli_type=snapshot.get("cli_type", "claude"),
-                runtime_config=self._runtime_config,
-                is_loading=True,
-                loading_text="正在断开连接...",
-            )
+            loading_card = self._build_loading_card(snapshot, session_name, "正在断开连接...")
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
 
         # 停止轮询并获取活跃 CardSlice（原子操作）
@@ -585,7 +606,7 @@ class LarkHandler:
         try:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
-            from shared_state import SharedStateReader, get_mq_path
+            from server.shared_state import SharedStateReader, get_mq_path
             mq_path = get_mq_path(session_name)
             if mq_path.exists():
                 reader = SharedStateReader(session_name)
@@ -624,15 +645,7 @@ class LarkHandler:
                                        session_name: str, message_id: Optional[str] = None):
         """流式卡片中重新连接：冻结旧断开卡片 → 重新 attach"""
         # T059: 显示 loading 状态（重连中）
-        loading_card = build_stream_card(
-            blocks=[],
-            session_name=session_name,
-            disconnected=True,
-            is_loading=True,
-            loading_text="正在重新连接...",
-        )
-
-        # 冻结旧断开卡片并显示 loading
+        loading_card = self._build_loading_card(None, session_name, "正在重新连接...", disconnected=True)
         old_slice = self._detached_slices.pop(chat_id, None)
         if old_slice:
             try:
@@ -979,18 +992,9 @@ class LarkHandler:
         card_id = self._poller.get_active_card_id(chat_id)
         if card_id:
             # 构建带 loading 状态的卡片（禁用所有选项按钮）
-            loading_card = build_stream_card(
-                blocks=initial_snapshot.get("blocks", []),
-                status_line=initial_snapshot.get("status_line"),
-                bottom_bar=initial_snapshot.get("bottom_bar"),
-                agent_panel=initial_snapshot.get("agent_panel"),
+            loading_card = self._build_loading_card(
+                initial_snapshot, self._chat_sessions.get(chat_id), "正在选择...",
                 option_block=initial_ob,
-                session_name=self._chat_sessions.get(chat_id),
-                disconnected=False,
-                cli_type=initial_snapshot.get("cli_type", "claude"),
-                runtime_config=self._runtime_config,
-                is_loading=True,
-                loading_text="正在选择...",
             )
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
 
@@ -1147,18 +1151,8 @@ class LarkHandler:
 
         if card_id and snapshot:
             # 构建带 loading 状态的卡片
-            loading_card = build_stream_card(
-                blocks=snapshot.get("blocks", []),
-                status_line=snapshot.get("status_line"),
-                bottom_bar=snapshot.get("bottom_bar"),
-                agent_panel=snapshot.get("agent_panel"),
-                option_block=snapshot.get("option_block"),
-                session_name=self._chat_sessions.get(chat_id),
-                disconnected=False,
-                cli_type=snapshot.get("cli_type", "claude"),
-                runtime_config=self._runtime_config,
-                is_loading=True,
-                loading_text=f"执行命令 {command}...",
+            loading_card = self._build_loading_card(
+                snapshot, self._chat_sessions.get(chat_id), f"执行命令 {command}..."
             )
             # 就地更新卡片，不等待结果
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)

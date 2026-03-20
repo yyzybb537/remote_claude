@@ -29,8 +29,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from utils.session import (
-    get_socket_path, get_pid_file, ensure_socket_dir,
-    get_tmux_session_name, tmux_session_exists, tmux_create_session,
+    get_socket_path, ensure_socket_dir, tmux_session_exists, tmux_create_session,
     tmux_kill_session,
     list_active_sessions, is_session_active, cleanup_session,
     is_lark_running, get_lark_pid, get_lark_status, get_lark_pid_file,
@@ -39,13 +38,13 @@ from utils.session import (
     get_env_snapshot_path,
 )
 
-
 # 获取脚本所在目录
 SCRIPT_DIR = Path(__file__).parent.absolute()
 
 # 读取版本号（仅 import 时读取一次）
 try:
     import json as _json
+
     _VERSION = _json.loads((SCRIPT_DIR / "package.json").read_text())["version"]
 except Exception:
     _VERSION = "unknown"
@@ -286,22 +285,31 @@ def cmd_lark_start(args):
         return 1
 
     # 检测残留的 bak 文件
-    from utils.runtime_config import check_stale_backup, prompt_backup_action, cleanup_backup_after_migration, migrate_runtime_to_user_config
+    from utils.runtime_config import check_stale_backup, prompt_backup_action, cleanup_backup_files
     bak_file = check_stale_backup()
     if bak_file:
         action = prompt_backup_action(bak_file)
         if action == 'overwrite':
-            # 从 bak 恢复（重新迁移）
+            # 从 bak 恢复
             print("正在从备份恢复配置...")
+            try:
+                # bak_file.name = "config.json.bak.20260320_143015" ->. split('.bak')[0] = "config.json"
+                original_file = bak_file.name.split('.bak')[0]
+                original_path = bak_file.parent / original_file
+                import shutil
+                shutil.copy2(bak_file, original_path)
+                print(f"已从备份恢复: {original_path}")
+                bak_file.unlink()
+            except Exception as e:
+                print(f"恢复备份失败: {e}")
+                return 1
         else:
             # 跳过：删除 bak 文件
             bak_file.unlink()
             print(f"已删除备份文件: {bak_file}")
 
-    # 执行配置迁移（从 runtime.json 提取 ui_settings 到 config.json）
-    migrate_runtime_to_user_config()
-    # 清理迁移后的 bak 文件
-    cleanup_backup_after_migration()
+    # 清理可能残留的其他 bak 文件
+    cleanup_backup_files()
 
     print("正在启动飞书客户端...")
 

@@ -189,6 +189,27 @@ collect_errors() {
         echo "" >> "$error_log"
     fi
 
+    # 从单元测试日志中提取错误
+    local results_dir="/home/testuser/test-results"
+    if [ -d "$results_dir" ]; then
+        echo "--- 单元测试失败汇总 ---" >> "$error_log"
+        local test_logs=$(find "$results_dir" -maxdepth 1 -name "test_*.log" -o -name "test_*.txt" 2>/dev/null)
+        if [ -n "$test_logs" ]; then
+            for test_log in $test_logs; do
+                local matches
+                matches=$(grep -i "fail\|error\|traceback\|assertion" "$test_log" 2>/dev/null) || true
+                if [ -n "$matches" ]; then
+                    echo ">>> $(basename "$test_log") <<<" >> "$error_log"
+                    echo "$matches" >> "$error_log"
+                    echo "" >> "$error_log"
+                fi
+            done
+        else
+            echo "未找到单元测试日志文件" >> "$error_log"
+        fi
+        echo "" >> "$error_log"
+    fi
+
     # 检查缺失的依赖
     echo "--- 依赖检查 ---" >> "$error_log"
     echo "检查关键依赖..." >> "$error_log"

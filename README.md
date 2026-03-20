@@ -309,4 +309,5 @@ CLAUDE_COMMAND=/usr/local/bin/claude
 
 - [CLAUDE.md](./CLAUDE.md) — 项目架构和开发说明
 - [LARK_CLIENT_GUIDE.md](./LARK_CLIENT_GUIDE.md) — 飞书客户端完整指南
+- [tests/TEST_PLAN.md](./tests/TEST_PLAN.md) — 测试计划
 - [docker/README.md](./docker/README.md) — Docker 测试（npm 包发布前验证）

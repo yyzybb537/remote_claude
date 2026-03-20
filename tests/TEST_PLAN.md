@@ -12,12 +12,10 @@
 
 | 测试文件 | 覆盖范围 | 运行命令 |
 |---------|---------|---------|
-| `test_format_unit.py` | 格式化逻辑 | `uv run python3 tests/test_format_unit.py` |
 | `test_stream_poller.py` | 流式卡片模型（card_builder + poller） | `uv run python3 tests/test_stream_poller.py` |
 | `test_session_truncate.py` | 会话名称截断、映射存储、快捷命令验证 | `uv run python3 tests/test_session_truncate.py` |
 | `test_runtime_config.py` | 运行时配置加载/保存/迁移/可见性判断 | `uv run python3 tests/test_runtime_config.py` |
 | `test_renderer.py` | 终端渲染器 | `uv run python3 tests/test_renderer.py` |
-| `test_output_clean.py` | 输出清理器 | `uv run python3 tests/test_output_clean.py` |
 
 ### 层 2：集成测试（需要活跃会话）
 
@@ -148,12 +146,10 @@ tail -f ~/.remote-claude/lark_client.log
 
 ```bash
 # 层 1：单元测试（无需任何前置条件）
-uv run python3 tests/test_format_unit.py
 uv run python3 tests/test_stream_poller.py
 uv run python3 tests/test_session_truncate.py
 uv run python3 tests/test_runtime_config.py
 uv run python3 tests/test_renderer.py
-uv run python3 tests/test_output_clean.py
 
 # 层 2：集成测试（需要活跃会话）
 uv run python3 remote_claude.py start test
