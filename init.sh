@@ -89,13 +89,15 @@ check_uv() {
             export PATH="$(dirname "$UV_PATH"):$PATH"
             return
         elif [[ -n "$UV_PATH" ]]; then
-            # 配置路径失效
-            print_error "uv 路径失效（$UV_PATH），请重新运行 init.sh"
-            exit 1
+            # 配置路径失效，清除并尝试系统 uv
+            print_warning "配置的 uv 路径失效（$UV_PATH），尝试系统 uv..."
+            # 清除失效路径
+            local TMP_FILE=$(mktemp)
+            jq '.uv_path = null' "$RUNTIME_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$RUNTIME_FILE"
         fi
     fi
 
-    # 2. 检测已安装的 uv
+    # 2. 检测系统 uv
     if command -v uv &> /dev/null; then
         UV_VERSION=$(uv --version)
         print_success "$UV_VERSION 已安装"
