@@ -13,6 +13,8 @@ import json
 import logging
 import fcntl
 import glob
+import platform
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -26,6 +28,11 @@ USER_CONFIG_VERSION = "1.0"
 MAX_SESSION_MAPPINGS = 500
 MAX_BACKUP_FILES = 2  # 保留最近 2 个备份文件
 
+# NFS 文件系统检测缓存
+_nfs_checked = False
+_nfs_is_nfs = False
+_nfs_warning_shown = False
+
 from utils.session import USER_DATA_DIR, ensure_user_data_dir
 
 RUNTIME_CONFIG_FILE = USER_DATA_DIR / "runtime.json"
@@ -33,6 +40,80 @@ USER_CONFIG_FILE = USER_DATA_DIR / "config.json"
 RUNTIME_LOCK_FILE = USER_DATA_DIR / "runtime.json.lock"
 USER_CONFIG_LOCK_FILE = USER_DATA_DIR / "config.json.lock"
 LEGACY_LARK_GROUP_MAPPING_FILE = USER_DATA_DIR / "lark_group_mapping.json"
+
+
+# ============== NFS 文件系统检测 ==============
+
+def _is_nfs_filesystem() -> bool:
+    """检测配置目录是否位于 NFS 或网络文件系统上
+
+    NFS 上 flock 不可靠，可能导致并发写入问题，因此需要检测并警告。
+
+    Returns:
+        True 如果是 NFS，False 如果是本地文件系统
+    """
+    try:
+        str_path = str(USER_DATA_DIR)
+
+        # macOS: 使用 mount 命令检查
+        if platform.system() == "Darwin":
+            result = subprocess.run(
+                ["mount"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            for line in result.stdout.split("\n"):
+                # NFS 挂载行格式: //server/path on /mount/point (nfs, ...)
+                if "nfs" in line.lower():
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        mount_point = parts[2]
+                        if str_path.startswith(mount_point):
+                            return True
+
+        # Linux: 检查 /proc/mounts
+        elif platform.system() == "Linux":
+            try:
+                with open("/proc/mounts", "r") as f:
+                    for line in f:
+                        # 格式: device mount_point fstype options ...
+                        parts = line.split()
+                        if len(parts) >= 3:
+                            fstype = parts[2].lower()
+                            mount_point = parts[1]
+                            if "nfs" in fstype and str_path.startswith(mount_point):
+                                return True
+            except (IOError, FileNotFoundError):
+                pass
+
+    except Exception:
+        pass
+
+    return False
+
+
+def _check_filesystem_and_warn() -> None:
+    """检查文件系统并在 NFS 上发出一次性警告"""
+    global _nfs_checked, _nfs_is_nfs, _nfs_warning_shown
+
+    if _nfs_checked:
+        return
+
+    _nfs_is_nfs = _is_nfs_filesystem()
+    _nfs_checked = True
+
+    if _nfs_is_nfs and not _nfs_warning_shown:
+        logger.warning(
+            f"检测到配置目录 {USER_DATA_DIR} 位于 NFS 或网络文件系统上。"
+            f"文件锁 (fcntl.flock) 在 NFS 上可能不可靠，可能导致并发写入问题。"
+            f"建议将配置目录移至本地文件系统。"
+        )
+        _nfs_warning_shown = True
+
+
+# 模块加载时执行检查
+_check_filesystem_and_warn()
 
 
 # ============== 备份文件管理 ==============
@@ -134,7 +215,7 @@ class QuickCommand:
         return {
             "label": self.label,
             "value": self.value,
-            "icon": self.icon,
+            "icon" : self.icon,
         }
 
     @classmethod
@@ -160,7 +241,7 @@ class QuickCommandsConfig:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "enabled": self.enabled,
+            "enabled" : self.enabled,
             "commands": [cmd.to_dict() for cmd in self.commands],
         }
 
@@ -207,6 +288,7 @@ class RuntimeConfig:
     仅包含运行时状态，不包含用户可编辑配置。
     """
     version: str = CURRENT_VERSION
+    uv_path: Optional[str] = None  # uv 可执行文件路径
     session_mappings: Dict[str, str] = field(default_factory=dict)
     lark_group_mappings: Dict[str, str] = field(default_factory=dict)
 
@@ -287,8 +369,9 @@ class RuntimeConfig:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "version": self.version,
-            "session_mappings": self.session_mappings,
+            "version"            : self.version,
+            "uv_path"            : self.uv_path,
+            "session_mappings"   : self.session_mappings,
             "lark_group_mappings": self.lark_group_mappings,
         }
 
@@ -297,6 +380,7 @@ class RuntimeConfig:
         """从字典创建"""
         return cls(
             version=data.get("version", CURRENT_VERSION),
+            uv_path=data.get("uv_path"),
             session_mappings=data.get("session_mappings", {}),
             lark_group_mappings=data.get("lark_group_mappings", {}),
         )
@@ -326,7 +410,7 @@ class UserConfig:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "version": self.version,
+            "version"    : self.version,
             "ui_settings": self.ui_settings.to_dict(),
         }
 
@@ -343,9 +427,9 @@ class UserConfig:
 # ============== 配置加载/保存函数 ==============
 
 def _save_config_with_lock(
-    config_obj: Any,
-    config_file: Path,
-    lock_path: Path,
+        config_obj: Any,
+        config_file: Path,
+        lock_path: Path,
 ) -> None:
     """使用文件锁保存配置的通用函数
 
