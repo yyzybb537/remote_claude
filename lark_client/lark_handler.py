@@ -54,8 +54,20 @@ def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
 
 try:
     from stats import track as _track_stats
-except Exception:
-    def _track_stats(*args, **kwargs): pass
+except ImportError:
+    _track_stats = None
+except Exception as e:
+    logger.warning(f"stats 模块加载失败，统计功能将禁用: {e}")
+    _track_stats = None
+
+
+def _safe_track_stats(*args, **kwargs):
+    """安全调用统计追踪函数，模块未加载时静默跳过"""
+    if _track_stats is not None:
+        try:
+            _track_stats(*args, **kwargs)
+        except Exception as e:
+            logger.debug(f"统计追踪失败: {e}")
 
 
 class LarkHandler:
@@ -165,7 +177,7 @@ class LarkHandler:
             self._chat_sessions[chat_id] = session_name
             self._poller.start(chat_id, session_name, is_group=(chat_id in self._group_chat_ids),
                                notify_user_id=user_id)
-            _track_stats('lark', 'attach', session_name=session_name,
+            _safe_track_stats('lark', 'attach', session_name=session_name,
                          chat_id=chat_id)
             return True
         return False
@@ -181,7 +193,7 @@ class LarkHandler:
     async def _on_disconnect(self, chat_id: str, session_name: str):
         """服务端关闭连接时的统一处理"""
         logger.info(f"会话 '{session_name}' 断线, chat_id={chat_id[:8]}...")
-        _track_stats('lark', 'disconnect', session_name=session_name,
+        _safe_track_stats('lark', 'disconnect', session_name=session_name,
                      chat_id=chat_id)
         active_slice = self._poller.stop_and_get_active_slice(chat_id)
         self._bridges.pop(chat_id, None)
@@ -209,7 +221,7 @@ class LarkHandler:
                 claude_text = text[3:].strip()
                 if claude_text:
                     await self._forward_to_claude(user_id, chat_id, claude_text)
-                    _track_stats('lark', 'message',
+                    _safe_track_stats('lark', 'message',
                                  session_name=self._chat_sessions.get(chat_id, ''),
                                  chat_id=chat_id)
             else:
@@ -219,7 +231,7 @@ class LarkHandler:
     async def forward_to_claude(self, user_id: str, chat_id: str, text: str):
         """卡片输入框直通 Claude（跳过命令路由）"""
         await self._forward_to_claude(user_id, chat_id, text)
-        _track_stats('lark', 'message',
+        _safe_track_stats('lark', 'message',
                      session_name=self._chat_sessions.get(chat_id, ''),
                      chat_id=chat_id)
 
@@ -228,7 +240,7 @@ class LarkHandler:
         parts = text.split(maxsplit=1)
         command = parts[0].lower()
         args = parts[1] if len(parts) > 1 else ""
-        _track_stats('lark', 'cmd',
+        _safe_track_stats('lark', 'cmd',
                      session_name=self._chat_sessions.get(chat_id, ''),
                      chat_id=chat_id, detail=command)
 
@@ -332,7 +344,7 @@ class LarkHandler:
             cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
 
         logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}, 命令: {' '.join(cmd)}")
-        _track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
+        _safe_track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
 
         try:
             env = _os.environ.copy()
@@ -967,7 +979,7 @@ class LarkHandler:
         到位后发 Enter 确认。避免数字键在溢出选项上无效的问题。
         """
         logger.info(f"处理选项选择: user={user_id[:8]}..., option={option_value}, total={option_total}")
-        _track_stats('lark', 'option_select',
+        _safe_track_stats('lark', 'option_select',
                      session_name=self._chat_sessions.get(chat_id, ''),
                      chat_id=chat_id, detail=option_value)
 
@@ -1084,7 +1096,7 @@ class LarkHandler:
 
     async def send_raw_key(self, user_id: str, chat_id: str, key_name: str):
         """发送原始控制键到 Claude CLI"""
-        _track_stats('lark', 'raw_key',
+        _safe_track_stats('lark', 'raw_key',
                      session_name=self._chat_sessions.get(chat_id, ''),
                      chat_id=chat_id, detail=key_name)
         KEY_MAP = {
@@ -1123,7 +1135,7 @@ class LarkHandler:
             command: 命令字符串（如 "/clear"）
         """
         logger.info(f"处理快捷命令: user={user_id[:8]}..., command={command}")
-        _track_stats('lark', 'quick_command',
+        _safe_track_stats('lark', 'quick_command',
                      session_name=self._chat_sessions.get(chat_id, ''),
                      chat_id=chat_id, detail=command)
 

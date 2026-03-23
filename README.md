@@ -35,7 +35,26 @@ npm install remote-claude
 
 需要安装uv、tmux等依赖，第一次可能有点慢.
 
-#### 1.2 或 源码安装
+### 1.1 零依赖安装（推荐）
+
+项目自带便携式 Python 环境，无需预装 Python：
+
+```bash
+# 方式一：一键安装脚本
+curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/scripts/install.sh | bash
+
+# 方式二：克隆后安装
+git clone https://github.com/yyzybb537/remote_claude.git
+cd remote_claude
+./scripts/install.sh
+```
+
+安装脚本会自动：
+- 安装 uv 包管理器
+- 下载并配置 Python 3.11（便携式，不影响系统）
+- 创建虚拟环境并安装依赖
+
+### 1.2 传统安装（需要预装 Python）
 
 ```bash
 git clone https://github.com/yyzybb537/remote_claude.git
@@ -44,6 +63,30 @@ cd remote_claude
 ```
 
 `init.sh` 会自动安装 uv、tmux 等依赖，配置飞书环境（可选），并写入 `cla` / `cl` / `cx` / `cdx` 快捷命令。执行完成后重启终端生效。
+
+### 1.3 Docker 产物安装（免安装环境）
+
+如果你已经运行过 Docker 测试，可以直接使用产物，无需任何安装：
+
+```bash
+# 构建 Docker 镜像并运行测试
+docker-compose -f docker/docker-compose.test.yml build
+docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
+
+# 测试完成后，产物位于 test-results/npm-install/
+cd test-results/npm-install/node_modules/remote-claude
+
+# 直接使用（产物已包含便携式 Python 环境）
+./bin/cla                    # 启动 Claude 会话
+.venv/bin/python remote_claude.py --help  # 查看帮助
+```
+
+**产物说明**：
+- `.venv/` — 便携式 Python 虚拟环境，无需预装 Python
+- `bin/cla`, `bin/cl`, `bin/cx`, `bin/cdx` — 快捷启动脚本
+- 完整项目代码，可直接使用
+
+> **前置要求**：tmux、git、Claude CLI 或 Codex CLI
 
 ### 2. 启动
 
@@ -201,7 +244,7 @@ remote-claude attach <会话名>
 #### 4.2 通过飞书机器人操作claude/codex
 
 1. 从飞书搜索刚刚创建的飞书机器人（第一次搜比较慢，如果搜不到可能是忘记发布了）
-2. 飞书中与机器人对话，可用命令: 
+2. 飞书中与机器人对话，可用命令:
   - `/menu` 展示菜单卡片，后续操作都操作这个卡片上的按钮即可
 
 ## 使用指南
@@ -215,13 +258,16 @@ remote-claude attach <会话名>
 | `cx` | 启动飞书客户端 + 以当前目录路径为会话名启动 Codex（跳过权限确认）|
 | `cdx` | 同 `cx`，但需要确认权限 |
 
-### 管理命令 (一般不需要)
+### 管理命令
 
 ```bash
 remote-claude start <会话名>     # 启动新会话
 remote-claude attach <会话名>    # 连接现有会话
 remote-claude list               # 查看所有会话
 remote-claude kill <会话名>      # 终止会话
+remote-claude status <会话名>    # 查看会话状态
+remote-claude stats              # 查看使用统计
+remote-claude update             # 更新到最新版本
 ```
 
 ### 飞书客户端
@@ -234,6 +280,29 @@ remote-claude lark status        # 查看状态
 ```
 
 飞书中与机器人对话，可用命令：`/menu`、`/attach`、`/detach`、`/list`、`/help` 等。
+
+### 配置重置
+
+如果配置文件损坏或需要恢复默认设置：
+
+```bash
+remote-claude config reset          # 交互式选择重置范围
+remote-claude config reset --all    # 重置全部配置文件
+remote-claude config reset --config # 仅重置用户配置（config.json）
+remote-claude config reset --runtime # 仅重置运行时配置（runtime.json）
+```
+
+### 使用统计
+
+查看使用统计数据：
+
+```bash
+remote-claude stats                 # 查看今日统计
+remote-claude stats --range 7d      # 查看近 7 天统计
+remote-claude stats --range 30d     # 查看近 30 天统计
+remote-claude stats --detail        # 显示详细分类
+remote-claude stats --session <name> # 按会话名筛选
+```
 
 ## 高级配置
 
@@ -268,8 +337,8 @@ Remote Claude 使用两个配置文件：
 - `enabled`: 是否启用快捷命令选择器（默认 `false`）
 - `commands`: 快捷命令列表，最多 20 条
 - `label`: 显示名称，最长 20 字符
-- `value`: 命令值，必须以 `/` 开头，最长 32 字符
-- `icon`: 图标 emoji（可选）
+- `value`: 命令值，必须以 `/` 开头，最长 32 字符，不能包含空格
+- `icon`: 图标 emoji（可选，为空时使用空白占位）
 
 ### 环境变量配置
 
@@ -307,7 +376,7 @@ CLAUDE_COMMAND=/usr/local/bin/claude
 
 ## 文档
 
-- [CLAUDE.md](./CLAUDE.md) — 项目架构和开发说明
-- [LARK_CLIENT_GUIDE.md](./LARK_CLIENT_GUIDE.md) — 飞书客户端完整指南
-- [tests/TEST_PLAN.md](./tests/TEST_PLAN.md) — 测试计划
-- [docker/README.md](./docker/README.md) — Docker 测试（npm 包发布前验证）
+- [CLAUDE.md](CLAUDE.md) — 项目架构和开发说明
+- [lark_client/GUIDE.md](lark_client/README.md) — 飞书客户端完整指南
+- [tests/TEST_PLAN.md](tests/TEST_PLAN.md) — 测试计划
+- [docker/README.md](docker/README.md) — Docker 测试（npm 包发布前验证）

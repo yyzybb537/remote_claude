@@ -32,8 +32,25 @@ sys.path.insert(0, str(_root))
 
 try:
     from stats import track as _track_stats
-except Exception:
-    def _track_stats(*args, **kwargs): pass
+except ImportError:
+    _track_stats = None
+except OSError as e:
+    logger.warning(f"stats 模块加载失败（系统错误），统计功能将禁用: {e}")
+    _track_stats = None
+except Exception as e:
+    logger.warning(f"stats 模块加载异常: {e}")
+    _track_stats = None
+
+
+def _safe_track_stats(*args, **kwargs):
+    """安全调用统计追踪函数，模块未加载时静默跳过"""
+    if _track_stats is not None:
+        try:
+            _track_stats(*args, **kwargs)
+        except (ConnectionError, TimeoutError) as e:
+            logger.debug(f"统计追踪失败（网络错误）: {e}")
+        except Exception as e:
+            logger.debug(f"统计追踪失败: {e}")
 
 from utils.session import ensure_user_data_dir, USER_DATA_DIR
 from utils.runtime_config import load_user_config
@@ -122,8 +139,10 @@ class SharedMemoryPoller:
         if tracker and tracker.reader:
             try:
                 tracker.reader.close()
-            except Exception:
-                pass
+            except OSError as e:
+                logger.debug(f"关闭 Reader 失败: {e}")
+            except Exception as e:
+                logger.warning(f"关闭 Reader 发生意外错误: {e}")
         logger.info(f"轮询器停止: chat_id={chat_id[:8]}...")
 
     def stop_and_get_active_slice(self, chat_id: str) -> Optional['CardSlice']:
@@ -146,8 +165,10 @@ class SharedMemoryPoller:
         if tracker.reader:
             try:
                 tracker.reader.close()
-            except Exception:
-                pass
+            except OSError as e:
+                logger.debug(f"关闭 Reader 失败: {e}")
+            except Exception as e:
+                logger.warning(f"关闭 Reader 发生意外错误: {e}")
 
         logger.info(f"轮询器停止(含活跃切片): chat_id={chat_id[:8]}..., active={'有' if active else '无'}")
         return active
@@ -166,8 +187,12 @@ class SharedMemoryPoller:
         if tracker and tracker.reader:
             try:
                 return tracker.reader.read()
+            except OSError as e:
+                logger.warning(f"read_snapshot 失败（系统错误）: {e}")
+            except json.JSONDecodeError as e:
+                logger.warning(f"read_snapshot 失败（数据格式错误）: {e}")
             except Exception as e:
-                logger.warning(f"read_snapshot 失败: {e}")
+                logger.error(f"read_snapshot 失败: {e}", exc_info=True)
         return None
 
     def kick(self, chat_id: str) -> None:
@@ -211,6 +236,8 @@ class SharedMemoryPoller:
                 await self._poll_once(tracker)
             except asyncio.CancelledError:
                 break
+            except OSError as e:
+                logger.error(f"_poll_loop 系统错误: {e}")
             except Exception as e:
                 logger.error(f"_poll_once 异常: {e}", exc_info=True)
 
@@ -225,15 +252,29 @@ class SharedMemoryPoller:
                     return
                 tracker.reader = SharedStateReader(tracker.session_name)
                 logger.info(f"Reader 初始化成功: session={tracker.session_name}")
+            except FileNotFoundError as e:
+                logger.warning(f"共享内存文件不存在: {e}")
+                return
+            except OSError as e:
+                logger.warning(f"创建 Reader 失败（系统错误）: {e}")
+                return
             except Exception as e:
-                logger.warning(f"创建 Reader 失败: {e}")
+                logger.error(f"创建 Reader 失败: {e}", exc_info=True)
                 return
 
         # 读取共享内存
         try:
             state = tracker.reader.read()
+        except OSError as e:
+            logger.error(f"读取共享内存失败（系统错误）: {e}")
+            tracker.reader = None
+            return
+        except json.JSONDecodeError as e:
+            logger.error(f"读取共享内存失败（数据格式错误）: {e}")
+            tracker.reader = None
+            return
         except Exception as e:
-            logger.error(f"读取共享内存失败: {e}")
+            logger.error(f"读取共享内存失败: {e}", exc_info=True)
             tracker.reader = None
             return
 
@@ -330,7 +371,7 @@ class SharedMemoryPoller:
             logger.warning(
                 f"update_card 失败 card_id={active.card_id} seq={active.sequence}，降级为新卡片"
             )
-            _track_stats('card', 'fallback', session_name=tracker.session_name,
+            _safe_track_stats('card', 'fallback', session_name=tracker.session_name,
                          chat_id=tracker.chat_id)
             new_card_id = await self._card_service.create_card(card_dict)
             if new_card_id:
@@ -338,7 +379,7 @@ class SharedMemoryPoller:
                 active.card_id = new_card_id
                 active.sequence = 0
         else:
-            _track_stats('card', 'update', session_name=tracker.session_name,
+            _safe_track_stats('card', 'update', session_name=tracker.session_name,
                          chat_id=tracker.chat_id)
 
         tracker.content_hash = new_hash
@@ -390,7 +431,7 @@ class SharedMemoryPoller:
             await self._card_service.send_card(tracker.chat_id, card_id)
             tracker.cards.append(CardSlice(card_id=card_id, start_idx=start_idx))
             tracker.content_hash = self._compute_hash(blocks_slice, status_line, bottom_bar, agent_panel, option_block)
-            _track_stats('card', 'create', session_name=tracker.session_name,
+            _safe_track_stats('card', 'create', session_name=tracker.session_name,
                          chat_id=tracker.chat_id)
             logger.info(
                 f"[NEW] session={tracker.session_name} start_idx={start_idx} "
@@ -417,7 +458,7 @@ class SharedMemoryPoller:
         active.sequence += 1
         await self._card_service.update_card(active.card_id, active.sequence, frozen_card)
         active.frozen = True
-        _track_stats('card', 'freeze', session_name=tracker.session_name,
+        _safe_track_stats('card', 'freeze', session_name=tracker.session_name,
                      chat_id=tracker.chat_id)
 
         # 2. 创建新流式卡片，从最近 INITIAL_WINDOW 个 blocks 开始（重置窗口）
@@ -437,7 +478,7 @@ class SharedMemoryPoller:
             await self._card_service.send_card(tracker.chat_id, new_card_id)
             tracker.cards.append(CardSlice(card_id=new_card_id, start_idx=new_start))
             tracker.content_hash = self._compute_hash(new_blocks, status_line, bottom_bar, agent_panel, option_block)
-            _track_stats('card', 'create', session_name=tracker.session_name,
+            _safe_track_stats('card', 'create', session_name=tracker.session_name,
                          chat_id=tracker.chat_id)
             logger.info(
                 f"[ELEMENT_LIMIT_SPLIT] session={tracker.session_name} "
@@ -482,7 +523,7 @@ class SharedMemoryPoller:
         active.sequence += 1
         await self._card_service.update_card(active.card_id, active.sequence, frozen_card)
         active.frozen = True
-        _track_stats('card', 'freeze', session_name=tracker.session_name,
+        _safe_track_stats('card', 'freeze', session_name=tracker.session_name,
                      chat_id=tracker.chat_id)
         logger.info(
             f"[FREEZE] session={tracker.session_name} card_id={active.card_id} "
@@ -554,6 +595,10 @@ class SharedMemoryPoller:
                     msg_id = await self._card_service.send_text(tracker.chat_id, text)
                     if msg_id:
                         tracker.last_notify_message_id = msg_id
+            except (ConnectionError, TimeoutError) as e:
+                logger.warning(f"加急通知失败（网络错误）: {e}")
+            except OSError as e:
+                logger.warning(f"加急通知失败（系统错误）: {e}")
             except Exception as e:
                 logger.warning(f"加急通知失败: {e}")
         else:
@@ -564,6 +609,10 @@ class SharedMemoryPoller:
                 msg_id = await self._card_service.send_text(tracker.chat_id, text)
                 if msg_id:
                     tracker.last_notify_message_id = msg_id
+            except (ConnectionError, TimeoutError) as e:
+                logger.warning(f"就绪提醒发送失败（网络错误）: {e}")
+            except OSError as e:
+                logger.warning(f"就绪提醒发送失败（系统错误）: {e}")
             except Exception as e:
                 logger.warning(f"就绪提醒发送失败: {e}")
 
@@ -572,8 +621,12 @@ class SharedMemoryPoller:
         await asyncio.sleep(delay)
         try:
             await self._card_service.cancel_urgent_app(message_id, user_ids)
+        except (ConnectionError, TimeoutError) as e:
+            logger.debug(f"取消加急失败（网络错误）: {e}")
+        except OSError as e:
+            logger.debug(f"取消加急失败（系统错误）: {e}")
         except Exception as e:
-            logger.warning(f"延迟取消加急失败: {e}")
+            logger.warning(f"取消加急失败: {e}")
 
     def get_notify_enabled(self) -> bool:
         """获取就绪通知开关状态"""
@@ -645,7 +698,13 @@ def _load_notify_enabled() -> bool:
     """读取就绪通知开关状态，不存在或解析失败返回 True（默认开启）"""
     try:
         return _NOTIFY_ENABLED_FILE.read_text().strip() == "1"
-    except Exception:
+    except FileNotFoundError:
+        return True
+    except PermissionError as e:
+        logger.warning(f"无法读取就绪通知开关文件（权限错误）: {e}")
+        return True
+    except OSError as e:
+        logger.warning(f"读取就绪通知开关失败（系统错误）: {e}")
         return True
 
 
@@ -654,6 +713,10 @@ def _save_notify_enabled(enabled: bool) -> None:
     try:
         ensure_user_data_dir()
         _NOTIFY_ENABLED_FILE.write_text("1" if enabled else "0")
+    except PermissionError as e:
+        logger.warning(f"保存就绪通知开关失败（权限错误）: {e}")
+    except OSError as e:
+        logger.warning(f"保存就绪通知开关失败（系统错误）: {e}")
     except Exception as e:
         logger.warning(f"_save_notify_enabled 失败: {e}")
 
@@ -662,7 +725,13 @@ def _load_urgent_enabled() -> bool:
     """读取加急通知开关状态，不存在或解析失败返回 False（默认关闭）"""
     try:
         return _URGENT_ENABLED_FILE.read_text().strip() == "1"
-    except Exception:
+    except FileNotFoundError:
+        return False
+    except PermissionError as e:
+        logger.warning(f"无法读取加急通知开关文件（权限错误）: {e}")
+        return False
+    except OSError as e:
+        logger.warning(f"读取加急通知开关失败（系统错误）: {e}")
         return False
 
 
@@ -671,6 +740,10 @@ def _save_urgent_enabled(enabled: bool) -> None:
     try:
         ensure_user_data_dir()
         _URGENT_ENABLED_FILE.write_text("1" if enabled else "0")
+    except PermissionError as e:
+        logger.warning(f"保存加急通知开关失败（权限错误）: {e}")
+    except OSError as e:
+        logger.warning(f"保存加急通知开关失败（系统错误）: {e}")
     except Exception as e:
         logger.warning(f"_save_urgent_enabled 失败: {e}")
 
@@ -679,7 +752,13 @@ def _load_bypass_enabled() -> bool:
     """读取新会话 bypass 开关状态，不存在或解析失败返回 False（默认关闭）"""
     try:
         return _BYPASS_ENABLED_FILE.read_text().strip() == "1"
-    except Exception:
+    except FileNotFoundError:
+        return False
+    except PermissionError as e:
+        logger.warning(f"无法读取 bypass 开关文件（权限错误）: {e}")
+        return False
+    except OSError as e:
+        logger.warning(f"读取 bypass 开关失败（系统错误）: {e}")
         return False
 
 
@@ -688,6 +767,10 @@ def _save_bypass_enabled(enabled: bool) -> None:
     try:
         ensure_user_data_dir()
         _BYPASS_ENABLED_FILE.write_text("1" if enabled else "0")
+    except PermissionError as e:
+        logger.warning(f"保存 bypass 开关失败（权限错误）: {e}")
+    except OSError as e:
+        logger.warning(f"保存 bypass 开关失败（系统错误）: {e}")
     except Exception as e:
         logger.warning(f"_save_bypass_enabled 失败: {e}")
 
@@ -704,11 +787,20 @@ def _increment_ready_count() -> int:
         ensure_user_data_dir()
         try:
             count = int(_READY_COUNT_FILE.read_text().strip())
-        except Exception:
+        except FileNotFoundError:
+            count = 0
+        except ValueError:
+            logger.warning("就绪计数文件内容无效，重置为 0")
             count = 0
         count += 1
         _READY_COUNT_FILE.write_text(str(count))
         return count
+    except PermissionError as e:
+        logger.warning(f"_increment_ready_count 失败（权限错误）: {e}")
+        return 1
+    except OSError as e:
+        logger.warning(f"_increment_ready_count 失败（系统错误）: {e}")
+        return 1
     except Exception as e:
         logger.warning(f"_increment_ready_count 失败: {e}")
         return 1

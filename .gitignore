@@ -34,6 +34,12 @@ capture_*.txt
 *.swp
 *.swo
 
+# Claude Code / TTADK
+.claude/
+.ttadk/
+.superset/
+.mcp.json
+
 # npm
 node_modules/
 

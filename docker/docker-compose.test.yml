@@ -7,7 +7,7 @@ services:
     volumes:
       # 只读挂载项目代码（防止测试意外修改源代码）
       - ..:/project:ro
-      # 测试结果输出目录（可写）
+      # 测试结果输出目录（可写，包含 npm 安装产物和测试报告）
       - ../test-results:/home/testuser/test-results
     working_dir: /project
     environment:

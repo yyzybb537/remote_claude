@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "ui_settings": {
+    "quick_commands": {
+      "enabled": true,
+      "commands": [
+        {"label": "清空对话", "value": "/clear", "icon": "🗑️"},
+        {"label": "压缩上下文", "value": "/consume", "icon": "📦"},
+        {"label": "退出会话", "value": "/exit", "icon": "🚪"},
+        {"label": "帮助", "value": "/help", "icon": "❓"}
+      ]
+    }
+  }
+}

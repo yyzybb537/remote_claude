@@ -55,12 +55,17 @@ SERVER_LOG_LEVEL_MAP = {
 try:
     from dotenv import load_dotenv
     load_dotenv(get_env_file())
-except Exception:
-    pass
+except ImportError:
+    logger.debug("dotenv 模块未安装，跳过 .env 加载")
+except OSError as e:
+    logger.warning(f"读取 .env 文件失败: {e}")
 
 try:
     from stats import track as _track_stats
-except Exception:
+except ImportError:
+    def _track_stats(*args, **kwargs): pass
+except Exception as e:
+    logger.warning(f"stats 模块加载异常: {e}")
     def _track_stats(*args, **kwargs): pass
 
 
@@ -192,8 +197,8 @@ class OutputWatcher:
             raw_log_path = f"/tmp/remote-claude/{safe_name}_pty_raw.log"
             try:
                 self._raw_log_fd = open(raw_log_path, "a", encoding="ascii", buffering=1)
-            except Exception:
-                pass
+            except OSError as e:
+                logger.warning(f"无法创建 PTY 原始日志文件: {e}")
         # 持久化 pyte 渲染器：PTY 数据直接实时喂入，flush 时直接读 screen
         from rich_text_renderer import RichTextRenderer
         self._renderer = RichTextRenderer(columns=cols, lines=rows, debug_stream=debug_screen)
@@ -224,8 +229,8 @@ class OutputWatcher:
                 with open(cfg_path) as _f:
                     _cfg = _json.load(_f)
                 self._debug_truncate_len = int(_cfg.get("debug_truncate_len", 80))
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+            logger.debug(f"读取调试配置失败，使用默认值: {e}")
 
     def resize(self, cols: int, rows: int):
         """重建 renderer 以适应新尺寸，历史随之丢失（可接受）。
@@ -247,8 +252,8 @@ class OutputWatcher:
                 ts = time.strftime('%H:%M:%S') + f'.{int(time.time() * 1000) % 1000:03d}'
                 encoded = _b64.b64encode(data).decode('ascii')
                 self._raw_log_fd.write(f"{ts} len={len(data)} {encoded}\n")
-            except Exception:
-                pass
+            except (OSError, ValueError) as e:
+                logger.warning(f"写入 PTY 原始日志失败: {e}")
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -458,7 +463,7 @@ class OutputWatcher:
             )
 
         except Exception as e:
-            print(f"[OutputWatcher] flush 失败: {e}")
+            logger.error(f"[OutputWatcher] flush 失败: {e}", exc_info=True)
 
     def _write_window_debug(self, window: ClaudeWindow):
         """将 ClaudeWindow 快照写入调试文件"""
@@ -586,8 +591,10 @@ class OutputWatcher:
             lines.append("-----")
             with open(self._debug_file, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"写入调试文件失败: {e}")
+        except Exception as e:
+            logger.error(f"写入调试文件发生意外错误: {e}", exc_info=True)
 
     @staticmethod
     def _char_to_ansi(char) -> str:
@@ -721,8 +728,10 @@ class OutputWatcher:
 
             with open(screen_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"写入屏幕调试文件失败: {e}")
+        except Exception as e:
+            logger.error(f"写入屏幕调试文件发生意外错误: {e}", exc_info=True)
 
 
 # ── 全量快照架构 end ─────────────────────────────────────────────────────────
@@ -767,8 +776,10 @@ class ClientConnection:
             data = encode_message(msg)
             self.writer.write(data)
             await self.writer.drain()
+        except (ConnectionError, BrokenPipeError, OSError) as e:
+            logger.warning(f"发送消息失败 ({self.client_id}): 连接错误: {e}")
         except Exception as e:
-            logger.warning(f"发送消息失败 ({self.client_id}): {e}")
+            logger.error(f"发送消息失败 ({self.client_id}): 未知错误: {e}")
 
     async def read_message(self) -> Optional[Message]:
         """读取一条消息"""
@@ -778,8 +789,11 @@ class ClientConnection:
                 line, self.buffer = self.buffer.split(b"\n", 1)
                 try:
                     return decode_message(line)
+                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    logger.warning(f"解析消息失败: {e}, 数据: {line[:100]!r}")
+                    continue
                 except Exception as e:
-                    logger.warning(f"解析消息失败: {e}")
+                    logger.error(f"解析消息发生意外错误: {e}", exc_info=True)
                     continue
 
             # 读取更多数据
@@ -788,15 +802,20 @@ class ClientConnection:
                 if not data:
                     return None
                 self.buffer += data
-            except Exception:
+            except (ConnectionError, BrokenPipeError, OSError):
+                return None
+            except Exception as e:
+                logger.error(f"读取消息发生意外错误: {e}", exc_info=True)
                 return None
 
     def close(self):
         """关闭连接"""
         try:
             self.writer.close()
-        except Exception:
-            pass
+        except (ConnectionError, OSError) as e:
+            logger.debug(f"关闭连接时发生错误: {e}")
+        except Exception as e:
+            logger.warning(f"关闭连接发生意外错误: {e}")
 
 
 class ProxyServer:
@@ -961,8 +980,12 @@ class ProxyServer:
             with open(env_snapshot_path) as _f:
                 _extra_env = _json.load(_f)
             logger.info(f"环境快照已加载 ({len(_extra_env)} 个变量)")
-        except Exception:
-            logger.warning("环境快照加载失败，使用当前进程环境")
+        except FileNotFoundError:
+            logger.warning("环境快照文件不存在，使用当前进程环境")
+        except json.JSONDecodeError as e:
+            logger.warning(f"环境快照文件格式错误: {e}，使用当前进程环境")
+        except OSError as e:
+            logger.warning(f"读取环境快照失败: {e}，使用当前进程环境")
 
         # 提前计算命令（fork 后父子进程共享，方便父进程打印和子进程执行）
         import shlex as _shlex
@@ -979,8 +1002,11 @@ class ProxyServer:
             # 环境已加载到内存，立即删除快照文件（exec 前销毁）
             try:
                 env_snapshot_path.unlink()
-            except Exception:
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                # fork 后无法使用 logger，直接输出
+                print(f"[Server] 警告: 删除环境快照失败: {e}", file=sys.stderr)
             # 以快照为权威来源完整替换子进程环境，确保 unset 的变量也消失
             # 若 snapshot 加载失败（_extra_env 为空），降级使用当前进程环境
             child_env = dict(_extra_env) if _extra_env else dict(os.environ)
@@ -992,7 +1018,7 @@ class ProxyServer:
             child_env.pop('TMUX_PANE', None)
             try:
                 os.execvpe(_cmd_parts[0], _cmd_parts + self.claude_args, child_env)
-            except Exception as _e:
+            except (FileNotFoundError, PermissionError) as _e:
                 msg = f"启动失败: 命令 '{_cmd_parts[0]}' 无法执行: {_e}"
                 os.write(1, (msg + "\n").encode())  # 写到 PTY
                 # fork 后不能安全使用 logging，直接追加写日志文件
@@ -1005,9 +1031,13 @@ class ProxyServer:
                     _log_file = os.path.join(_home, ".remote-claude", "startup.log")
                     with open(_log_file, "a", encoding="utf-8") as _f:
                         _f.write(_log_line)
-                except Exception:
+                except OSError:
                     pass
                 os._exit(127)  # 127 = command not found (shell convention)
+            except OSError as _e:
+                msg = f"启动失败: 命令 '{_cmd_parts[0]}' 执行错误: {_e}"
+                os.write(1, (msg + "\n").encode())
+                os._exit(126)  # 126 = command not executable
             os._exit(1)  # 理论上不可达
         else:
             # 父进程
@@ -1073,8 +1103,12 @@ class ProxyServer:
                 logger.error(f"CLI 进程异常退出 (exit_code={exit_code})")
             else:
                 logger.info("Claude 已退出")
-        except Exception:
-            logger.info("Claude 已退出")
+        except ChildProcessError:
+            logger.info("Claude 已退出（子进程已回收）")
+        except ProcessLookupError:
+            logger.info("Claude 已退出（进程未找到）")
+        except Exception as e:
+            logger.warning(f"获取 Claude 退出状态失败: {e}")
         await self._shutdown()
 
     def _read_pty_sync(self) -> Optional[bytes]:
@@ -1107,8 +1141,12 @@ class ProxyServer:
                 if msg is None:
                     break
                 await self._handle_message(client_id, msg)
+        except (ConnectionError, BrokenPipeError, OSError) as e:
+            logger.info(f"客户端连接断开 ({client_id}): {e}")
+        except asyncio.CancelledError:
+            logger.info(f"客户端任务被取消 ({client_id})")
         except Exception as e:
-            logger.error(f"客户端处理错误 ({client_id}): {e}")
+            logger.error(f"客户端处理错误 ({client_id}): {e}", exc_info=True)
         finally:
             # 清理
             del self.clients[client_id]
@@ -1129,16 +1167,20 @@ class ProxyServer:
             os.write(self.master_fd, data)
             _track_stats('terminal', 'input', session_name=self.session_name,
                          value=len(data))
+        except (BrokenPipeError, OSError) as e:
+            logger.error(f"写入 PTY 失败（连接错误）: {e}")
         except Exception as e:
-            logger.error(f"写入 PTY 错误: {e}")
+            logger.error(f"写入 PTY 发生意外错误: {e}", exc_info=True)
 
         # 广播输入给其他客户端（飞书侧可以感知终端用户的输入内容）
         for cid, client in list(self.clients.items()):
             if cid != client_id:
                 try:
                     await client.send(msg)
-                except Exception:
-                    pass
+                except (ConnectionError, BrokenPipeError, OSError):
+                    pass  # 广播失败可忽略
+                except Exception as e:
+                    logger.debug(f"广播输入失败: {e}")
 
     async def _handle_resize(self, client_id: str, msg: ResizeMessage):
         """处理终端大小变化：同步更新 PTY 和 pyte 渲染尺寸，清空 raw buffer。
@@ -1149,8 +1191,10 @@ class ProxyServer:
             self.output_watcher.resize(msg.cols, self.PTY_ROWS)
             winsize = struct.pack('HHHH', msg.rows, msg.cols, 0, 0)
             fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+        except OSError as e:
+            logger.error(f"调整终端大小失败（系统错误）: {e}")
         except Exception as e:
-            logger.error(f"调整终端大小错误: {e}")
+            logger.error(f"调整终端大小失败: {e}", exc_info=True)
 
     async def _broadcast_output(self, data: bytes):
         """广播输出给所有客户端，同时喂给 OutputWatcher 生成快照"""
@@ -1178,8 +1222,10 @@ class ProxyServer:
         if self.master_fd is not None:
             try:
                 os.close(self.master_fd)
-            except Exception:
-                pass
+            except OSError:
+                pass  # PTY 已关闭，可忽略
+            except Exception as e:
+                logger.warning(f"关闭 PTY 发生意外错误: {e}")
 
         # 关闭共享状态（会删除 .mq 文件）
         elapsed = int(time.time() - self._start_time)

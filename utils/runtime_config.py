@@ -11,11 +11,9 @@
 
 import json
 import logging
-import hashlib
 import fcntl
-import os
 import glob
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -28,12 +26,12 @@ USER_CONFIG_VERSION = "1.0"
 MAX_SESSION_MAPPINGS = 500
 MAX_BACKUP_FILES = 2  # 保留最近 2 个备份文件
 
-# 从 utils.session 导入 USER_DATA_DIR，避免重复定义
 from utils.session import USER_DATA_DIR, ensure_user_data_dir
 
 RUNTIME_CONFIG_FILE = USER_DATA_DIR / "runtime.json"
 USER_CONFIG_FILE = USER_DATA_DIR / "config.json"
 RUNTIME_LOCK_FILE = USER_DATA_DIR / "runtime.json.lock"
+USER_CONFIG_LOCK_FILE = USER_DATA_DIR / "config.json.lock"
 LEGACY_LARK_GROUP_MAPPING_FILE = USER_DATA_DIR / "lark_group_mapping.json"
 
 
@@ -90,12 +88,23 @@ def prompt_backup_action(bak_path: Path) -> str:
     return 'overwrite' if choice == '1' else 'skip'
 
 
-def cleanup_backup_files() -> None:
-    """清理所有 `.bak` 备份文件
+def cleanup_backup_files(config_type: Optional[str] = None) -> None:
+    """清理 `.bak` 备份文件
 
     用于清理损坏配置文件的备份（由 _backup_corrupted_file 产生）。
+
+    Args:
+        config_type: 'config', 'runtime', 或 None（全部）。
+            - 'config': 仅清理 config.json.bak.*
+            - 'runtime': 仅清理 runtime.json.bak.*
+            - None: 清理所有 *.json.bak* 文件
     """
-    for bak_file in USER_DATA_DIR.glob("*.json.bak*"):
+    if config_type is None:
+        pattern = "*.json.bak*"
+    else:
+        pattern = f"{config_type}.json.bak.*"
+
+    for bak_file in USER_DATA_DIR.glob(pattern):
         bak_file.unlink()
         logger.info(f"已删除备份文件: {bak_file}")
 
@@ -333,6 +342,40 @@ class UserConfig:
 
 # ============== 配置加载/保存函数 ==============
 
+def _save_config_with_lock(
+    config_obj: Any,
+    config_file: Path,
+    lock_path: Path,
+) -> None:
+    """使用文件锁保存配置的通用函数
+
+    Args:
+        config_obj: 配置对象（需要有 to_dict() 方法）
+        config_file: 配置文件路径
+        lock_path: 锁文件路径
+    """
+    ensure_user_data_dir()
+
+    try:
+        # 使用锁文件的 flock 实现真正的互斥
+        # 先创建锁文件（如果不存在）
+        lock_path.touch(exist_ok=True)
+
+        # 对锁文件加排他锁，阻塞等待
+        with open(lock_path, 'w', encoding="utf-8") as lock_fd:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+            try:
+                # 在锁保护下写入配置文件
+                content = json.dumps(config_obj.to_dict(), indent=2, ensure_ascii=False)
+                with open(config_file, 'w', encoding="utf-8") as f:
+                    f.write(content)
+            finally:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+    except PermissionError:
+        logger.warning("配置目录权限不足，配置将仅在内存中保留")
+        raise
+
+
 def load_runtime_config() -> RuntimeConfig:
     """加载运行时配置文件
 
@@ -361,7 +404,7 @@ def save_runtime_config(config: RuntimeConfig) -> None:
     """保存运行时配置到文件
 
     使用文件锁（fcntl.flock）保护并发写入。
-    锁文件命名为 runtime.json.lock，包含详细注释。
+    通过对锁文件加 flock 实现真正的互斥，避免竞态条件。
 
     Args:
         config: 运行时配置对象
@@ -369,35 +412,8 @@ def save_runtime_config(config: RuntimeConfig) -> None:
     Raises:
         IOError: 文件写入失败
     """
-    ensure_user_data_dir()
-    lock_path = USER_DATA_DIR / "runtime.json.lock"
-
-    # 创建锁文件（带注释）
-    lock_content = f"""# Remote Claude 配置文件锁
-# 用途: 防止并发写入导致配置损坏
-# 创建进程 PID: {os.getpid()}
-# 创建时间: {datetime.now().isoformat()}
-# 说明: 此文件在配置写入时自动创建，写入完成后自动删除
-#       如果程序异常退出，此文件可能残留，可安全删除
-"""
-    lock_path.write_text(lock_content, encoding="utf-8")
-
-    try:
-        content = json.dumps(config.to_dict(), indent=2, ensure_ascii=False)
-        with open(RUNTIME_CONFIG_FILE, 'w', encoding="utf-8") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            try:
-                f.write(content)
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        logger.debug(f"保存配置成功: {RUNTIME_CONFIG_FILE}")
-    except PermissionError:
-        logger.warning("配置目录权限不足，配置将仅在内存中保留")
-        raise
-    finally:
-        # 删除锁文件
-        if lock_path.exists():
-            lock_path.unlink()
+    _save_config_with_lock(config, RUNTIME_CONFIG_FILE, RUNTIME_LOCK_FILE)
+    logger.debug(f"保存配置成功: {RUNTIME_CONFIG_FILE}")
 
 
 def remove_session_mapping(truncated_name: str) -> None:
@@ -491,7 +507,7 @@ def save_user_config(config: UserConfig) -> None:
     """保存用户配置到文件（config.json）
 
     使用文件锁（fcntl.flock）保护并发写入。
-    锁文件命名为 config.json.lock，包含详细注释。
+    通过对锁文件加 flock 实现真正的互斥，避免竞态条件。
 
     Args:
         config: 用户配置对象
@@ -499,32 +515,5 @@ def save_user_config(config: UserConfig) -> None:
     Raises:
         IOError: 文件写入失败
     """
-    ensure_user_data_dir()
-    lock_path = USER_DATA_DIR / "config.json.lock"
-
-    # 创建锁文件（带注释）
-    lock_content = f"""# Remote Claude 用户配置文件锁
-# 用途: 防止并发写入导致配置损坏
-# 创建进程 PID: {os.getpid()}
-# 创建时间: {datetime.now().isoformat()}
-# 说明: 此文件在配置写入时自动创建，写入完成后自动删除
-#       如果程序异常退出，此文件可能残留，可安全删除
-"""
-    lock_path.write_text(lock_content, encoding="utf-8")
-
-    try:
-        content = json.dumps(config.to_dict(), indent=2, ensure_ascii=False)
-        with open(USER_CONFIG_FILE, 'w', encoding="utf-8") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            try:
-                f.write(content)
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        logger.debug(f"保存用户配置成功: {USER_CONFIG_FILE}")
-    except PermissionError:
-        logger.warning("配置目录权限不足，用户配置将仅在内存中保留")
-        raise
-    finally:
-        # 删除锁文件
-        if lock_path.exists():
-            lock_path.unlink()
+    _save_config_with_lock(config, USER_CONFIG_FILE, USER_CONFIG_LOCK_FILE)
+    logger.debug(f"保存用户配置成功: {USER_CONFIG_FILE}")

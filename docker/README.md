@@ -34,6 +34,12 @@ docker-compose -f docker/docker-compose.test.yml run npm-test /bin/bash
 /project/docker/scripts/docker-test.sh
 ```
 
+### 环境清理
+
+```bash
+docker-compose -f docker/docker-compose.test.yml down --remove-orphans
+```
+
 ### 查看结果
 
 ```bash
@@ -41,19 +47,88 @@ ls -lh test-results/
 cat test-results/test_report.md
 ```
 
+## 宿主机使用 Docker 产物安装
+
+Docker 测试完成后，`test-results/` 目录包含完整的安装产物，可直接在宿主机上使用：
+
+### 产物说明
+
+```
+test-results/
+├── npm-install/                 # npm 安装目录
+│   ├── .venv/                   # Python 虚拟环境（便携式）
+│   └── node_modules/
+│       └── remote-claude/       # 完整项目代码
+│           ├── bin/             # 可执行脚本（cla, cl, cx, cdx）
+│           └── remote_claude.py # 主入口
+├── test_report.md               # 测试报告
+└── version.txt                  # 版本号
+```
+
+### 宿主机快速使用
+
+```bash
+# 方式一：直接运行（需要宿主机有 Python 3.11+）
+cd test-results/npm-install/node_modules/remote-claude
+./bin/cla  # 启动 Claude 会话
+
+# 方式二：使用虚拟环境中的 Python（推荐，完全隔离）
+cd test-results/npm-install/node_modules/remote-claude
+.venv/bin/python remote_claude.py --help
+
+# 方式三：激活虚拟环境后使用
+source test-results/npm-install/.venv/bin/activate
+remote-claude --help
+```
+
+### 可执行脚本
+
+`bin/` 目录下提供以下快捷命令：
+
+| 脚本 | 说明 |
+|------|------|
+| `cla` | 启动 Claude（以当前目录为会话名） |
+| `cl` | 同 `cla`，跳过权限确认 |
+| `cx` | 启动 Codex（以当前目录为会话名，跳过权限确认） |
+| `cdx` | 同 `cx`，需要确认权限 |
+
+### 前置要求
+
+宿主机使用 Docker 产物需要：
+
+1. **必需工具**：tmux、git
+2. **CLI 工具**：Claude CLI 或 Codex CLI（至少一个）
+3. **可选**：飞书企业自建应用（用于飞书客户端）
+
+> **注意**：产物中已包含便携式 Python 虚拟环境（`.venv`），宿主机无需预装 Python。
+
+### 验证安装
+
+```bash
+# 验证 Python 环境
+test-results/npm-install/.venv/bin/python --version
+
+# 验证依赖
+test-results/npm-install/.venv/bin/python -c "import lark_oapi; print('✓ 依赖完整')"
+
+# 验证命令可用
+test-results/npm-install/node_modules/remote-claude/bin/cla --help
+```
+
 ## 测试流程
 
 Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 
-1. **环境检查** - 验证 Python、uv、tmux、npm、Claude CLI
+1. **环境检查** - 验证 Python、uv、tmux、npm、Claude CLI、Codex CLI
 2. **打包 npm 包** - 执行 `npm pack` 生成 `.tgz` 文件
 3. **模拟用户安装** - 在临时目录执行 `npm install <packaged_file>`
 4. **验证 postinstall** - 检查 .venv、pyproject.toml、Python 依赖
 5. **测试基本命令** - 验证 `remote-claude --help`、`remote-claude list`、`cla` 脚本
-6. **执行独立单元测试** - 运行核心测试（失败终止）和非核心测试（失败继续）
-7. **文件完整性检查** - 验证关键文件是否存在
-8. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
-9. **清理** - 停止会话、清理 socket 文件、清理 npm 缓存
+6. **验证 Claude/Codex CLI 启动** - 测试 `cla`/`cl`/`cx`/`cdx` 快捷命令启动流程
+7. **文件完整性检查** - 验证关键文件（含 resources/defaults/ 模板文件）是否存在
+8. **执行独立单元测试** - 运行核心测试（失败终止）和非核心测试（失败继续）
+9. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
+10. **清理** - 停止会话、清理 socket 文件、清理 npm 缓存
 
 ## 独立单元测试
 
@@ -75,6 +150,8 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 - `lark_client/test_mock_output.py` - 飞书客户端输出模拟测试
 - `lark_client/test_cjk_width.py` - CJK 字符宽度测试
 - `lark_client/test_full_simulation.py` - 完整模拟测试
+
+> 注：`test_output_clean.py` 已移除（废弃代码）。
 
 ## 调试失败
 

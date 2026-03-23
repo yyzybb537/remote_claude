@@ -31,7 +31,7 @@ if [ "$ENV_OK" = false ]; then
         exit 1
     fi
 
-    cp "$INSTALL_DIR/.env.example" "$ENV_FILE"
+    cp "$INSTALL_DIR/resources/defaults/.env.example" "$ENV_FILE"
     sed -i.bak "s/^FEISHU_APP_ID=.*/FEISHU_APP_ID=$INPUT_APP_ID/" "$ENV_FILE"
     sed -i.bak "s/^FEISHU_APP_SECRET=.*/FEISHU_APP_SECRET=$INPUT_APP_SECRET/" "$ENV_FILE"
     rm -f "$ENV_FILE.bak"

@@ -2,7 +2,7 @@
 name = "remote-claude"
 version = "0.1.0"
 description = "双端共享 Claude CLI 工具"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "lark-oapi>=1.4.24",
     "python-dotenv>=1.0.0",
@@ -13,3 +13,11 @@ dependencies = [
 
 [project.scripts]
 remote-claude = "remote_claude:main"
+
+# uv 配置 - 确保依赖版本一致性
+[tool.uv]
+dev-dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

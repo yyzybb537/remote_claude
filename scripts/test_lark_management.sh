@@ -1,8 +1,13 @@
 #!/bin/bash
 
 # 飞书客户端管理功能测试脚本
+# 用法: 从项目根目录运行 scripts/test_lark_management.sh
 
 set -e
+
+# 获取项目根目录（脚本位于 scripts/ 目录）
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "飞书客户端管理功能测试"
@@ -83,9 +88,9 @@ else
     echo "  ✓ lark.status 已清理"
 fi
 
-if [ -f lark_client.log ]; then
-    echo "  ✓ 日志文件存在: lark_client.log"
-    echo "  日志大小: $(ls -lh lark_client.log | awk '{print $5}')"
+if [ -f "$HOME/.remote-claude/lark_client.log" ]; then
+    echo "  ✓ 日志文件存在: ~/.remote-claude/lark_client.log"
+    echo "  日志大小: $(ls -lh "$HOME/.remote-claude/lark_client.log" | awk '{print $5}')"
 else
     echo "  ✗ 日志文件不存在"
 fi

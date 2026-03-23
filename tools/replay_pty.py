@@ -5,9 +5,9 @@
 用于逐帧定位 pyte 与真实终端的差异。
 
 用法：
-    python3 tools/replay_pty.py /tmp/remote-claude/cx_pty_raw.log --rows 54-62
-    python3 tools/replay_pty.py /tmp/remote-claude/cx_pty_raw.log --rows 54-62 --cols 231 --lines 2000
-    python3 tools/replay_pty.py /tmp/remote-claude/cx_pty_raw.log --rows 54-62 --search hello
+    uv run python3 tools/replay_pty.py /tmp/remote-claude/cx_pty_raw.log --rows 54-62
+    uv run python3 tools/replay_pty.py /tmp/remote-claude/cx_pty_raw.log --rows 54-62 --cols 231 --lines 2000
+    uv run python3 tools/replay_pty.py /tmp/remote-claude/cx_pty_raw.log --rows 54-62 --search hello
 """
 
 import argparse

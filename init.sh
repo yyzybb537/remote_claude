@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 脚本目录（全局变量）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # 颜色定义
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -407,7 +410,8 @@ install_dependencies() {
     print_success "依赖安装完成"
 
     # 上报 init_install 事件（后台执行，不阻塞，失败静默）
-    python3 scripts/report_install.py &>/dev/null &
+    # 使用 uv run 确保使用项目虚拟环境中的 Python
+    uv run --project "$SCRIPT_DIR" python3 scripts/report_install.py &>/dev/null &
 }
 
 # 配置飞书环境
@@ -415,6 +419,7 @@ configure_lark() {
     print_header "配置飞书客户端"
 
     ENV_FILE="$HOME/.remote-claude/.env"
+    TEMPLATE_ENV="$SCRIPT_DIR/resources/defaults/.env.example"
     mkdir -p "$HOME/.remote-claude"
 
     # 迁移旧 .env（项目根目录）到新位置
@@ -428,8 +433,8 @@ configure_lark() {
         return
     fi
 
-    if [ ! -f ".env.example" ]; then
-        print_error "未找到 .env.example 文件"
+    if [ ! -f "$TEMPLATE_ENV" ]; then
+        print_error "未找到 .env.example 模板文件: $TEMPLATE_ENV"
         exit 1
     fi
 
@@ -437,7 +442,7 @@ configure_lark() {
     echo
 
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        cp .env.example "$ENV_FILE"
+        cp "$TEMPLATE_ENV" "$ENV_FILE"
         print_success ".env 文件已创建于 $ENV_FILE"
         print_warning "请编辑 $ENV_FILE，填写以下信息："
         print_info "  - FEISHU_APP_ID: 飞书应用的 App ID"
@@ -471,6 +476,77 @@ create_directories() {
     fi
 }
 
+# 初始化配置文件
+init_config_files() {
+    print_header "初始化配置文件"
+
+    local CONFIG_FILE="$USER_DATA_DIR/config.json"
+    local RUNTIME_FILE="$USER_DATA_DIR/runtime.json"
+    local LEGACY_FILE="$USER_DATA_DIR/lark_group_mapping.json"
+    local CONFIG_TEMPLATE="$SCRIPT_DIR/resources/defaults/config.default.json"
+    local RUNTIME_TEMPLATE="$SCRIPT_DIR/resources/defaults/runtime.default.json"
+
+    if [ ! -f "$CONFIG_TEMPLATE" ]; then
+        print_error "未找到配置模板: $CONFIG_TEMPLATE"
+        exit 1
+    fi
+
+    if [ ! -f "$RUNTIME_TEMPLATE" ]; then
+        print_error "未找到运行时模板: $RUNTIME_TEMPLATE"
+        exit 1
+    fi
+
+    # 1. 创建默认 config.json（如不存在）
+    if [ ! -f "$CONFIG_FILE" ]; then
+        cp "$CONFIG_TEMPLATE" "$CONFIG_FILE"
+        print_success "创建默认配置: $CONFIG_FILE"
+    else
+        print_info "配置文件已存在: $CONFIG_FILE"
+    fi
+
+    # 2. 创建空的 runtime.json（如不存在）
+    if [ ! -f "$RUNTIME_FILE" ]; then
+        cp "$RUNTIME_TEMPLATE" "$RUNTIME_FILE"
+        print_success "创建运行时配置: $RUNTIME_FILE"
+    else
+        print_info "运行时配置已存在: $RUNTIME_FILE"
+    fi
+
+    # 3. 迁移旧 lark_group_mapping.json
+    if [ -f "$LEGACY_FILE" ]; then
+        print_info "检测到旧配置文件: $LEGACY_FILE"
+        # 使用 jq 解析 JSON 并合并
+        if command -v jq &> /dev/null; then
+            # 读取旧映射
+            local legacy_mappings
+            legacy_mappings=$(cat "$LEGACY_FILE" 2>/dev/null)
+            # 检查是否为有效 JSON 且非空
+            if echo "$legacy_mappings" | jq -e '.' > /dev/null 2>&1; then
+                # 合并到 runtime.json（仅当 lark_group_mappings 为空时）
+                local runtime_lark_mappings
+                runtime_lark_mappings=$(jq '.lark_group_mappings' "$RUNTIME_FILE" 2>/dev/null)
+                if [ "$runtime_lark_mappings" = "{}" ] || [ "$runtime_lark_mappings" = "null" ]; then
+                    # 合并映射
+                    jq --argjson mappings "$legacy_mappings" '.lark_group_mappings = $mappings' "$RUNTIME_FILE" > "$RUNTIME_FILE.tmp"
+                    mv "$RUNTIME_FILE.tmp" "$RUNTIME_FILE"
+                    rm -f "$LEGACY_FILE"
+                    print_success "已迁移 lark_group_mapping.json 到 runtime.json"
+                else
+                    # runtime.json 已有映射，删除旧文件
+                    rm "$LEGACY_FILE"
+                    print_warning "runtime.json 已存在 lark_group_mappings，已删除旧配置文件"
+                fi
+            else
+                # 无效 JSON，删除旧文件
+                rm "$LEGACY_FILE"
+                print_warning "旧配置文件格式无效，已删除"
+            fi
+        else
+            print_warning "未安装 jq，跳过自动迁移（程序启动时会自动迁移）"
+        fi
+    fi
+}
+
 # 设置可执行权限
 set_permissions() {
     print_header "设置执行权限"
@@ -486,7 +562,6 @@ set_permissions() {
 configure_shell() {
     print_header "安装快捷命令"
 
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     chmod +x "$SCRIPT_DIR/bin/cla" "$SCRIPT_DIR/bin/cl" "$SCRIPT_DIR/bin/cx" "$SCRIPT_DIR/bin/cdx" "$SCRIPT_DIR/bin/remote-claude" 2>/dev/null || true
 
     # 优先 /usr/local/bin，权限不够则选 ~/bin 或 ~/.local/bin 中已在 PATH 里的
@@ -564,7 +639,6 @@ restart_lark_client() {
         return
     fi
 
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     print_info "正在重启飞书客户端..."
     cd "$SCRIPT_DIR"
     uv run python3 remote_claude.py lark restart || { WARNINGS+=("飞书客户端重启失败，请手动运行: uv run python3 remote_claude.py lark restart"); return; }
@@ -622,6 +696,7 @@ main() {
         configure_lark
     fi
     create_directories
+    init_config_files
     set_permissions
     configure_shell
     restart_lark_client

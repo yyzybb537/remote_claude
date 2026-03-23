@@ -124,17 +124,26 @@ def cmd_start(args):
         print("错误: 无法创建 tmux 会话")
         return 1
 
-    # 等待 server 启动
+    # 等待 server 启动（超时时间可通过环境变量 STARTUP_TIMEOUT 配置，默认 5 秒）
+    try:
+        startup_timeout = int(os.environ.get("STARTUP_TIMEOUT", "5"))
+        if startup_timeout < 1:
+            startup_timeout = 5
+    except ValueError:
+        startup_timeout = 5
+
     socket_path = get_socket_path(session_name)
-    for i in range(50):  # 最多等待 5 秒
+    wait_interval = 0.1  # 100ms
+    max_attempts = int(startup_timeout / wait_interval)
+    for i in range(max_attempts):
         if socket_path.exists():
             break
-        time.sleep(0.1)
+        time.sleep(wait_interval)
         if (i + 1) % 10 == 0:
             elapsed = (i + 1) // 10
             print(f"等待 Server 启动... ({elapsed}s)")
     else:
-        print("错误: Server 启动超时 (5s)")
+        print(f"错误: Server 启动超时 ({startup_timeout}s)")
         # 过滤出本次启动后的日志行
         if _log_path.exists():
             lines = []
@@ -539,6 +548,112 @@ def cmd_lark(args):
         return 0
 
 
+def cmd_config(args):
+    """配置管理（无子命令时显示帮助）"""
+    print("配置管理命令:")
+    print("\n  remote-claude config reset [选项]")
+    print()
+    print("选项:")
+    print("  --all       重置全部配置文件（config.json + runtime.json）")
+    print("  --config    仅重置用户配置（config.json）")
+    print("  --runtime   仅重置运行时配置（runtime.json）")
+    print()
+    print("不带选项时进入交互式选择模式")
+    return 0
+
+
+def cmd_config_reset(args):
+    """配置重置命令"""
+    from utils.runtime_config import (
+        USER_DATA_DIR,
+        USER_CONFIG_FILE,
+        RUNTIME_CONFIG_FILE,
+        USER_CONFIG_LOCK_FILE,
+        RUNTIME_LOCK_FILE,
+        cleanup_backup_files,
+    )
+
+    # 确定要重置的配置文件
+    reset_all = getattr(args, 'all', False)
+    reset_config = getattr(args, 'config_only', False)
+    reset_runtime = getattr(args, 'runtime_only', False)
+
+    if not (reset_all or reset_config or reset_runtime):
+        # 交互式选择
+        print("选择要重置的配置：")
+        print("1. 全部配置（config.json + runtime.json）")
+        print("2. 仅用户配置（config.json）")
+        print("3. 仅运行时配置（runtime.json）")
+        print("4. 取消")
+        try:
+            choice = input("请选择 [1-4]: ").strip()
+        except EOFError:
+            print("\n已取消")
+            return 1
+
+        if choice == '1':
+            reset_all = True
+        elif choice == '2':
+            reset_config = True
+        elif choice == '3':
+            reset_runtime = True
+        else:
+            print("已取消")
+            return 0
+
+    config_template = SCRIPT_DIR / "resources" / "defaults" / "config.default.json"
+    runtime_template = SCRIPT_DIR / "resources" / "defaults" / "runtime.default.json"
+
+    if not config_template.exists():
+        print(f"✗ 未找到配置模板: {config_template}")
+        return 1
+
+    if not runtime_template.exists():
+        print(f"✗ 未找到运行时模板: {runtime_template}")
+        return 1
+
+    # 执行重置
+    try:
+        if reset_all or reset_config:
+            USER_CONFIG_FILE.write_text(config_template.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"✓ 已重置用户配置: {USER_CONFIG_FILE}")
+
+        if reset_all or reset_runtime:
+            RUNTIME_CONFIG_FILE.write_text(runtime_template.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"✓ 已重置运行时配置: {RUNTIME_CONFIG_FILE}")
+
+        # 清理副作用文件（锁文件、备份文件），范围与重置配置保持一致
+        # 状态文件（lark.pid、lark.status）不清理
+        if reset_all or reset_config:
+            try:
+                USER_CONFIG_LOCK_FILE.unlink()
+                print(f"✓ 已清理锁文件: {USER_CONFIG_LOCK_FILE}")
+            except FileNotFoundError:
+                pass
+            cleanup_backup_files("config")
+            print("✓ 已清理 config 备份文件")
+
+        if reset_all or reset_runtime:
+            try:
+                RUNTIME_LOCK_FILE.unlink()
+                print(f"✓ 已清理锁文件: {RUNTIME_LOCK_FILE}")
+            except FileNotFoundError:
+                pass
+            cleanup_backup_files("runtime")
+            print("✓ 已清理 runtime 备份文件")
+
+        print()
+        print("配置重置完成")
+        return 0
+
+    except PermissionError:
+        print(f"✗ 权限不足，无法写入配置目录: {USER_DATA_DIR}")
+        return 1
+    except Exception as e:
+        print(f"✗ 重置失败: {e}")
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Remote Claude - 双端共享 Claude CLI 工具",
@@ -652,8 +767,28 @@ def main():
     lark_status_parser = lark_subparsers.add_parser("status", help="查看飞书客户端状态")
     lark_status_parser.set_defaults(func=cmd_lark_status)
 
-    # 如果只输入 lark 没有子命令，使用默认处理
-    lark_parser.set_defaults(func=cmd_lark)
+    # config 命令（带子命令）
+    config_parser = subparsers.add_parser("config", help="配置管理")
+    config_subparsers = config_parser.add_subparsers(dest="config_command", help="配置操作")
+
+    # config reset
+    config_reset_parser = config_subparsers.add_parser("reset", help="重置配置文件")
+    config_reset_parser.add_argument(
+        "--all", action="store_true",
+        help="重置全部配置文件"
+    )
+    config_reset_parser.add_argument(
+        "--config", dest="config_only", action="store_true",
+        help="仅重置用户配置"
+    )
+    config_reset_parser.add_argument(
+        "--runtime", dest="runtime_only", action="store_true",
+        help="仅重置运行时配置"
+    )
+    config_reset_parser.set_defaults(func=cmd_config_reset)
+
+    # 如果只输入 config 没有子命令
+    config_parser.set_defaults(func=cmd_config)
 
     # stats 命令
     stats_parser = subparsers.add_parser("stats", help="查看使用统计")

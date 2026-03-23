@@ -11,8 +11,11 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# 结果目录
+RESULTS_DIR="/home/testuser/test-results"
+
 # 诊断目录
-DIAG_DIR="/home/testuser/test-results/diagnosis"
+DIAG_DIR="$RESULTS_DIR/diagnosis"
 mkdir -p "$DIAG_DIR"
 
 log_info() {
@@ -92,9 +95,9 @@ collect_npm_info() {
     npm list -g --depth=0 2>&1 >> "$DIAG_DIR/npm.txt"
     echo "" >> "$DIAG_DIR/npm.txt"
 
-    if [ -d "/home/testuser/test-npm-install" ]; then
+    if [ -d "$RESULTS_DIR/npm-install" ]; then
         echo "=== 本地安装包列表 ===" >> "$DIAG_DIR/npm.txt"
-        cd /home/testuser/test-npm-install
+        cd "$RESULTS_DIR/npm-install"
         npm list --depth=0 2>&1 >> "$DIAG_DIR/npm.txt"
     fi
 
@@ -113,9 +116,9 @@ collect_python_info() {
     echo "" >> "$DIAG_DIR/python.txt"
 
     # 虚拟环境包
-    if [ -d "/home/testuser/test-npm-install/node_modules/remote-claude/.venv" ]; then
+    if [ -d "$RESULTS_DIR/npm-install/node_modules/remote-claude/.venv" ]; then
         echo "--- 虚拟环境包 ---" >> "$DIAG_DIR/python.txt"
-        /home/testuser/test-npm-install/node_modules/remote-claude/.venv/bin/pip list 2>&1 >> "$DIAG_DIR/python.txt"
+        "$RESULTS_DIR/npm-install/node_modules/remote-claude/.venv/bin/pip" list 2>&1 >> "$DIAG_DIR/python.txt"
     fi
 
     log_success "Python 包信息已收集"
@@ -125,8 +128,8 @@ collect_python_info() {
 collect_file_structure() {
     print_header "收集文件结构"
 
-    if [ -d "/home/testuser/test-npm-install/node_modules/remote-claude" ]; then
-        cd /home/testuser/test-npm-install/node_modules/remote-claude
+    if [ -d "$RESULTS_DIR/npm-install/node_modules/remote-claude" ]; then
+        cd "$RESULTS_DIR/npm-install/node_modules/remote-claude"
 
         echo "=== 目录结构 ===" > "$DIAG_DIR/structure.txt"
         find . -type f -o -type d | sort >> "$DIAG_DIR/structure.txt"
@@ -214,15 +217,20 @@ collect_errors() {
     echo "--- 依赖检查 ---" >> "$error_log"
     echo "检查关键依赖..." >> "$error_log"
 
-    if ! python3 -c "import lark_oapi" 2>&1; then
+    local py_cmd="python3"
+    if [ -f "$RESULTS_DIR/npm-install/node_modules/remote-claude/.venv/bin/python" ]; then
+        py_cmd="$RESULTS_DIR/npm-install/node_modules/remote-claude/.venv/bin/python"
+    fi
+
+    if ! $py_cmd -c "import lark_oapi" 2>&1; then
         echo "✗ lark_oapi 未安装" >> "$error_log"
     fi
 
-    if ! python3 -c "import dotenv" 2>&1; then
+    if ! $py_cmd -c "import dotenv" 2>&1; then
         echo "✗ python-dotenv 未安装" >> "$error_log"
     fi
 
-    if ! python3 -c "import pyte" 2>&1; then
+    if ! $py_cmd -c "import pyte" 2>&1; then
         echo "✗ pyte 未安装" >> "$error_log"
     fi
 

@@ -7,7 +7,7 @@
 ### 启动飞书客户端
 
 ```bash
-python3 remote_claude.py lark start
+uv run python3 remote_claude.py lark start
 ```
 
 **输出示例：**
@@ -17,8 +17,8 @@ python3 remote_claude.py lark start
   PID: 12345
   日志: /path/to/lark_client.log
 
-使用 'python3 remote_claude.py lark status' 查看状态
-使用 'python3 remote_claude.py lark stop' 停止
+使用 'uv run python3 remote_claude.py lark status' 查看状态
+使用 'uv run python3 remote_claude.py lark stop' 停止
 ```
 
 **特性：**
@@ -29,7 +29,7 @@ python3 remote_claude.py lark start
 ### 查看运行状态
 
 ```bash
-python3 remote_claude.py lark status
+uv run python3 remote_claude.py lark status
 ```
 
 **输出示例：**
@@ -58,7 +58,7 @@ PID:      12345
 ### 停止飞书客户端
 
 ```bash
-python3 remote_claude.py lark stop
+uv run python3 remote_claude.py lark stop
 ```
 
 **输出示例：**
@@ -75,7 +75,7 @@ python3 remote_claude.py lark stop
 ### 重启飞书客户端
 
 ```bash
-python3 remote_claude.py lark restart
+uv run python3 remote_claude.py lark restart
 ```
 
 等同于先执行 `stop`，再执行 `start`。
@@ -152,7 +152,7 @@ cat .env
 cat lark_client.log
 
 # 2. 手动前台运行，查看错误
-python3 lark_client/main.py
+uv run python3 lark_client/main.py
 ```
 
 常见原因：
@@ -177,7 +177,7 @@ rm -f /tmp/remote-claude/lark.pid
 rm -f /tmp/remote-claude/lark.status
 
 # 4. 重新启动
-python3 remote_claude.py lark start
+uv run python3 remote_claude.py lark start
 ```
 
 ### 4. 日志文件过大

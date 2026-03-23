@@ -12,7 +12,6 @@ import os
 import platform
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Optional, List
 import uuid
@@ -23,7 +22,6 @@ SOCKET_DIR = Path("/tmp/remote-claude")
 USER_DATA_DIR = Path.home() / ".remote-claude"
 TMUX_SESSION_PREFIX = "rc-"
 
-# 预编译正则表达式（避免每次调用 _safe_filename 时重新编译）
 _UNDERSCORE_RE = re.compile(r'_+')
 
 # 平台特定的 socket 路径限制
@@ -135,6 +133,8 @@ def resolve_session_name(original_path: str, config: "RuntimeConfig" = None) -> 
     Returns:
         最终的会话名（已处理截断和冲突）
     """
+    # 延迟导入避免循环依赖：session.py ← → runtime_config.py
+    # runtime_config.py 在模块级导入了 session.py 的 USER_DATA_DIR
     from utils.runtime_config import load_runtime_config, save_runtime_config
 
     # 生成截断后的名称

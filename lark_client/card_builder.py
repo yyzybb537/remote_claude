@@ -224,8 +224,14 @@ def _build_quick_command_selector(quick_commands: List[Any]) -> Dict[str, Any]:
     Returns:
         飞书卡片 action 元素，包含 select_static
     """
-    # 静默截断到 20 条
-    commands_to_use = quick_commands[:20]
+    # 飞书 select_static 最多支持 20 个选项，超出时截断并输出警告
+    MAX_OPTIONS = 20
+    if len(quick_commands) > MAX_OPTIONS:
+        _cb_logger.warning(
+            f"快捷命令数量 {len(quick_commands)} 超过上限 {MAX_OPTIONS}，"
+            f"仅显示前 {MAX_OPTIONS} 条"
+        )
+    commands_to_use = quick_commands[:MAX_OPTIONS]
 
     options = []
     for cmd in commands_to_use:
@@ -247,7 +253,7 @@ def _build_quick_command_selector(quick_commands: List[Any]) -> Dict[str, Any]:
     }
 
 
-def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False, quick_commands: Optional[List[Any]] = None, is_loading: bool = False, disabled_buttons: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False, is_loading: bool = False, disabled_buttons: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """底部快捷菜单按钮行，用于流式卡片
 
     - 连接状态（session_name 有值, disconnected=False）:
@@ -259,7 +265,6 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
     Args:
         session_name: 会话名
         disconnected: 是否断开连接
-        quick_commands: 快捷命令列表
         is_loading: 是否处于 loading 状态
         disabled_buttons: 需要禁用的按钮动作列表
     """
@@ -752,6 +757,32 @@ def build_stream_card(
         is_loading: 是否处于 loading 状态（按钮禁用、显示处理中）
         disabled_buttons: 需要禁用的按钮动作列表（如 ["menu_open", "stream_detach"]）
         loading_text: loading 状态时的提示文本
+
+    Example:
+        构建 loading 状态卡片（用于交互时显示处理中）::
+
+            # 从 snapshot 构建 loading 卡片
+            loading_card = build_stream_card(
+                blocks=snapshot.get("blocks", []),
+                status_line=snapshot.get("status_line"),
+                bottom_bar=snapshot.get("bottom_bar"),
+                agent_panel=snapshot.get("agent_panel"),
+                option_block=snapshot.get("option_block"),
+                session_name=session_name,
+                cli_type=snapshot.get("cli_type", "claude"),
+                user_config=user_config,
+                is_loading=True,
+                loading_text="正在处理...",
+            )
+
+            # 空白 loading 卡片（无 snapshot）
+            loading_card = build_stream_card(
+                blocks=[],
+                session_name=session_name,
+                is_loading=True,
+                loading_text="正在连接...",
+                disconnected=True,
+            )
     """
     title, template = _determine_header(
         blocks, status_line, bottom_bar, is_frozen,
@@ -1450,3 +1481,62 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
         "header": _build_header("⚡ 快捷操作", "turquoise"),
         "body": {"elements": elements}
     }
+
+
+def build_loading_card_from_snapshot(
+    snapshot: Optional[dict],
+    session_name: str,
+    loading_text: str,
+    user_config: Optional["UserConfig"] = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """从共享内存快照构建 loading 状态卡片的便捷函数
+
+    简化 lark_handler 中的调用，避免重复的 snapshot 字段提取逻辑。
+
+    Args:
+        snapshot: 共享内存快照（可为 None）
+        session_name: 会话名称
+        loading_text: loading 提示文本
+        user_config: 用户配置对象
+        **kwargs: 其他传递给 build_stream_card 的参数（如 disconnected, option_block）
+
+    Returns:
+        飞书卡片 dict
+
+    Example:
+        loading_card = build_loading_card_from_snapshot(
+            snapshot, session_name, "正在断开连接...",
+            user_config=self._user_config, disconnected=True
+        )
+    """
+    if snapshot:
+        # 优先使用 kwargs 中的 option_block，否则从 snapshot 获取
+        # 使用 get 避免修改传入的 kwargs dict
+        option_block = kwargs.get("option_block")
+        if option_block is None:
+            option_block = snapshot.get('option_block')
+        # 复制 kwargs 以避免副作用（排除已处理的 option_block）
+        other_kwargs = {k: v for k, v in kwargs.items() if k != "option_block"}
+        return build_stream_card(
+            blocks=snapshot.get("blocks", []),
+            status_line=snapshot.get("status_line"),
+            bottom_bar=snapshot.get("bottom_bar"),
+            agent_panel=snapshot.get("agent_panel"),
+            option_block=option_block,
+            session_name=session_name,
+            cli_type=snapshot.get("cli_type", "claude"),
+            user_config=user_config,
+            is_loading=True,
+            loading_text=loading_text,
+            **other_kwargs,
+        )
+    else:
+        return build_stream_card(
+            blocks=[],
+            session_name=session_name,
+            user_config=user_config,
+            is_loading=True,
+            loading_text=loading_text,
+            **kwargs,
+        )

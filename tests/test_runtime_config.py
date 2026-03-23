@@ -78,6 +78,7 @@ class TestEnv:
         # 恢复原始环境
         config_module.USER_DATA_DIR = self.old_env['USER_DATA_DIR']
         config_module.RUNTIME_CONFIG_FILE = self.old_env['RUNTIME_CONFIG_FILE']
+        config_module.USER_CONFIG_FILE = self.old_env['USER_CONFIG_FILE']
         config_module.LEGACY_LARK_GROUP_MAPPING_FILE = self.old_env['LEGACY_LARK_GROUP_MAPPING_FILE']
 
         # 清理临时目录
@@ -629,6 +630,120 @@ def test_runtime_config_memory_fallback():
     print("✓ 内存配置回退：配置在内存中保持")
 
 
+# ============== 配置重置清理范围测试（T106d） ==============
+
+
+def _write_dummy_file(path: Path, content: str = "dummy") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _read_config_reset_defaults() -> tuple[dict, dict]:
+    """从模板文件读取默认配置"""
+    config_template = Path(_PROJECT_ROOT) / "resources" / "defaults" / "config.default.json"
+    runtime_template = Path(_PROJECT_ROOT) / "resources" / "defaults" / "runtime.default.json"
+
+    return (
+        json.loads(config_template.read_text(encoding="utf-8")),
+        json.loads(runtime_template.read_text(encoding="utf-8"))
+    )
+
+
+def _run_config_reset(temp_dir: Path, mode: str) -> int:
+    """执行 config reset 并返回退出码"""
+    import utils.runtime_config as config_module
+
+    # 直接创建带正确值的 Args 对象
+    args = type("Args", (), {
+        "all": mode == "all",
+        "config_only": mode == "config",
+        "runtime_only": mode == "runtime",
+    })()
+
+    if mode not in ("all", "config", "runtime"):
+        raise ValueError("invalid mode")
+
+    # 确保模块内路径指向临时目录
+    config_module.USER_DATA_DIR = temp_dir
+    config_module.USER_CONFIG_FILE = temp_dir / "config.json"
+    config_module.RUNTIME_CONFIG_FILE = temp_dir / "runtime.json"
+    config_module.USER_CONFIG_LOCK_FILE = temp_dir / "config.json.lock"
+    config_module.RUNTIME_LOCK_FILE = temp_dir / "runtime.json.lock"
+
+    from remote_claude import cmd_config_reset
+
+    return cmd_config_reset(args)
+
+
+def test_config_reset_cleanup_scope_config_only():
+    """测试 --config 仅清理 config.json 副作用文件"""
+    env = TestEnv()
+    env.setup()
+    try:
+        temp_dir = env.temp_dir
+        _write_dummy_file(temp_dir / "config.json.lock")
+        _write_dummy_file(temp_dir / "config.json.bak.20260321_000001")
+        _write_dummy_file(temp_dir / "runtime.json.lock")
+        _write_dummy_file(temp_dir / "runtime.json.bak.20260321_000002")
+
+        exit_code = _run_config_reset(temp_dir, "config")
+        assert exit_code == 0
+
+        assert not (temp_dir / "config.json.lock").exists()
+        assert not (temp_dir / "config.json.bak.20260321_000001").exists()
+        assert (temp_dir / "runtime.json.lock").exists()
+        assert (temp_dir / "runtime.json.bak.20260321_000002").exists()
+        print("✓ 配置重置清理范围：--config 仅清理 config 文件")
+    finally:
+        env.teardown()
+
+
+def test_config_reset_cleanup_scope_runtime_only():
+    """测试 --runtime 仅清理 runtime.json 副作用文件"""
+    env = TestEnv()
+    env.setup()
+    try:
+        temp_dir = env.temp_dir
+        _write_dummy_file(temp_dir / "config.json.lock")
+        _write_dummy_file(temp_dir / "config.json.bak.20260321_000001")
+        _write_dummy_file(temp_dir / "runtime.json.lock")
+        _write_dummy_file(temp_dir / "runtime.json.bak.20260321_000002")
+
+        exit_code = _run_config_reset(temp_dir, "runtime")
+        assert exit_code == 0
+
+        assert (temp_dir / "config.json.lock").exists()
+        assert (temp_dir / "config.json.bak.20260321_000001").exists()
+        assert not (temp_dir / "runtime.json.lock").exists()
+        assert not (temp_dir / "runtime.json.bak.20260321_000002").exists()
+        print("✓ 配置重置清理范围：--runtime 仅清理 runtime 文件")
+    finally:
+        env.teardown()
+
+
+def test_config_reset_cleanup_scope_all():
+    """测试 --all 清理全部锁文件和备份文件"""
+    env = TestEnv()
+    env.setup()
+    try:
+        temp_dir = env.temp_dir
+        _write_dummy_file(temp_dir / "config.json.lock")
+        _write_dummy_file(temp_dir / "config.json.bak.20260321_000001")
+        _write_dummy_file(temp_dir / "runtime.json.lock")
+        _write_dummy_file(temp_dir / "runtime.json.bak.20260321_000002")
+
+        exit_code = _run_config_reset(temp_dir, "all")
+        assert exit_code == 0
+
+        assert not (temp_dir / "config.json.lock").exists()
+        assert not (temp_dir / "config.json.bak.20260321_000001").exists()
+        assert not (temp_dir / "runtime.json.lock").exists()
+        assert not (temp_dir / "runtime.json.bak.20260321_000002").exists()
+        print("✓ 配置重置清理范围：--all 清理全部文件")
+    finally:
+        env.teardown()
+
+
 # ============== 运行所有测试 ==============
 
 def run_all_tests():
@@ -673,6 +788,10 @@ def run_all_tests():
         test_commands_exactly_20,
         test_save_config_permission_error,
         test_runtime_config_memory_fallback,
+        # T106d: 配置重置清理范围
+        test_config_reset_cleanup_scope_config_only,
+        test_config_reset_cleanup_scope_runtime_only,
+        test_config_reset_cleanup_scope_all,
     ]
 
     passed = 0
