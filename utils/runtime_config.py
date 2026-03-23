@@ -517,6 +517,55 @@ def remove_session_mapping(truncated_name: str) -> None:
         logger.info(f"已删除会话映射: {truncated_name}")
 
 
+def get_uv_path() -> Optional[str]:
+    """从 runtime.json 读取 uv 路径
+
+    Returns:
+        uv 路径字符串，不存在则返回 None
+    """
+    config = load_runtime_config()
+    return config.uv_path
+
+
+def set_uv_path(path: str) -> None:
+    """写入 uv 路径到 runtime.json
+
+    Args:
+        path: uv 可执行文件的绝对路径
+    """
+    config = load_runtime_config()
+    config.uv_path = path
+    save_runtime_config(config)
+    logger.info(f"已记录 uv 路径: {path}")
+
+
+def validate_uv_path(path: str) -> tuple[bool, str]:
+    """验证 uv 路径是否有效
+
+    Args:
+        path: uv 路径
+
+    Returns:
+        (是否有效, 错误信息)
+    """
+    import os
+
+    if not path:
+        return False, "uv 路径为空"
+
+    path_obj = Path(path)
+    if not path_obj.exists():
+        return False, f"uv 路径不存在: {path}"
+
+    if not path_obj.is_file():
+        return False, f"uv 路径不是文件: {path}"
+
+    if not os.access(path, os.X_OK):
+        return False, f"uv 文件不可执行: {path}"
+
+    return True, ""
+
+
 def migrate_legacy_config() -> None:
     """迁移旧配置文件到新的 runtime.json
 
