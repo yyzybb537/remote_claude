@@ -78,14 +78,50 @@ check_os() {
 check_uv() {
     print_header "检查 uv"
 
+    local RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
+
+    # 1. 从 runtime.json 读取 uv_path（需 jq）
+    if [[ -f "$RUNTIME_FILE" ]] && command -v jq &> /dev/null; then
+        local UV_PATH=$(jq -r '.uv_path // empty' "$RUNTIME_FILE" 2>/dev/null)
+        if [[ -n "$UV_PATH" && -x "$UV_PATH" ]]; then
+            # 配置路径有效
+            print_success "uv（$UV_PATH）"
+            export PATH="$(dirname "$UV_PATH"):$PATH"
+            return
+        elif [[ -n "$UV_PATH" ]]; then
+            # 配置路径失效
+            print_error "uv 路径失效（$UV_PATH），请重新运行 init.sh"
+            exit 1
+        fi
+    fi
+
+    # 2. 检测已安装的 uv
     if command -v uv &> /dev/null; then
         UV_VERSION=$(uv --version)
         print_success "$UV_VERSION 已安装"
+        _save_uv_path
         return
     fi
 
+    # 3. 多来源安装
     print_warning "未找到 uv，正在安装..."
+    _install_uv_multi_source
 
+    # 4. 安装成功后写入路径
+    if command -v uv &> /dev/null; then
+        print_success "uv 安装成功"
+        _save_uv_path
+    else
+        print_error "uv 安装失败，请手动安装："
+        print_info "  pip3 install uv"
+        print_info "  pip3 install uv -i https://pypi.tuna.tsinghua.edu.cn/simple/"
+        print_info "  conda install -c conda-forge uv"
+        print_info "  详见: https://docs.astral.sh/uv/getting-started/installation/"
+        exit 1
+    fi
+}
+
+_install_uv_multi_source() {
     # 检测可用的 pip 命令
     local PIP_CMD=""
     if command -v pip3 &> /dev/null; then
@@ -94,12 +130,12 @@ check_uv() {
         PIP_CMD="pip"
     fi
 
-    # 方式一：官方安装脚本（需访问 astral.sh/GitHub）
+    # 方式一：官方安装脚本（推荐，无需 Python）
     if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh 2>/dev/null; then
         export PATH="$HOME/.local/bin:$PATH"
     fi
 
-    # 方式二：pip + PyPI（GitHub 访问受限时首选；国内镜像比 GitHub 稳定）
+    # 方式二：pip + PyPI
     if ! command -v uv &> /dev/null && [[ -n "$PIP_CMD" ]]; then
         print_warning "尝试 pip 安装 uv（官方 PyPI）..."
         ($PIP_CMD install uv --quiet 2>/dev/null || \
@@ -107,7 +143,7 @@ check_uv() {
             export PATH="$HOME/.local/bin:$PATH"
     fi
 
-    # 方式三：pip + 国内镜像（清华 PyPI，适合无法访问 GitHub/pypi.org 的内网环境）
+    # 方式三：pip + 清华镜像
     if ! command -v uv &> /dev/null && [[ -n "$PIP_CMD" ]]; then
         print_warning "尝试 pip 安装 uv（清华镜像）..."
         ($PIP_CMD install uv --quiet \
@@ -120,7 +156,7 @@ check_uv() {
             export PATH="$HOME/.local/bin:$PATH"
     fi
 
-    # 方式四：conda/mamba（适合已有 Anaconda/Miniconda 环境的机器）
+    # 方式四：conda/mamba
     if ! command -v uv &> /dev/null; then
         if command -v mamba &> /dev/null; then
             print_warning "尝试 mamba 安装 uv..."
@@ -131,16 +167,32 @@ check_uv() {
         fi
     fi
 
-    # 方式五：brew（macOS 备用）
+    # 方式五：brew（macOS）
     if ! command -v uv &> /dev/null && [[ "$OS" == "Darwin" ]] && command -v brew &> /dev/null; then
         print_warning "尝试 brew install uv..."
         brew install uv 2>/dev/null || true
     fi
+}
 
-    if command -v uv &> /dev/null; then
-        print_success "uv 安装成功"
+_save_uv_path() {
+    local UV_PATH=$(command -v uv 2>/dev/null)
+    if [[ -n "$UV_PATH" ]]; then
+        local RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
+        mkdir -p "$(dirname "$RUNTIME_FILE")"
 
-        # 确保 ~/.local/bin 写入 shell rc（uv 官方脚本可能写 .zprofile 而非 .zshrc）
+        if [[ -f "$RUNTIME_FILE" ]] && command -v jq &> /dev/null; then
+            # 更新现有文件
+            local TMP_FILE=$(mktemp)
+            jq --arg path "$UV_PATH" '.uv_path = $path' "$RUNTIME_FILE" > "$TMP_FILE" && \
+                mv "$TMP_FILE" "$RUNTIME_FILE"
+            print_info "已记录 uv 路径: $UV_PATH"
+        elif [[ ! -f "$RUNTIME_FILE" ]]; then
+            # 创建新文件
+            echo "{\"version\":\"1.0\",\"uv_path\":\"$UV_PATH\"}" > "$RUNTIME_FILE"
+            print_info "已记录 uv 路径: $UV_PATH"
+        fi
+
+        # 确保 ~/.local/bin 写入 shell rc
         local _RC
         if [[ -n "$ZSH_VERSION" ]] || [[ "$(basename "$SHELL")" == "zsh" ]]; then
             _RC="$HOME/.zshrc"
@@ -153,13 +205,6 @@ check_uv() {
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_RC"
             print_success "已将 \$HOME/.local/bin 写入 $_RC"
         fi
-    else
-        print_error "uv 安装失败，请手动安装，可选方式："
-        print_info "  pip3 install uv"
-        print_info "  pip3 install uv -i https://pypi.tuna.tsinghua.edu.cn/simple/"
-        print_info "  conda install -c conda-forge uv"
-        print_info "  详见: https://docs.astral.sh/uv/getting-started/installation/"
-        exit 1
     fi
 }
 
@@ -411,7 +456,7 @@ install_dependencies() {
 
     # 上报 init_install 事件（后台执行，不阻塞，失败静默）
     # 使用 uv run 确保使用项目虚拟环境中的 Python
-    uv run --project "$SCRIPT_DIR" python3 scripts/report_install.py &>/dev/null &
+    uv run python3 scripts/report_install.py &>/dev/null &
 }
 
 # 配置飞书环境
@@ -641,7 +686,7 @@ restart_lark_client() {
 
     print_info "正在重启飞书客户端..."
     cd "$SCRIPT_DIR"
-    uv run python3 remote_claude.py lark restart || { WARNINGS+=("飞书客户端重启失败，请手动运行: uv run python3 remote_claude.py lark restart"); return; }
+    uv run remote-claude lark restart || { WARNINGS+=("飞书客户端重启失败，请手动运行: uv run remote-claude lark restart"); return; }
     print_success "飞书客户端已重启"
 }
 
