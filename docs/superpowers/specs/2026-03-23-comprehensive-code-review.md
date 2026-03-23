@@ -22,18 +22,18 @@
 
 ### [P0-01] PTY 进程可能成为孤儿进程
 
-**位置**: `server/server.py:165-195`
+**位置**: `server/server.py:996-1046`
 **类型**: 可用性
 
 **描述**:
 `_start_pty()` 使用 `pty.fork()` 创建子进程运行 Claude CLI，但异常路径下缺乏可靠的清理机制。当主进程崩溃或被 SIGKILL 时，PTY 子进程可能成为孤儿进程继续运行。
 
 ```python
-# server/server.py:165
+# server/server.py:996
 pid, fd = pty.fork()
 if pid == 0:
     # 子进程
-    os.execvp(cmd[0], cmd)
+    os.execvpe(_cmd_parts[0], _cmd_parts + self.claude_args, child_env)
 ```
 
 **影响**:
@@ -50,16 +50,18 @@ if pid == 0:
 
 ### [P0-02] 共享内存文件无磁盘清理机制
 
-**位置**: `server/shared_state.py:64-90`
+**位置**: `server/shared_state.py:95-113`
 **类型**: 可用性
 
 **描述**:
 `.mq` 文件创建后永不删除，即使会话终止。文件大小固定为 200MB，长期运行会占用大量磁盘空间。
 
 ```python
-# server/shared_state.py:76
-self._fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_EXCL)
-os.ftruncate(self._fd, size)
+# server/shared_state.py:100
+self._f = open(self._path, 'w+b')
+self._f.truncate(MMAP_SIZE)
+self._f.flush()
+self._mm = mmap.mmap(self._f.fileno(), MMAP_SIZE)
 ```
 
 **影响**:
@@ -76,16 +78,20 @@ os.ftruncate(self._fd, size)
 
 ### [P0-03] StreamTracker 内存无限增长
 
-**位置**: `lark_client/shared_memory_poller.py:45-85`
+**位置**: `lark_client/shared_memory_poller.py:84-95`
 **类型**: 性能
 
 **描述**:
 `StreamTracker.cards` 列表会随着对话推进无限增长，每个 `CardSlice` 持有引用。长时间运行的会话可能导致内存耗尽。
 
 ```python
-# lark_client/shared_memory_poller.py:52
-self.cards: List[CardSlice] = []
-# 无限制追加，无清理逻辑
+# lark_client/shared_memory_poller.py:88
+@dataclass
+class StreamTracker:
+    """单个 chat_id 的流式跟踪状态"""
+    chat_id: str
+    session_name: str
+    cards: List[CardSlice] = field(default_factory=list)  # 无限制追加，无清理逻辑
 ```
 
 **影响**:
@@ -161,15 +167,15 @@ fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
 
 ### [P1-03] 解析器状态缓存无上限
 
-**位置**: `server/parsers/claude_parser.py:89-95`
+**位置**: `server/parsers/claude_parser.py:400-413`
 **类型**: 性能
 
 **描述**:
-`ClaudeParser` 的 `dot_row_cache` 缓存无上限，长对话可能积累大量缓存条目。
+`ClaudeParser` 的 `_dot_row_cache` 缓存无上限，长对话可能积累大量缓存条目。
 
 ```python
-# server/parsers/claude_parser.py:92
-self.dot_row_cache: Dict[int, Tuple[str, bool]] = {}
+# server/parsers/claude_parser.py:402
+self._dot_row_cache: Dict[int, Tuple[str, str, str, str, bool]] = {}
 # 无 LRU 或上限限制
 ```
 
@@ -184,29 +190,26 @@ self.dot_row_cache: Dict[int, Tuple[str, bool]] = {}
 
 ---
 
-### [P1-04] CardBuilder 单例模式隐藏依赖
+### [P1-04] 飞书卡片 API 无统一错误处理
 
-**位置**: `lark_client/card_builder.py:34-45`
+**位置**: `lark_client/card_builder.py:1-36`
 **类型**: 架构
 
 **描述**:
-`CardBuilder` 使用模块级单例模式，隐藏了依赖关系，使测试和替换变得困难。
+`card_builder.py` 使用模块级函数而非类封装，缺乏统一的错误处理和状态管理。所有函数直接返回卡片 dict，调用方需要自行处理构建失败场景。
 
 ```python
-# lark_client/card_builder.py:36
-_card_builder: Optional["CardBuilder"] = None
-
-def get_card_builder() -> "CardBuilder":
-    global _card_builder
-    if _card_builder is None:
-        _card_builder = CardBuilder()
-    return _card_builder
+# lark_client/card_builder.py
+# 模块级函数定义，无类封装
+def build_stream_card(blocks, status_line, bottom_bar, ...): ...
+def build_menu_card(...): ...
+def build_help_card(...): ...
 ```
 
 **影响**:
-- 单元测试难以 mock
-- 隐藏的初始化顺序依赖
-- 无法运行多个独立实例
+- 错误处理分散在各处
+- 难以统一日志和监控
+- 无法模拟/替换实现
 
 **建议**:
 1. 改用依赖注入模式
@@ -215,19 +218,27 @@ def get_card_builder() -> "CardBuilder":
 
 ---
 
-### [P1-05] WebSocket 重连逻辑缺失
+### [P1-05] 飞书长连接无自动重连机制
 
-**位置**: `lark_client/main.py:67-89`
+**位置**: `lark_client/main.py:82-90`
 **类型**: 可用性
 
 **描述**:
-WebSocket 连接断开后没有自动重连机制，需要手动重启整个飞书客户端。
+飞书长连接（Lark SDK）断开后没有自动重连机制，需要手动重启整个飞书客户端。SDK 内部的连接断开会导致事件接收中断。
 
 ```python
-# lark_client/main.py:78
-async with websockets.connect(uri) as ws:
-    # 连接断开后直接退出，无重连
+# lark_client/main.py:82
+async def _graceful_shutdown() -> None:
+    """优雅关闭：更新所有活跃流式卡片为已断开状态后退出"""
+    try:
+        await handler.disconnect_all_for_shutdown()
+    except Exception as e:
+        print(f"[Lark] graceful shutdown 异常: {e}")
+    finally:
+        os._exit(0)
 ```
+
+**注意**: 项目使用 Lark SDK 的长连接模式（非 WebSocket），SDK 负责底层连接管理，但断开后缺乏应用层重连逻辑。
 
 **影响**:
 - 网络抖动导致服务中断
@@ -241,18 +252,24 @@ async with websockets.connect(uri) as ws:
 
 ---
 
-### [P1-06] HistoryScreen resize 导致历史丢失
+### [P1-06] RichTextRenderer resize 导致历史丢失
 
-**位置**: `server/server.py:456-480`
+**位置**: `server/server.py:235-241`
 **类型**: 可用性
 
 **描述**:
-终端窗口大小变化时，`HistoryScreen` 被重建，所有历史记录丢失。
+终端窗口大小变化时，`RichTextRenderer` 被重建，所有历史记录丢失。`RichTextRenderer` 内部使用 `pyte.HistoryScreen`。
 
 ```python
-# server/server.py:469
-self._renderer = pyte.HistoryScreen(cols, rows, history=5000)
-# 旧 renderer 的历史无法迁移
+# server/server.py:235
+def resize(self, cols: int, rows: int):
+    """重建 renderer 以适应新尺寸，历史随之丢失（可接受）。
+    PTY resize 后 Claude 会全屏重绘，新 screen 自然会被填充。"""
+    self._cols = cols
+    self._rows = rows
+    from rich_text_renderer import RichTextRenderer
+    self._renderer = RichTextRenderer(columns=cols, lines=rows)
+    # 旧 renderer 的历史无法迁移
 ```
 
 **影响**:
@@ -279,8 +296,11 @@ self._renderer = pyte.HistoryScreen(cols, rows, history=5000)
 
 ```python
 # 两者都有类似的缓存定义
-self.dot_row_cache: Dict[int, Tuple[str, bool]] = {}
-self._frame_obs: deque = deque(maxlen=...)
+# claude_parser.py:402
+self._dot_row_cache: Dict[int, Tuple[str, str, str, str, bool]] = {}
+
+# codex_parser.py 中也有类似定义
+self._dot_row_cache: Dict[int, Tuple[str, str, str, str, bool]] = {}
 ```
 
 **影响**:
@@ -348,18 +368,20 @@ logger.info(f"已删除会话映射: {truncated_name}")  # 应为 debug
 
 ---
 
-### [P2-04] 缺少类型注解
+### [P2-04] 部分函数缺少类型注解
 
 **位置**: 多处
 **类型**: 代码质量
 
 **描述**:
-大量函数缺少类型注解，降低代码可读性和 IDE 支持。
+部分函数缺少完整类型注解，降低代码可读性和 IDE 支持。
 
 ```python
-# lark_client/card_builder.py:456
-def _escape_md(text):  # 缺少类型注解
-    return text.replace("*", "\\*")...
+# lark_client/card_builder.py 已有类型注解
+def _escape_md(text: str) -> str:  # 实际已有注解
+    ...
+
+# 但部分内部函数仍然缺失，如某些回调函数
 ```
 
 **影响**:
@@ -426,19 +448,22 @@ if not self.value.startswith('/'):
 
 ---
 
-### [P2-07] ANSI 解析依赖正则，性能隐患
+### [P2-07] ANSI 解析依赖迭代匹配，性能隐患
 
-**位置**: `lark_client/card_builder.py:234-280`
+**位置**: `lark_client/card_builder.py:129-185`
 **类型**: 性能
 
 **描述**:
-`_ansi_to_lark_md()` 使用多重正则替换处理 ANSI 转义序列，复杂度高。
+`_ansi_to_lark_md()` 使用迭代正则匹配处理 ANSI 转义序列，复杂度为 O(n) 但常数较大。
 
 ```python
-# lark_client/card_builder.py:245
-text = ANSI_COLOR_RE.sub(replacer, text)
-text = ANSI_RESET_RE.sub(lambda m: '', text)
-# 多次正则遍历
+# lark_client/card_builder.py:136
+for match in _ANSI_RE.finditer(ansi_text):
+    # 每个匹配都要处理多个 SGR 码
+    codes = [int(c) for c in match.group(1).split(';') if c] if match.group(1) else [0]
+    i = 0
+    while i < len(codes):
+        # 处理真彩色、256色等
 ```
 
 **影响**:
@@ -455,15 +480,17 @@ text = ANSI_RESET_RE.sub(lambda m: '', text)
 
 ### [P2-08] SessionBridge 连接状态无超时保护
 
-**位置**: `lark_client/session_bridge.py:78-95`
+**位置**: `lark_client/session_bridge.py:58-98`
 **类型**: 可用性
 
 **描述**:
 Socket 连接和发送操作无超时设置，可能永久阻塞。
 
 ```python
-# lark_client/session_bridge.py:82
-self._reader, self._writer = await asyncio.open_unix_connection(path)
+# lark_client/session_bridge.py:59
+self.reader, self.writer = await asyncio.open_unix_connection(
+    path=str(self.socket_path)
+)
 # 无超时参数
 ```
 
@@ -584,7 +611,7 @@ await self._broadcast(data)
 
 ### [P3-03] 部分文件过大
 
-**位置**: `server/parsers/codex_parser.py` (1653 行), `lark_client/card_builder.py` (1543 行)
+**位置**: `server/parsers/codex_parser.py` (约 1650 行), `lark_client/card_builder.py` (约 1540 行)
 **类型**: 架构
 
 **描述**:
@@ -604,15 +631,16 @@ await self._broadcast(data)
 
 ### [P3-04] 硬编码路径
 
-**位置**: `utils/session.py:23-25`
+**位置**: `utils/session.py:21-22`
 **类型**: 可用性
 
 **描述**:
 Socket 路径 `/tmp/remote-claude/` 硬编码，无法配置。
 
 ```python
-# utils/session.py:24
+# utils/session.py:21
 SOCKET_DIR = Path("/tmp/remote-claude")
+USER_DATA_DIR = Path.home() / ".remote-claude"
 ```
 
 **影响**:
