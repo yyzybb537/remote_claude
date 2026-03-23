@@ -32,6 +32,9 @@ from utils.runtime_config import (
     load_user_config,
     save_user_config,
     migrate_legacy_config,
+    get_uv_path,
+    set_uv_path,
+    validate_uv_path,
     CURRENT_VERSION,
     USER_CONFIG_VERSION,
     MAX_SESSION_MAPPINGS,
@@ -63,6 +66,8 @@ class TestEnv:
             'RUNTIME_CONFIG_FILE': config_module.RUNTIME_CONFIG_FILE,
             'USER_CONFIG_FILE': config_module.USER_CONFIG_FILE,
             'LEGACY_LARK_GROUP_MAPPING_FILE': config_module.LEGACY_LARK_GROUP_MAPPING_FILE,
+            'RUNTIME_LOCK_FILE': config_module.RUNTIME_LOCK_FILE,
+            'USER_CONFIG_LOCK_FILE': config_module.USER_CONFIG_LOCK_FILE,
         }
 
         # 临时替换路径
@@ -70,6 +75,8 @@ class TestEnv:
         config_module.RUNTIME_CONFIG_FILE = self.temp_dir / "runtime.json"
         config_module.USER_CONFIG_FILE = self.temp_dir / "config.json"
         config_module.LEGACY_LARK_GROUP_MAPPING_FILE = self.temp_dir / "lark_group_mapping.json"
+        config_module.RUNTIME_LOCK_FILE = self.temp_dir / "runtime.json.lock"
+        config_module.USER_CONFIG_LOCK_FILE = self.temp_dir / "config.json.lock"
 
     def teardown(self):
         """清理测试环境"""
@@ -80,6 +87,8 @@ class TestEnv:
         config_module.RUNTIME_CONFIG_FILE = self.old_env['RUNTIME_CONFIG_FILE']
         config_module.USER_CONFIG_FILE = self.old_env['USER_CONFIG_FILE']
         config_module.LEGACY_LARK_GROUP_MAPPING_FILE = self.old_env['LEGACY_LARK_GROUP_MAPPING_FILE']
+        config_module.RUNTIME_LOCK_FILE = self.old_env['RUNTIME_LOCK_FILE']
+        config_module.USER_CONFIG_LOCK_FILE = self.old_env['USER_CONFIG_LOCK_FILE']
 
         # 清理临时目录
         if self.temp_dir and self.temp_dir.exists():
@@ -744,6 +753,84 @@ def test_config_reset_cleanup_scope_all():
         env.teardown()
 
 
+# ============== uv_path 测试 ==============
+
+def test_uv_path_get_default():
+    """测试 uv_path 默认值为 None"""
+    env = TestEnv()
+    env.setup()
+    try:
+        config = load_runtime_config()
+        assert config.uv_path is None
+        print("✓ uv_path 默认值为 None")
+    finally:
+        env.teardown()
+
+
+def test_uv_path_set_and_get():
+    """测试 uv_path 设置和读取"""
+    env = TestEnv()
+    env.setup()
+    try:
+        import utils.runtime_config as config_module
+
+        # 设置路径
+        set_uv_path("/usr/local/bin/uv")
+
+        # 重新读取验证
+        path = get_uv_path()
+        assert path == "/usr/local/bin/uv"
+        print("✓ uv_path 设置和读取")
+    finally:
+        env.teardown()
+
+
+def test_validate_uv_path():
+    """测试 uv_path 验证函数"""
+    # 空路径
+    valid, msg = validate_uv_path("")
+    assert not valid
+    assert "空" in msg
+
+    # 不存在的路径
+    valid, msg = validate_uv_path("/nonexistent/uv")
+    assert not valid
+    assert "不存在" in msg
+
+    # 查找系统中的 uv
+    import shutil
+    uv_path = shutil.which("uv")
+    if uv_path:
+        # 存在且可执行
+        valid, msg = validate_uv_path(uv_path)
+        assert valid
+        assert msg == ""
+
+    print("✓ validate_uv_path 验证")
+
+
+def test_runtime_config_to_dict_with_uv_path():
+    """测试 to_dict 包含 uv_path"""
+    config = RuntimeConfig(uv_path="/test/uv")
+    d = config.to_dict()
+    assert "uv_path" in d
+    assert d["uv_path"] == "/test/uv"
+    print("✓ to_dict 包含 uv_path")
+
+
+def test_runtime_config_from_dict_with_uv_path():
+    """测试 from_dict 解析 uv_path"""
+    data = {
+        "version": "1.0",
+        "uv_path": "/opt/uv",
+        "session_mappings": {},
+        "lark_group_mappings": {}
+    }
+    config = RuntimeConfig.from_dict(data)
+    assert config.uv_path == "/opt/uv"
+    print("✓ from_dict 解析 uv_path")
+
+
 # ============== 运行所有测试 ==============
 
 def run_all_tests():
@@ -792,6 +879,12 @@ def run_all_tests():
         test_config_reset_cleanup_scope_config_only,
         test_config_reset_cleanup_scope_runtime_only,
         test_config_reset_cleanup_scope_all,
+        # uv_path 测试
+        test_uv_path_get_default,
+        test_uv_path_set_and_get,
+        test_validate_uv_path,
+        test_runtime_config_to_dict_with_uv_path,
+        test_runtime_config_from_dict_with_uv_path,
     ]
 
     passed = 0
