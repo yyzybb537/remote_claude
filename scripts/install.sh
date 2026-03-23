@@ -48,24 +48,52 @@ detect_os() {
 check_and_install_uv() {
     print_header "检查 uv 包管理器"
 
+    local RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
+
+    # 1. 从 runtime.json 读取 uv_path（需 jq）
+    if [[ -f "$RUNTIME_FILE" ]] && command -v jq &> /dev/null; then
+        local UV_PATH=$(jq -r '.uv_path // empty' "$RUNTIME_FILE" 2>/dev/null)
+        if [[ -n "$UV_PATH" && -x "$UV_PATH" ]]; then
+            print_success "uv（$UV_PATH）"
+            export PATH="$(dirname "$UV_PATH"):$PATH"
+            return 0
+        elif [[ -n "$UV_PATH" ]]; then
+            print_error "uv 路径失效（$UV_PATH），请重新运行 init.sh"
+            exit 1
+        fi
+    fi
+
+    # 2. 检测已安装的 uv
     if command -v uv &> /dev/null; then
         UV_VERSION=$(uv --version)
         print_success "$UV_VERSION 已安装"
+        _save_uv_path_install
         return 0
     fi
 
     print_warning "未找到 uv，正在安装..."
 
-    # 方式一：官方安装脚本
-    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh 2>/dev/null; then
-        export PATH="$HOME/.local/bin:$PATH"
-        if command -v uv &> /dev/null; then
-            print_success "uv 安装成功"
-            return 0
-        fi
+    # 3. 多来源安装
+    _install_uv_multi_source_install
+
+    # 4. 安装成功后写入路径
+    if command -v uv &> /dev/null; then
+        print_success "uv 安装成功"
+        _save_uv_path_install
+        return 0
     fi
 
-    # 方式二：pip 安装
+    print_error "uv 安装失败，请手动安装："
+    print_info "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+    print_info "  pip3 install uv"
+    print_info "  pip3 install uv -i https://pypi.tuna.tsinghua.edu.cn/simple/"
+    print_info "  conda install -c conda-forge uv"
+    print_info "  或访问 https://docs.astral.sh/uv/getting-started/installation/"
+    exit 1
+}
+
+_install_uv_multi_source_install() {
+    # 检测可用的 pip 命令
     local PIP_CMD=""
     if command -v pip3 &> /dev/null; then
         PIP_CMD="pip3"
@@ -73,40 +101,66 @@ check_and_install_uv() {
         PIP_CMD="pip"
     fi
 
-    if [[ -n "$PIP_CMD" ]]; then
-        print_warning "尝试 pip 安装 uv..."
-        if $PIP_CMD install uv --quiet 2>/dev/null || \
-           $PIP_CMD install uv --quiet --break-system-packages 2>/dev/null; then
-            export PATH="$HOME/.local/bin:$PATH"
-            if command -v uv &> /dev/null; then
-                print_success "uv 安装成功"
-                return 0
-            fi
-        fi
+    # 方式一：官方安装脚本（推荐）
+    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+        export PATH="$HOME/.local/bin:$PATH"
     fi
 
-    # 方式三：国内镜像
-    if [[ -n "$PIP_CMD" ]]; then
+    # 方式二：pip + PyPI
+    if ! command -v uv &> /dev/null && [[ -n "$PIP_CMD" ]]; then
+        print_warning "尝试 pip 安装 uv（官方 PyPI）..."
+        ($PIP_CMD install uv --quiet 2>/dev/null || \
+         $PIP_CMD install uv --quiet --break-system-packages 2>/dev/null) && \
+            export PATH="$HOME/.local/bin:$PATH"
+    fi
+
+    # 方式三：pip + 清华镜像
+    if ! command -v uv &> /dev/null && [[ -n "$PIP_CMD" ]]; then
         print_warning "尝试 pip 安装 uv（清华镜像）..."
-        if $PIP_CMD install uv --quiet \
+        ($PIP_CMD install uv --quiet \
             -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
             --trusted-host pypi.tuna.tsinghua.edu.cn 2>/dev/null || \
-           $PIP_CMD install uv --quiet \
+         $PIP_CMD install uv --quiet \
             -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
             --trusted-host pypi.tuna.tsinghua.edu.cn \
-            --break-system-packages 2>/dev/null; then
+            --break-system-packages 2>/dev/null) && \
             export PATH="$HOME/.local/bin:$PATH"
-            if command -v uv &> /dev/null; then
-                print_success "uv 安装成功"
-                return 0
-            fi
+    fi
+
+    # 方式四：conda/mamba
+    if ! command -v uv &> /dev/null; then
+        if command -v mamba &> /dev/null; then
+            print_warning "尝试 mamba 安装 uv..."
+            mamba install -c conda-forge uv -y --quiet 2>/dev/null || true
+        elif command -v conda &> /dev/null; then
+            print_warning "尝试 conda 安装 uv..."
+            conda install -c conda-forge uv -y --quiet 2>/dev/null || true
         fi
     fi
 
-    print_error "uv 安装失败，请手动安装："
-    print_info "  pip3 install uv"
-    print_info "  或访问 https://docs.astral.sh/uv/getting-started/installation/"
-    exit 1
+    # 方式五：brew（macOS）
+    if ! command -v uv &> /dev/null && [[ "$OS" == "Darwin" ]] && command -v brew &> /dev/null; then
+        print_warning "尝试 brew install uv..."
+        brew install uv 2>/dev/null || true
+    fi
+}
+
+_save_uv_path_install() {
+    local UV_PATH=$(command -v uv 2>/dev/null)
+    if [[ -n "$UV_PATH" ]]; then
+        local RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
+        mkdir -p "$(dirname "$RUNTIME_FILE")"
+
+        if [[ -f "$RUNTIME_FILE" ]] && command -v jq &> /dev/null; then
+            local TMP_FILE=$(mktemp)
+            jq --arg path "$UV_PATH" '.uv_path = $path' "$RUNTIME_FILE" > "$TMP_FILE" && \
+                mv "$TMP_FILE" "$RUNTIME_FILE"
+            print_info "已记录 uv 路径: $UV_PATH"
+        elif [[ ! -f "$RUNTIME_FILE" ]]; then
+            echo "{\"version\":\"1.0\",\"uv_path\":\"$UV_PATH\"}" > "$RUNTIME_FILE"
+            print_info "已记录 uv 路径: $UV_PATH"
+        fi
+    fi
 }
 
 # 创建虚拟环境并安装依赖
@@ -144,20 +198,16 @@ verify_installation() {
 
     cd "$PROJECT_ROOT"
 
-    # 激活虚拟环境并测试
-    source .venv/bin/activate
-
-    print_info "Python 版本: $(python3 --version)"
-    print_info "安装路径: $(which python3)"
+    print_info "Python 版本: $(uv run python3 --version)"
+    print_info "安装路径: $(uv run which python3 2>/dev/null || echo 'uv 管理')"
 
     # 测试核心模块导入
-    if python3 -c "from utils.session import *; from utils.runtime_config import *; print('核心模块导入成功')" 2>/dev/null; then
+    if uv run python3 -c "from utils.session import *; from utils.runtime_config import *; print('核心模块导入成功')" 2>/dev/null; then
         print_success "核心模块验证通过"
     else
         print_warning "核心模块导入警告（可能是路径问题）"
     fi
 
-    deactivate
     print_success "安装验证完成"
 }
 
@@ -171,15 +221,16 @@ ${YELLOW}下一步操作：${NC}
 1. 初始化项目（推荐）：
    ${GREEN}./init.sh${NC}
 
-2. 或手动激活虚拟环境：
-   ${GREEN}source .venv/bin/activate${NC}
+2. 运行 Remote Claude（推荐方式）：
+   ${GREEN}uv run python3 remote_claude.py --help${NC}
 
-3. 运行 Remote Claude：
+3. 或手动激活虚拟环境（传统方式）：
+   ${GREEN}source .venv/bin/activate${NC}
    ${GREEN}python3 remote_claude.py --help${NC}
 
 ${YELLOW}提示：${NC}
 - 虚拟环境位于 ${GREEN}.venv/${NC} 目录
-- 使用 ${GREEN}uv run python3 ...${NC} 自动激活虚拟环境执行命令
+- 推荐使用 ${GREEN}uv run python3 ...${NC} 自动激活虚拟环境执行命令
 - 详细文档请阅读 README.md
 
 EOF
