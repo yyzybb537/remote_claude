@@ -78,7 +78,7 @@ cd test-results/npm-install/node_modules/remote-claude
 
 # 直接使用（产物已包含便携式 Python 环境）
 ./bin/cla                    # 启动 Claude 会话
-.venv/bin/python remote_claude.py --help  # 查看帮助
+uv run python3 remote_claude.py --help  # 查看帮助
 ```
 
 **产物说明**：
@@ -366,6 +366,37 @@ CLAUDE_COMMAND=ccr code
 # 使用绝对路径
 CLAUDE_COMMAND=/usr/local/bin/claude
 ```
+
+### 安装 uv
+
+init.sh 会自动检测并安装 uv，支持以下方式（按优先级）：
+
+1. **官方脚本**（推荐）— 无需预装 Python
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+2. **pip + PyPI** — GitHub 访问受限时
+   ```bash
+   pip3 install uv
+   ```
+
+3. **pip + 清华镜像** — 国内网络环境
+   ```bash
+   pip3 install uv -i https://pypi.tuna.tsinghua.edu.cn/simple/
+   ```
+
+4. **conda/mamba** — 已有 Anaconda 环境
+   ```bash
+   conda install -c conda-forge uv
+   ```
+
+5. **brew** — macOS 用户
+   ```bash
+   brew install uv
+   ```
+
+安装成功后，uv 路径会自动记录到 `~/.remote-claude/runtime.json`。
 
 ## 系统要求
 
