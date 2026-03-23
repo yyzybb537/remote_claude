@@ -46,7 +46,7 @@ try:
     import json as _json
 
     _VERSION = _json.loads((SCRIPT_DIR / "package.json").read_text())["version"]
-except Exception:
+except (OSError, json.JSONDecodeError, KeyError):
     _VERSION = "unknown"
 
 
@@ -55,11 +55,11 @@ def cmd_start(args):
     original_session_name = args.name
 
     # 使用 resolve_session_name() 处理名称截断和冲突
-    from utils.runtime_config import load_runtime_config, save_runtime_config
+    # 注意: resolve_session_name 内部已会调用 save_runtime_config，无需重复保存
+    from utils.runtime_config import load_runtime_config
     config = load_runtime_config()
     from utils.session import resolve_session_name
     session_name = resolve_session_name(original_session_name, config)
-    save_runtime_config(config)
 
     # 检查会话是否已存在
     if is_session_active(session_name):
@@ -309,7 +309,7 @@ def cmd_lark_start(args):
                 shutil.copy2(bak_file, original_path)
                 print(f"已从备份恢复: {original_path}")
                 bak_file.unlink()
-            except Exception as e:
+            except (OSError, shutil.Error) as e:
                 print(f"恢复备份失败: {e}")
                 return 1
         else:
@@ -408,6 +408,12 @@ def cmd_lark_stop(args):
         print("进程已不存在，清理残留文件")
         cleanup_lark()
         return 0
+    except PermissionError as e:
+        print(f"✗ 权限不足，无法停止进程: {e}")
+        return 1
+    except OSError as e:
+        print(f"✗ 停止失败（系统错误）: {e}")
+        return 1
     except Exception as e:
         print(f"✗ 停止失败: {e}")
         return 1
@@ -464,6 +470,8 @@ def cmd_lark_status(args):
                 lines = f.readlines()
                 for line in lines[-5:]:
                     print(f"  {line.rstrip()}")
+        except OSError as e:
+            print(f"  无法读取日志（系统错误）: {e}")
         except Exception as e:
             print(f"  无法读取日志: {e}")
         print("-" * 40)
@@ -649,8 +657,8 @@ def cmd_config_reset(args):
     except PermissionError:
         print(f"✗ 权限不足，无法写入配置目录: {USER_DATA_DIR}")
         return 1
-    except Exception as e:
-        print(f"✗ 重置失败: {e}")
+    except OSError as e:
+        print(f"✗ 重置失败（系统错误）: {e}")
         return 1
 
 

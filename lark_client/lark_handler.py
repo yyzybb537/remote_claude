@@ -29,6 +29,7 @@ from .card_builder import (
     build_help_card,
     build_dir_card,
     build_menu_card,
+    build_loading_card_from_snapshot,
 )
 from .shared_memory_poller import SharedMemoryPoller, CardSlice
 
@@ -388,50 +389,6 @@ class LarkHandler:
             await card_service.send_text(chat_id, f"错误: 启动失败 - {e}")
             return False
 
-    def _build_loading_card(
-        self,
-        snapshot: Optional[dict],
-        session_name: str,
-        loading_text: str,
-        **kwargs,
-    ) -> dict:
-        """构建带 loading 状态的流式卡片
-
-        Args:
-            snapshot: 共享内存快照（可为 None）
-            session_name: 会话名称
-            loading_text: loading 提示文本
-            **kwargs: 其他传递给 build_stream_card 的参数（如 disconnected）
-
-        Returns:
-            飞书卡片 dict
-        """
-        if snapshot:
-            option_block = kwargs.pop("option_block", None)
-            if not option_block:
-                option_block = snapshot.get('option_block')
-            return build_stream_card(
-                blocks=snapshot.get("blocks", []),
-                status_line=snapshot.get("status_line"),
-                bottom_bar=snapshot.get("bottom_bar"),
-                agent_panel=snapshot.get("agent_panel"),
-                option_block=option_block,
-                session_name=session_name,
-                cli_type=snapshot.get("cli_type", "claude"),
-                user_config=self._user_config,
-                is_loading=True,
-                loading_text=loading_text,
-                **kwargs,
-            )
-        else:
-            return build_stream_card(
-                blocks=[],
-                session_name=session_name,
-                is_loading=True,
-                loading_text=loading_text,
-                **kwargs,
-            )
-
     async def _cmd_start(self, user_id: str, chat_id: str, args: str):
         """启动新会话"""
         parts = args.strip().split(maxsplit=1)
@@ -607,7 +564,9 @@ class LarkHandler:
         card_id = self._poller.get_active_card_id(chat_id)
         snapshot = self._poller.read_snapshot(chat_id) if card_id else None
         if card_id and snapshot:
-            loading_card = self._build_loading_card(snapshot, session_name, "正在断开连接...")
+            loading_card = build_loading_card_from_snapshot(
+                snapshot, session_name, "正在断开连接...", user_config=self._user_config
+            )
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
 
         # 停止轮询并获取活跃 CardSlice（原子操作）
@@ -657,7 +616,10 @@ class LarkHandler:
                                        session_name: str, message_id: Optional[str] = None):
         """流式卡片中重新连接：冻结旧断开卡片 → 重新 attach"""
         # T059: 显示 loading 状态（重连中）
-        loading_card = self._build_loading_card(None, session_name, "正在重新连接...", disconnected=True)
+        loading_card = build_loading_card_from_snapshot(
+            None, session_name, "正在重新连接...",
+            user_config=self._user_config, disconnected=True
+        )
         old_slice = self._detached_slices.pop(chat_id, None)
         if old_slice:
             try:
@@ -1004,9 +966,9 @@ class LarkHandler:
         card_id = self._poller.get_active_card_id(chat_id)
         if card_id:
             # 构建带 loading 状态的卡片（禁用所有选项按钮）
-            loading_card = self._build_loading_card(
+            loading_card = build_loading_card_from_snapshot(
                 initial_snapshot, self._chat_sessions.get(chat_id), "正在选择...",
-                option_block=initial_ob,
+                user_config=self._user_config, option_block=initial_ob,
             )
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
 
@@ -1163,8 +1125,9 @@ class LarkHandler:
 
         if card_id and snapshot:
             # 构建带 loading 状态的卡片
-            loading_card = self._build_loading_card(
-                snapshot, self._chat_sessions.get(chat_id), f"执行命令 {command}..."
+            loading_card = build_loading_card_from_snapshot(
+                snapshot, self._chat_sessions.get(chat_id), f"执行命令 {command}...",
+                user_config=self._user_config,
             )
             # 就地更新卡片，不等待结果
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)

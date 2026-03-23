@@ -20,6 +20,9 @@ TEST_REPORT=""
 # 结果目录
 RESULTS_DIR="/home/testuser/test-results"
 
+# Python 可执行文件（uv 安装的 Python）
+PYTHON="$HOME/.local/bin/python3.11"
+
 mkdir -p "$RESULTS_DIR"
 
 # 日志函数
@@ -177,8 +180,9 @@ simulate_install() {
 
     # 设置全局变量（供后续步骤使用）
     INSTALL_DIR="$install_dir"
-    # 使用 uv run 或直接调用 .venv 中的 Python
-    PYTHON="$install_dir/.venv/bin/python3"
+    # .venv 在 node_modules/remote-claude/ 目录下（uv sync 的默认行为）
+    local package_dir="$install_dir/node_modules/remote-claude"
+    PYTHON="$package_dir/.venv/bin/python3"
 
     # 如果 .venv 不存在，使用系统 Python 或 uv run
     if [ ! -f "$PYTHON" ]; then
@@ -191,11 +195,12 @@ verify_postinstall() {
     print_header "步骤 4：验证 postinstall 执行"
 
     local install_dir="$1"
-    cd "$install_dir/node_modules/remote-claude"
+    local package_dir="$install_dir/node_modules/remote-claude"
+    cd "$package_dir"
 
-    # 验证 .venv 目录
-    echo "PYTHON: $install_dir/.venv"
-    if [ -d "$install_dir/.venv" ]; then
+    # 验证 .venv 目录（在 node_modules/remote-claude/ 下，而非 npm-install/ 下）
+    echo "PYTHON: $package_dir/.venv"
+    if [ -d "$package_dir/.venv" ]; then
         log_success ".venv 虚拟环境已创建"
     else
         log_error ".venv 虚拟环境未创建"

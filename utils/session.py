@@ -340,8 +340,14 @@ def get_process_cwd(pid: int) -> Optional[str]:
         for line in result.stdout.splitlines():
             if line.startswith("n"):
                 return line[1:].strip()
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        _session_logger.debug(f"lsof 命令超时: pid={pid}")
+    except FileNotFoundError:
+        _session_logger.debug(f"lsof 命令不存在")
+    except OSError as e:
+        _session_logger.debug(f"lsof 执行失败: {e}")
+    except Exception as e:
+        _session_logger.warning(f"获取进程 CWD 发生意外错误: {e}")
     return None
 
 

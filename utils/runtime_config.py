@@ -349,6 +349,9 @@ def _save_config_with_lock(
 ) -> None:
     """使用文件锁保存配置的通用函数
 
+    使用 fcntl.flock 对锁文件加排他锁，阻塞等待其他进程释放锁。
+    锁文件本身不需要内容，flock 仅依赖文件描述符。
+
     Args:
         config_obj: 配置对象（需要有 to_dict() 方法）
         config_file: 配置文件路径
@@ -357,12 +360,11 @@ def _save_config_with_lock(
     ensure_user_data_dir()
 
     try:
-        # 使用锁文件的 flock 实现真正的互斥
-        # 先创建锁文件（如果不存在）
-        lock_path.touch(exist_ok=True)
-
-        # 对锁文件加排他锁，阻塞等待
-        with open(lock_path, 'w', encoding="utf-8") as lock_fd:
+        # 使用 'a+' 模式打开锁文件：
+        # - 文件不存在时自动创建
+        # - 存在时不截断内容
+        # - 获取文件描述符用于 flock
+        with open(lock_path, 'a+', encoding="utf-8") as lock_fd:
             fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
             try:
                 # 在锁保护下写入配置文件
@@ -394,6 +396,9 @@ def load_runtime_config() -> RuntimeConfig:
         # 备份损坏文件
         backup = _backup_corrupted_file(RUNTIME_CONFIG_FILE)
         logger.warning(f"配置文件损坏，已备份到 {backup}: {e}")
+        return RuntimeConfig()
+    except OSError as e:
+        logger.warning(f"读取配置文件失败（系统错误）: {e}")
         return RuntimeConfig()
     except Exception as e:
         logger.warning(f"加载配置失败: {e}")
@@ -497,6 +502,9 @@ def load_user_config() -> UserConfig:
         # 备份损坏文件
         backup = _backup_corrupted_file(USER_CONFIG_FILE)
         logger.warning(f"用户配置文件损坏，已备份到 {backup}: {e}")
+        return UserConfig()
+    except OSError as e:
+        logger.warning(f"读取用户配置文件失败（系统错误）: {e}")
         return UserConfig()
     except Exception as e:
         logger.warning(f"加载用户配置失败: {e}")
