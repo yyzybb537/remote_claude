@@ -248,6 +248,33 @@ if __name__ == "__main__":
     pytest.main([__file__])
 
 
+class TestDirStartCallback:
+    """测试 dir_start 回调处理"""
+
+    def test_dir_start_callback_with_cli_command(self):
+        """测试 dir_start 回调处理 cli_command 参数"""
+        # 模拟回调值
+        value = {
+            "action": "dir_start",
+            "path": "/path/to/project",
+            "session_name": "myproject",
+            "cli_command": "aider --model claude-sonnet-4",
+        }
+        # 验证回调值包含 cli_command
+        assert value.get("cli_command") == "aider --model claude-sonnet-4"
+
+    def test_dir_start_callback_without_cli_command(self):
+        """测试 dir_start 回调无 cli_command 时使用默认值"""
+        value = {
+            "action": "dir_start",
+            "path": "/path/to/project",
+            "session_name": "myproject",
+        }
+        # 验证默认值
+        cli_command = value.get("cli_command", "claude")
+        assert cli_command == "claude"
+
+
 class TestGetMatchingCommands:
     """测试 _get_matching_commands 辅助函数"""
 

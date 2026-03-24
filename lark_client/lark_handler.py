@@ -35,7 +35,16 @@ from .shared_memory_poller import SharedMemoryPoller, CardSlice
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, ensure_user_data_dir, USER_DATA_DIR, get_process_cwd
-from utils.runtime_config import load_user_config
+from utils.runtime_config import (
+    load_user_config,
+    get_notify_ready_enabled,
+    set_notify_ready_enabled,
+    get_notify_urgent_enabled,
+    set_notify_urgent_enabled,
+    get_bypass_enabled,
+    set_bypass_enabled,
+)
+from utils.stats_helper import safe_track_stats as _safe_track_stats
 
 
 def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
@@ -52,24 +61,6 @@ def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
             if lines:
                 lines.append(line)
     return "\n".join(lines)
-
-try:
-    from stats import track as _track_stats
-except ImportError:
-    _track_stats = None
-except Exception as e:
-    logger.warning(f"stats 模块加载失败，统计功能将禁用: {e}")
-    _track_stats = None
-
-
-def _safe_track_stats(*args, **kwargs):
-    """安全调用统计追踪函数，模块未加载时静默跳过"""
-    if _track_stats is not None:
-        try:
-            _track_stats(*args, **kwargs)
-        except Exception as e:
-            logger.debug(f"统计追踪失败: {e}")
-
 
 class LarkHandler:
     """飞书消息处理器（群聊/私聊统一逻辑）"""
@@ -327,6 +318,7 @@ class LarkHandler:
         session_name: str,
         work_dir: Optional[str],
         chat_id: str,
+        cli_command: str = "claude",
     ) -> bool:
         """启动 server 进程并等待 socket 就绪
 
@@ -334,6 +326,7 @@ class LarkHandler:
             session_name: 会话名称
             work_dir: 工作目录（可选）
             chat_id: 飞书聊天 ID（用于错误通知）
+            cli_command: CLI 命令，默认为 "claude"
 
         Returns:
             bool: True 表示启动成功，False 表示失败
@@ -341,10 +334,13 @@ class LarkHandler:
         script_dir = Path(__file__).parent.parent.absolute()
         server_script = script_dir / "server" / "server.py"
         cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
-        if self._poller.get_bypass_enabled():
+        if get_bypass_enabled():
             cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
 
-        logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}, 命令: {' '.join(cmd)}")
+        # 添加 --cli-command 参数
+        cmd += ["--cli-command", cli_command]
+
+        logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}, CLI命令: {cli_command}, 执行命令: {' '.join(cmd)}")
         _safe_track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
 
         try:
@@ -389,8 +385,15 @@ class LarkHandler:
             await card_service.send_text(chat_id, f"错误: 启动失败 - {e}")
             return False
 
-    async def _cmd_start(self, user_id: str, chat_id: str, args: str):
-        """启动新会话"""
+    async def _cmd_start(self, user_id: str, chat_id: str, args: str, cli_command: str = "claude"):
+        """启动新会话
+
+        Args:
+            user_id: 用户 ID
+            chat_id: 聊天 ID
+            args: 命令参数，格式为 "<会话名> [工作路径]"
+            cli_command: CLI 命令，默认为 "claude"
+        """
         parts = args.strip().split(maxsplit=1)
         if not parts:
             await card_service.send_text(
@@ -429,7 +432,7 @@ class LarkHandler:
         self._starting_sessions.add(session_name)
 
         try:
-            if not await self._start_server_session(session_name, work_dir, chat_id):
+            if not await self._start_server_session(session_name, work_dir, chat_id, cli_command=cli_command):
                 return
 
             ok = await self._attach(chat_id, session_name, user_id=user_id)
@@ -655,30 +658,31 @@ class LarkHandler:
             if cid in self._chat_bindings
         }
         card = build_menu_card(sessions, current_session=current, session_groups=session_groups, page=page,
-                               notify_enabled=self._poller.get_notify_enabled(),
-                               urgent_enabled=self._poller.get_urgent_enabled(),
-                               bypass_enabled=self._poller.get_bypass_enabled())
+                               notify_enabled=get_notify_ready_enabled(),
+                               urgent_enabled=get_notify_urgent_enabled(),
+                               bypass_enabled=get_bypass_enabled(),
+                               user_config=self._user_config)
         await self._send_or_update_card(chat_id, card, message_id)
 
     async def _cmd_toggle_notify(self, user_id: str, chat_id: str,
                                   message_id: Optional[str] = None):
         """切换就绪通知开关并刷新菜单卡片"""
-        new_value = not self._poller.get_notify_enabled()
-        self._poller.set_notify_enabled(new_value)
+        new_value = not get_notify_ready_enabled()
+        set_notify_ready_enabled(new_value)
         await self._cmd_menu(user_id, chat_id, message_id=message_id)
 
     async def _cmd_toggle_urgent(self, user_id: str, chat_id: str,
                                   message_id: Optional[str] = None):
         """切换加急通知开关并刷新菜单卡片"""
-        new_value = not self._poller.get_urgent_enabled()
-        self._poller.set_urgent_enabled(new_value)
+        new_value = not get_notify_urgent_enabled()
+        set_notify_urgent_enabled(new_value)
         await self._cmd_menu(user_id, chat_id, message_id=message_id)
 
     async def _cmd_toggle_bypass(self, user_id: str, chat_id: str,
                                   message_id: Optional[str] = None):
         """切换新会话 bypass 开关并刷新菜单卡片"""
-        new_value = not self._poller.get_bypass_enabled()
-        self._poller.set_bypass_enabled(new_value)
+        new_value = not get_bypass_enabled()
+        set_bypass_enabled(new_value)
         await self._cmd_menu(user_id, chat_id, message_id=message_id)
 
     async def _cmd_ls(self, user_id: str, chat_id: str, args: str,
@@ -726,7 +730,7 @@ class LarkHandler:
             for cid in self._group_chat_ids
             if cid in self._chat_bindings
         }
-        card = build_dir_card(target, entries, sessions_info, tree=tree, session_groups=session_groups, page=page)
+        card = build_dir_card(target, entries, sessions_info, tree=tree, session_groups=session_groups, page=page, user_config=self._user_config)
         await self._send_or_update_card(chat_id, card, message_id)
 
     async def _cmd_new_group(self, user_id: str, chat_id: str, args: str,

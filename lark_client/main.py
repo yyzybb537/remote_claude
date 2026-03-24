@@ -257,8 +257,9 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         if action_type == "dir_start":
             path = action_value.get("path", "")
             session_name = action_value.get("session_name", "")
-            print(f"[Lark] dir_start: path={path}, session={session_name}")
-            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}"))
+            cli_command = action_value.get("cli_command", "claude")  # 新增：获取 cli_command
+            print(f"[Lark] dir_start: path={path}, session={session_name}, cli_command={cli_command}")
+            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}", cli_command=cli_command))
             return None
 
         # 目录卡片：在该目录启动会话并创建专属群聊

@@ -9,6 +9,7 @@ Proxy Server
 """
 
 import asyncio
+import json
 import logging
 import os
 import pty
@@ -26,17 +27,16 @@ sys.path.insert(0, str(_here))               # server/ → shared_state
 sys.path.insert(0, str(_here.parent))        # 根目录 → protocol, utils, lark_client
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from utils.protocol import (
     Message, MessageType, InputMessage, OutputMessage,
-    HistoryMessage, ErrorMessage, ResizeMessage,
+    HistoryMessage, ResizeMessage,
     encode_message, decode_message
 )
 from utils.session import (
     get_socket_path, get_pid_file, ensure_socket_dir,
-    generate_client_id, cleanup_session, _safe_filename, get_env_file,
+    generate_client_id, cleanup_session, get_env_file,
     SOCKET_DIR
 )
 
@@ -823,10 +823,12 @@ class ProxyServer:
 
     def __init__(self, session_name: str, cli_args: list = None,
                  cli_type: str = "claude",
+                 cli_command: Optional[str] = None,
                  debug_screen: bool = False, debug_verbose: bool = False):
         self.session_name = session_name
         self.cli_args = cli_args or []
         self.cli_type = cli_type
+        self.cli_command = cli_command  # 直接指定的 CLI 命令（优先级最高）
         self.debug_screen = debug_screen
         self.debug_verbose = debug_verbose
         self.socket_path = get_socket_path(session_name)
@@ -962,13 +964,18 @@ class ProxyServer:
         logger.info(f"日志已切换到运行阶段: {safe_name}_server.log")
 
     def _get_effective_cmd(self) -> str:
-        """根据 cli_type 返回实际执行的命令
+        """根据 cli_command / cli_type 返回实际执行的命令
 
         优先级：
-        1. 自定义命令配置（config.json）
-        2. 默认值（claude 或 codex）
+        1. 直接指定的 cli_command（--cli-command 参数）
+        2. 自定义命令配置（config.json）
+        3. 默认值（claude 或 codex）
         """
-        # 优先从自定义命令配置获取
+        # 最高优先级：直接指定的 cli_command
+        if self.cli_command:
+            return self.cli_command
+
+        # 次优先级：从自定义命令配置获取
         try:
             from utils.runtime_config import get_cli_command
             custom_cmd = get_cli_command(self.cli_type)
@@ -1251,10 +1258,12 @@ class ProxyServer:
 
 def run_server(session_name: str, cli_args: list = None,
                cli_type: str = "claude",
+               cli_command: Optional[str] = None,
                debug_screen: bool = False, debug_verbose: bool = False):
     """运行服务器"""
     server = ProxyServer(session_name, cli_args,
                          cli_type=cli_type,
+                         cli_command=cli_command,
                          debug_screen=debug_screen, debug_verbose=debug_verbose)
 
     # 信号处理
@@ -1274,11 +1283,13 @@ def run_server(session_name: str, cli_args: list = None,
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Remote Claude Server")
+    parser = argparse.ArgumentParser(description="Remote Claude/Codex Server")
     parser.add_argument("session_name", help="会话名称")
     parser.add_argument("cli_args", nargs="*", help="传递给 CLI 的参数")
     parser.add_argument("--cli-type", default="claude", choices=["claude", "codex"],
                         help="后端 CLI 类型（默认 claude）")
+    parser.add_argument("--cli-command", default=None,
+                        help="直接指定 CLI 命令（优先级最高，如 'aider --model claude-sonnet-4'）")
     parser.add_argument("--debug-screen", action="store_true",
                         help="开启 pyte 屏幕快照调试日志（写入 _screen.log）")
     parser.add_argument("--debug-verbose", action="store_true",
@@ -1308,4 +1319,5 @@ if __name__ == "__main__":
 
     run_server(args.session_name, args.cli_args,
                cli_type=args.cli_type,
+               cli_command=args.cli_command,
                debug_screen=args.debug_screen, debug_verbose=args.debug_verbose)
