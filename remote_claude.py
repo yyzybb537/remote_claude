@@ -139,6 +139,25 @@ def cmd_start(args):
     for i in range(max_attempts):
         if socket_path.exists():
             break
+        # 检查 tmux 会话是否仍在运行（server 启动失败时会退出）
+        if not tmux_session_exists(session_name):
+            print("错误: Server 进程已退出")
+            # 输出启动日志辅助诊断
+            if _log_path.exists():
+                lines = []
+                for line in _log_path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        ts = datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
+                        if ts >= start_time:
+                            lines.append(line)
+                    except ValueError:
+                        if lines:  # 多行日志的续行，附到上一条
+                            lines.append(line)
+                if lines:
+                    print(f"--- Server 日志 ({_log_path}) ---")
+                    print("\n".join(lines))
+                    print("-------------------")
+            return 1
         time.sleep(wait_interval)
         if (i + 1) % 10 == 0:
             elapsed = (i + 1) // 10
