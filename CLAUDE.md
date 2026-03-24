@@ -31,6 +31,7 @@ client.py  SessionBridge (lark_client/)
 - `server/parsers/codex_parser.py` — Codex CLI 终端输出解析（无分割线、`›` 提示符、背景色区域检测）
 - `server/component_parser.py` — 向后兼容 shim（实际实现在 `server/parsers/`）
 - `server/shared_state.py` — 共享内存写入（`.mq` 文件）
+- `server/biz_enum.py` — 业务枚举定义（CliType：CLI 类型枚举）
 - `client/client.py` — 终端客户端，raw mode 输入转发
 - `utils/protocol.py` — 消息协议（JSON + `\n` 分隔，二进制数据 base64 编码）。7 种消息类型：INPUT / OUTPUT / CONTROL / STATUS / HISTORY / ERROR / RESIZE
 - `utils/session.py` — socket 路径管理、会话生命周期、会话名称截断
@@ -42,7 +43,7 @@ client.py  SessionBridge (lark_client/)
 - `lark_handler.py` — 命令路由，以 `chat_id` 为 key 统一管理群聊/私聊的 bridge 和绑定
 - `session_bridge.py` — 连接 Unix Socket，**仅负责输入发送**（send_input/send_key）和连接管理
 - `shared_memory_poller.py` — **流式滚动卡片轮询器**：每秒轮询 `.mq` 共享内存，通过 hash diff 驱动 `CardSlice`/`StreamTracker` 就地更新或冻结+开新卡
-- `card_builder.py` — **`build_stream_card(blocks, status_line, bottom_bar, is_frozen, agent_panel, option_block, session_name, disconnected)`**：四层结构卡片构建（内容区/状态区/交互区/菜单）+ 辅助卡片（session_list/menu/help/dir 等）
+- `card_builder.py` — **`build_stream_card(blocks, status_line, bottom_bar, is_frozen, agent_panel, option_block, session_name, disconnected)`**：四层结构卡片构建（内容区/状态区/交互区/菜单）+ 辅助卡片（session_list/menu/help/dir 等）；**`build_dir_card(target, entries, ...)`**：目录浏览卡片构建，含 `cli_type` 参数（默认 "claude"），根据 CLI 类型展示匹配的自定义命令按钮，未匹配时隐藏启动按钮
 - `card_service.py` — 飞书卡片 API 服务（create/update/send）
 - `rich_text_renderer.py` — 持久化 pyte Screen 封装（server 端实时喂入）
 
@@ -590,6 +591,7 @@ remote_claude/
 ├── server/                     # PTY 代理服务器
 │   ├── server.py               # 主服务，管理 PTY 进程/控制权/广播
 │   ├── component_parser.py     # 向后兼容 shim
+│   ├── biz_enum.py             # 业务枚举定义（CliType）
 │   ├── parsers/
 │   │   ├── base_parser.py      # 解析器基类
 │   │   ├── claude_parser.py    # Claude CLI 解析器
@@ -621,20 +623,40 @@ remote_claude/
 │
 ├── tests/                      # 测试文件
 │   ├── TEST_PLAN.md            # 测试计划文档
+│   │
+│   │── # 核心单元测试
 │   ├── test_format_unit.py     # 格式化单元测试
-│   ├── test_component_parser.py
-│   ├── test_stream_poller.py   # 流式卡片模型单元测试（card_builder + poller）
+│   ├── test_component_parser.py # 组件解析器测试
+│   ├── test_stream_poller.py   # 流式卡片模型测试
 │   ├── test_session_truncate.py # 会话名称截断测试
 │   ├── test_runtime_config.py  # 运行时配置测试
-│   ├── test_integration.py     # 集成测试
+│   ├── test_renderer.py        # 终端渲染器测试
+│   │
+│   │── # Codex 解析测试
+│   ├── test_codex_parser_utils.py
+│   ├── test_codex_split_regions.py
+│   ├── test_codex_option_block.py
+│   │
+│   │── # 功能测试
+│   ├── test_option_block.py    # 选项块测试
+│   ├── test_option_select.py   # 选项选择测试
+│   ├── test_card_interaction.py # 卡片交互测试
+│   ├── test_disconnected_state.py # 断开状态测试
+│   ├── test_list_display.py    # 列表显示测试
+│   ├── test_log_level.py       # 日志级别测试
+│   ├── test_stats.py           # 统计功能测试
+│   ├── test_portable_python.py # 便携式 Python 测试
+│   ├── test_socks_proxy.py     # SOCKS 代理测试
+│   │
+│   │── # 集成/端到端测试
+│   ├── test_integration.py
+│   ├── test_e2e.py
 │   ├── test_attach_dedup.py
 │   ├── test_message_queue.py
-│   ├── test_option_block.py
-│   ├── test_e2e.py
 │   ├── test_mock_conversation.py
 │   ├── test_real.py
-│   ├── test_renderer.py
 │   ├── test_session.py
+│   │
 │   └── lark_client/            # lark_client 内部测试
 │       ├── test_mock_output.py
 │       ├── test_cjk_width.py
@@ -706,25 +728,42 @@ uv run python3 remote_claude.py lark status    # 查看状态和日志
 > **详细测试计划见 [`tests/TEST_PLAN.md`](./tests/TEST_PLAN.md)**，包含测试分层、执行流程、特殊场景说明和回归防护清单。
 
 测试分为三层：
-1. **单元测试**（`test_format_unit.py`）— 纯本地，覆盖格式化逻辑，无需网络和服务
-2. **集成测试**（`test_integration.py`）— 直连 socket，发送真实消息验证输出
+1. **单元测试** — 纯本地，覆盖格式化逻辑，无需网络和服务
+2. **集成测试** — 直连 socket，发送真实消息验证输出
 3. **飞书视觉测试** — 验证实际渲染效果，偶尔进行
 
-**可独立运行的单元测试：**
+**核心单元测试（Docker CI 必跑）：**
 ```bash
-uv run python3 tests/test_format_unit.py                  # 格式化逻辑单元测试（见 TEST_PLAN.md 层1）
-uv run python3 tests/test_stream_poller.py                # 流式卡片模型测试（card_builder + poller）
-uv run python3 tests/test_renderer.py                     # 终端渲染器测试
-uv run python3 lark_client/output_cleaner.py              # output_cleaner 自带测试
-uv run python3 tests/lark_client/test_mock_output.py      # lark_client 输出模拟测试
-uv run python3 tests/lark_client/test_cjk_width.py        # CJK 字符宽度测试
+uv run python3 tests/test_session_truncate.py   # 会话名称截断测试
+uv run python3 tests/test_runtime_config.py     # 运行时配置测试
+```
+
+**其他可独立运行的单元测试：**
+```bash
+uv run python3 tests/test_format_unit.py        # 格式化逻辑单元测试
+uv run python3 tests/test_stream_poller.py      # 流式卡片模型测试
+uv run python3 tests/test_renderer.py           # 终端渲染器测试
+uv run python3 tests/test_stats.py              # 统计功能测试
+uv run python3 tests/test_log_level.py          # 日志级别测试
+uv run python3 tests/test_list_display.py       # 列表显示测试
+uv run python3 tests/test_disconnected_state.py # 断开状态测试
+uv run python3 tests/test_card_interaction.py   # 卡片交互测试
+uv run python3 tests/lark_client/test_mock_output.py   # lark_client 输出模拟测试
+uv run python3 tests/lark_client/test_cjk_width.py     # CJK 字符宽度测试
 uv run python3 tests/lark_client/test_full_simulation.py  # 完整模拟测试
+```
+
+**Codex 解析测试：**
+```bash
+uv run python3 tests/test_codex_parser_utils.py
+uv run python3 tests/test_codex_split_regions.py
+uv run python3 tests/test_codex_option_block.py
 ```
 
 **需要活跃会话的集成测试：**
 ```bash
 # 先启动会话：uv run python3 remote_claude.py start test
-uv run python3 tests/test_integration.py       # 集成测试（见 TEST_PLAN.md 层2）
+uv run python3 tests/test_integration.py       # 集成测试
 uv run python3 tests/test_session.py           # 会话连接测试
 uv run python3 tests/test_real.py              # 实时数据渲染测试
 uv run python3 tests/test_e2e.py               # 端到端流程测试
@@ -800,7 +839,12 @@ Remote Claude 使用两个配置文件，职责分离：
         {"label": "退出会话", "value": "/exit", "icon": "🚪"},
         {"label": "帮助", "value": "/help", "icon": "❓"}
       ]
-    }
+    },
+    "notify": {
+      "ready_enabled": true,
+      "urgent_enabled": false
+    },
+    "bypass_enabled": false
   }
 }
 ```
@@ -811,6 +855,23 @@ Remote Claude 使用两个配置文件，职责分离：
 - `label`: 显示名称，最长 20 字符
 - `value`: 命令值，必须以 `/` 开头，最长 32 字符，不能包含空格
 - `icon`: 图标 emoji（可选，为空时使用空白占位）
+
+**CustomCommand 数据类** (`utils/runtime_config.py`)：
+- `name`: 显示名称，如 "Claude"、"Aider"
+- `cli_type`: CLI 类型（必须为 CliType 枚举值之一："claude" 或 "codex"）
+- `command`: 实际执行的命令，如 "claude"、"aider --message-args"
+- `description`: 可选描述
+
+**CliType 枚举** (`server/biz_enum.py`)：
+- `CLAUDE = "claude"`: Claude Code CLI
+- `CODEX = "codex"`: OpenAI Codex CLI
+
+**通知配置说明**：
+- `notify.ready_enabled`: 就绪通知开关（默认 `true`），Claude 完成任务后群聊 @ 用户
+- `notify.urgent_enabled`: 加急通知开关（默认 `false`），对上一条通知消息加急（需开通飞书加急权限）
+
+**Bypass 配置说明**：
+- `bypass_enabled`: 新会话跳过权限确认（默认 `false`），启动时自动添加 `--dangerously-skip-permissions`
 
 #### runtime.json（运行时状态）
 
@@ -824,12 +885,14 @@ Remote Claude 使用两个配置文件，职责分离：
   },
   "lark_group_mappings": {
     "oc_xxx": "my-session"
-  }
+  },
+  "ready_notify_count": 0
 }
 ```
 
 - **session_mappings**：截断名称 ↔ 原始路径映射（解决超长路径问题），最多 500 条（软限制）
 - **lark_group_mappings**：飞书群组 ID ↔ 会话名映射
+- **ready_notify_count**：就绪通知累计次数（用于显示"这是第 N 次通知"）
 
 **文件锁机制**：
 
