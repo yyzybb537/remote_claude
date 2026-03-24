@@ -18,12 +18,14 @@ from typing import Dict, Any, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from utils.runtime_config import UserConfig
 
+from server.biz_enum import CliType
+
 _cb_logger = logging.getLogger('CardBuilder')
 
 # CLI 类型 → 显示名称映射（用于卡片标题中的"就绪"文案）
-CLI_NAMES: Dict[str, str] = {
-    "claude": "Claude",
-    "codex": "Codex",
+CLI_NAMES: Dict[CliType, str] = {
+    CliType.CLAUDE: "Claude",
+    CliType.CODEX: "Codex",
 }
 
 # 版本号：从 package.json 读取，import 时只读一次
@@ -46,7 +48,7 @@ def _get_matching_commands(user_config: Optional["UserConfig"], cli_type: str) -
     """
     if not user_config or not user_config.ui_settings.custom_commands.is_visible():
         # 未启用自定义命令，返回默认命令
-        return [{"name": "Claude", "command": "claude"}]
+        return [{"name": "Claude", "command": str(CliType.CLAUDE)}]
 
     commands = user_config.ui_settings.custom_commands.commands
     # 过滤匹配 cli_type 的命令
@@ -729,7 +731,7 @@ def _determine_header(
             return "🔐 等待权限确认", "red"
         return "🤔 等待选择", "blue"
 
-    cli_name = CLI_NAMES.get(cli_type, "Unknown")
+    cli_name = CLI_NAMES.get(CliType(cli_type), "Unknown")
     return f"✅ {cli_name} 就绪", "green"
 
 
@@ -973,8 +975,8 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
             is_current = (name == current_session)
 
             # CLI 类型颜色和标签：Claude=黄色，Codex=绿色
-            cli_color = "yellow" if cli_type == "claude" else "green"
-            cli_label = CLI_NAMES.get(cli_type, "Claude")
+            cli_color = "yellow" if cli_type == str(CliType.CLAUDE) else "green"
+            cli_label = CLI_NAMES.get(CliType(cli_type), "Claude")
 
             status_icon = "🟢" if is_current else "⚪"
             current_label = "（当前）" if is_current else ""

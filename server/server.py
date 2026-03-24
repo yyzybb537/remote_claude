@@ -40,6 +40,9 @@ from utils.session import (
     SOCKET_DIR
 )
 
+from server.biz_enum import CliType
+
+
 logger = logging.getLogger('Server')
 
 # Server 日志级别配置
@@ -163,7 +166,7 @@ class ClaudeWindow:
     input_area_ansi_text: str = ''
     timestamp: float = 0.0
     layout_mode: str = "normal"  # "normal" | "option" | "detail" | "agent_list" | "agent_detail"
-    cli_type: str = "claude"     # "claude" | "codex"（决定 lark 侧的标题文案）
+    cli_type: CliType = CliType.CLAUDE  # CLI 类型（决定 lark 侧的标题文案）
 
 
 
@@ -178,7 +181,7 @@ class OutputWatcher:
 
     def __init__(self, session_name: str, cols: int, rows: int,
                  parser=None,
-                 cli_type: str = "claude",
+                 cli_type: CliType = CliType.CLAUDE,
                  on_snapshot=None, debug_screen: bool = False,
                  debug_verbose: bool = False):
         self._session_name = session_name
@@ -910,7 +913,7 @@ class ProxyServer:
     def _get_parser(self):
         """根据 cli_type 返回对应的解析器实例"""
         from parsers import ClaudeParser, CodexParser
-        if self.cli_type == "codex":
+        if self.cli_type == CliType.CODEX:
             return CodexParser()
         return ClaudeParser()
 
@@ -985,7 +988,7 @@ class ProxyServer:
             logger.debug(f"读取自定义命令配置失败: {e}")
 
         # 回退到默认值
-        return "codex" if self.cli_type == "codex" else "claude"
+        return str(self.cli_type)
 
     def _start_pty(self):
         """启动 PTY 并运行 Claude"""
