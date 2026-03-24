@@ -67,11 +67,22 @@ class RemoteClient:
             return False
 
         try:
-            self.reader, self.writer = await asyncio.open_unix_connection(
-                path=str(self.socket_path)
+            # 添加连接超时（5秒），避免在服务器关闭时无限阻塞
+            self.reader, self.writer = await asyncio.wait_for(
+                asyncio.open_unix_connection(path=str(self.socket_path)),
+                timeout=5.0
             )
             print(f"✅ 已连接到会话: {self.session_name}")
             return True
+        except asyncio.TimeoutError:
+            print(
+                f"❌ 连接超时\n"
+                f"   会话名: {self.session_name}\n"
+                f"   Socket 路径: {self.socket_path}\n"
+                f"\n"
+                f"   可能原因: Server 进程正在关闭或无响应"
+            )
+            return False
         except ConnectionRefusedError as e:
             # 检查进程状态
             from utils.session import list_active_sessions
