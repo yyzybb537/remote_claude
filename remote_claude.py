@@ -187,9 +187,7 @@ def cmd_attach(args):
 
     # 直接运行 client（不通过 tmux）
     from client.client import run_client
-    run_client(session_name)
-
-    return 0
+    return run_client(session_name)
 
 
 def cmd_list(args):

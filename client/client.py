@@ -289,4 +289,4 @@ if __name__ == "__main__":
     parser.add_argument("session_name", help="会话名称")
     args = parser.parse_args()
 
-    run_client(args.session_name)
+    sys.exit(run_client(args.session_name))
