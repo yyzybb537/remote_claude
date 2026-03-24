@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
+from server.biz_enum import CliType
+
 logger = logging.getLogger('RuntimeConfig')
 
 # 常量
@@ -27,6 +29,12 @@ CURRENT_VERSION = "1.0"
 USER_CONFIG_VERSION = "1.0"
 MAX_SESSION_MAPPINGS = 500
 MAX_BACKUP_FILES = 2  # 保留最近 2 个备份文件
+
+
+class ConfigType:
+    """配置文件类型常量"""
+    CONFIG = "config"
+    RUNTIME = "runtime"
 
 # NFS 文件系统检测缓存
 _nfs_checked = False
@@ -175,9 +183,9 @@ def cleanup_backup_files(config_type: Optional[str] = None) -> None:
     用于清理损坏配置文件的备份（由 _backup_corrupted_file 产生）。
 
     Args:
-        config_type: 'config', 'runtime', 或 None（全部）。
-            - 'config': 仅清理 config.json.bak.*
-            - 'runtime': 仅清理 runtime.json.bak.*
+        config_type: ConfigType.CONFIG, ConfigType.RUNTIME, 或 None（全部）。
+            - ConfigType.CONFIG: 仅清理 config.json.bak.*
+            - ConfigType.RUNTIME: 仅清理 runtime.json.bak.*
             - None: 清理所有 *.json.bak* 文件
     """
     if config_type is None:
@@ -262,22 +270,145 @@ class QuickCommandsConfig:
 
 
 @dataclass
+class NotifySettings:
+    """通知设置"""
+    ready_enabled: bool = True      # 就绪通知开关（默认开启）
+    urgent_enabled: bool = False    # 加急通知开关（默认关闭）
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "ready_enabled": self.ready_enabled,
+            "urgent_enabled": self.urgent_enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "NotifySettings":
+        """从字典创建"""
+        return cls(
+            ready_enabled=data.get("ready_enabled", True),
+            urgent_enabled=data.get("urgent_enabled", False),
+        )
+
+
+@dataclass
+class CustomCommand:
+    """自定义 CLI 命令配置"""
+    name: str           # 显示名称，如 "Claude"、"Aider"
+    cli_type: str       # CLI 类型（必须为 CliType 枚举值之一)
+    command: str        # 实际执行的命令，如 "claude"、"aider --message-args"
+    description: str = ""  # 可选描述
+
+    def __post_init__(self):
+        """验证命令格式"""
+        if not self.name:
+            raise ValueError("命令名称不能为空")
+        if not self.command:
+            raise ValueError("命令值不能为空")
+        if not self.cli_type:
+            raise ValueError("CLI 类型不能为空")
+        # 校验 cli_type 为有效枚举值
+        try:
+            CliType(self.cli_type)
+        except ValueError:
+            raise ValueError(f"CLI 类型必须是 {list(CliType)} 之一: {self.cli_type}")
+        if len(self.name) > 20:
+            raise ValueError(f"命令名称最大长度 20 字符: {self.name}")
+
+    def to_dict(self) -> Dict[str, str]:
+        """转换为字典"""
+        return {
+            "name": self.name,
+            "cli_type": self.cli_type,
+            "command": self.command,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CustomCommand":
+        """从字典创建"""
+        return cls(
+            name=data.get("name", ""),
+            cli_type=data.get("cli_type", ""),
+            command=data.get("command", ""),
+            description=data.get("description", ""),
+        )
+
+
+@dataclass
+class CustomCommandsConfig:
+    """自定义命令配置"""
+    enabled: bool = False
+    commands: List[CustomCommand] = field(default_factory=list)
+
+    def get_command(self, name: str) -> Optional[str]:
+        """根据名称获取命令"""
+        for cmd in self.commands:
+            if cmd.name == name:
+                return cmd.command
+        return None
+
+    def get_default_command(self) -> str:
+        """获取默认命令（第一个命令）"""
+        if self.commands:
+            return self.commands[0].command
+        return "claude"
+
+    def is_visible(self) -> bool:
+        """判断是否显示自定义命令选择器"""
+        return self.enabled and len(self.commands) > 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "enabled": self.enabled,
+            "commands": [cmd.to_dict() for cmd in self.commands],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CustomCommandsConfig":
+        """从字典创建"""
+        commands_data = data.get("commands", [])
+        commands = []
+        for cmd_data in commands_data:
+            try:
+                commands.append(CustomCommand.from_dict(cmd_data))
+            except ValueError as e:
+                logger.warning(f"跳过无效自定义命令: {e}")
+        return cls(
+            enabled=data.get("enabled", False),
+            commands=commands,
+        )
+
+
+@dataclass
 class UISettings:
     """UI 设置"""
     quick_commands: QuickCommandsConfig = field(default_factory=lambda: QuickCommandsConfig())
+    notify: NotifySettings = field(default_factory=lambda: NotifySettings())
+    bypass_enabled: bool = False  # 新会话 bypass 开关（默认关闭）
+    custom_commands: CustomCommandsConfig = field(default_factory=lambda: CustomCommandsConfig())
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
             "quick_commands": self.quick_commands.to_dict(),
+            "notify": self.notify.to_dict(),
+            "bypass_enabled": self.bypass_enabled,
+            "custom_commands": self.custom_commands.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "UISettings":
         """从字典创建"""
         qc_data = data.get("quick_commands", {})
+        notify_data = data.get("notify", {})
+        cc_data = data.get("custom_commands", {})
         return cls(
             quick_commands=QuickCommandsConfig.from_dict(qc_data),
+            notify=NotifySettings.from_dict(notify_data),
+            bypass_enabled=data.get("bypass_enabled", False),
+            custom_commands=CustomCommandsConfig.from_dict(cc_data),
         )
 
 
@@ -291,6 +422,7 @@ class RuntimeConfig:
     uv_path: Optional[str] = None  # uv 可执行文件路径
     session_mappings: Dict[str, str] = field(default_factory=dict)
     lark_group_mappings: Dict[str, str] = field(default_factory=dict)
+    ready_notify_count: int = 0  # 全局就绪通知计数器
 
     def get_session_mapping(self, truncated_name: str) -> Optional[str]:
         """获取截断名称对应的原始路径
@@ -373,6 +505,7 @@ class RuntimeConfig:
             "uv_path"            : self.uv_path,
             "session_mappings"   : self.session_mappings,
             "lark_group_mappings": self.lark_group_mappings,
+            "ready_notify_count": self.ready_notify_count,
         }
 
     @classmethod
@@ -383,6 +516,7 @@ class RuntimeConfig:
             uv_path=data.get("uv_path"),
             session_mappings=data.get("session_mappings", {}),
             lark_group_mappings=data.get("lark_group_mappings", {}),
+            ready_notify_count=data.get("ready_notify_count", 0),
         )
 
 
@@ -615,6 +749,90 @@ def migrate_legacy_config() -> None:
         logger.error(f"[迁移] 迁移失败: {e}")
 
 
+# 旧开关文件路径
+LEGACY_NOTIFY_COUNT_FILE = USER_DATA_DIR / "ready_notify_count"
+LEGACY_NOTIFY_ENABLED_FILE = USER_DATA_DIR / "ready_notify_enabled"
+LEGACY_URGENT_ENABLED_FILE = USER_DATA_DIR / "urgent_notify_enabled"
+LEGACY_BYPASS_ENABLED_FILE = USER_DATA_DIR / "bypass_enabled"
+
+
+def migrate_legacy_notify_settings() -> None:
+    """迁移旧开关文件到 config.json 和 runtime.json
+
+    处理以下旧文件：
+    - ready_notify_count -> runtime.json
+    - ready_notify_enabled -> config.json (ui_settings.notify.ready_enabled)
+    - urgent_notify_enabled -> config.json (ui_settings.notify.urgent_enabled)
+    - bypass_enabled -> config.json (ui_settings.bypass_enabled)
+
+    迁移完成后删除旧文件。
+    """
+    legacy_files = [
+        LEGACY_NOTIFY_COUNT_FILE,
+        LEGACY_NOTIFY_ENABLED_FILE,
+        LEGACY_URGENT_ENABLED_FILE,
+        LEGACY_BYPASS_ENABLED_FILE,
+    ]
+
+    # 检查是否有旧文件需要迁移
+    if not any(f.exists() for f in legacy_files):
+        return
+
+    logger.info("[迁移] 检测到旧开关文件，正在迁移...")
+
+    # 迁移 ready_notify_count 到 runtime.json
+    if LEGACY_NOTIFY_COUNT_FILE.exists():
+        try:
+            count_str = LEGACY_NOTIFY_COUNT_FILE.read_text().strip()
+            count = int(count_str)
+            runtime_config = load_runtime_config()
+            runtime_config.ready_notify_count = count
+            save_runtime_config(runtime_config)
+            LEGACY_NOTIFY_COUNT_FILE.unlink()
+            logger.info(f"[迁移] ready_notify_count -> runtime.json (count={count})")
+        except ValueError:
+            logger.warning(f"[迁移] ready_notify_count 内容无效: {count_str}")
+            LEGACY_NOTIFY_COUNT_FILE.unlink()
+        except Exception as e:
+            logger.warning(f"[迁移] ready_notify_count 迁移失败: {e}")
+
+    # 迁移开关到 config.json
+    user_config = load_user_config()
+
+    if LEGACY_NOTIFY_ENABLED_FILE.exists():
+        try:
+            val = LEGACY_NOTIFY_ENABLED_FILE.read_text().strip()
+            user_config.ui_settings.notify.ready_enabled = (val == "1")
+            LEGACY_NOTIFY_ENABLED_FILE.unlink()
+            logger.info("[迁移] ready_notify_enabled -> config.json")
+        except Exception as e:
+            logger.warning(f"[迁移] ready_notify_enabled 迁移失败: {e}")
+            LEGACY_NOTIFY_ENABLED_FILE.unlink()
+
+    if LEGACY_URGENT_ENABLED_FILE.exists():
+        try:
+            val = LEGACY_URGENT_ENABLED_FILE.read_text().strip()
+            user_config.ui_settings.notify.urgent_enabled = (val == "1")
+            LEGACY_URGENT_ENABLED_FILE.unlink()
+            logger.info("[迁移] urgent_notify_enabled -> config.json")
+        except Exception as e:
+            logger.warning(f"[迁移] urgent_notify_enabled 迁移失败: {e}")
+            LEGACY_URGENT_ENABLED_FILE.unlink()
+
+    if LEGACY_BYPASS_ENABLED_FILE.exists():
+        try:
+            val = LEGACY_BYPASS_ENABLED_FILE.read_text().strip()
+            user_config.ui_settings.bypass_enabled = (val == "1")
+            LEGACY_BYPASS_ENABLED_FILE.unlink()
+            logger.info("[迁移] bypass_enabled -> config.json")
+        except Exception as e:
+            logger.warning(f"[迁移] bypass_enabled 迁移失败: {e}")
+            LEGACY_BYPASS_ENABLED_FILE.unlink()
+
+    save_user_config(user_config)
+    logger.info("[迁移] 开关设置迁移完成")
+
+
 # ============== 用户配置加载/保存函数 ==============
 
 def load_user_config() -> UserConfig:
@@ -658,3 +876,114 @@ def save_user_config(config: UserConfig) -> None:
     """
     _save_config_with_lock(config, USER_CONFIG_FILE, USER_CONFIG_LOCK_FILE)
     logger.debug(f"保存用户配置成功: {USER_CONFIG_FILE}")
+
+
+# ============== 通知设置访问函数 ==============
+
+def get_notify_ready_enabled() -> bool:
+    """获取就绪通知开关状态"""
+    config = load_user_config()
+    return config.ui_settings.notify.ready_enabled
+
+
+def set_notify_ready_enabled(enabled: bool) -> None:
+    """设置就绪通知开关状态"""
+    config = load_user_config()
+    config.ui_settings.notify.ready_enabled = enabled
+    save_user_config(config)
+    logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
+
+
+def get_notify_urgent_enabled() -> bool:
+    """获取加急通知开关状态"""
+    config = load_user_config()
+    return config.ui_settings.notify.urgent_enabled
+
+
+def set_notify_urgent_enabled(enabled: bool) -> None:
+    """设置加急通知开关状态"""
+    config = load_user_config()
+    config.ui_settings.notify.urgent_enabled = enabled
+    save_user_config(config)
+    logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
+
+
+def get_bypass_enabled() -> bool:
+    """获取新会话 bypass 开关状态"""
+    config = load_user_config()
+    return config.ui_settings.bypass_enabled
+
+
+def set_bypass_enabled(enabled: bool) -> None:
+    """设置新会话 bypass 开关状态"""
+    config = load_user_config()
+    config.ui_settings.bypass_enabled = enabled
+    save_user_config(config)
+    logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
+
+
+def get_ready_notify_count() -> int:
+    """获取就绪通知计数"""
+    config = load_runtime_config()
+    return config.ready_notify_count
+
+
+def increment_ready_notify_count() -> int:
+    """原子递增就绪通知计数器，返回新值"""
+    config = load_runtime_config()
+    config.ready_notify_count += 1
+    save_runtime_config(config)
+    return config.ready_notify_count
+
+
+# ============== 自定义命令配置访问函数 ==============
+
+def get_custom_commands() -> List[CustomCommand]:
+    """获取自定义命令列表"""
+    config = load_user_config()
+    return config.ui_settings.custom_commands.commands
+
+
+def get_custom_command(name: str) -> Optional[str]:
+    """根据名称获取自定义命令"""
+    config = load_user_config()
+    return config.ui_settings.custom_commands.get_command(name)
+
+
+def get_cli_command(cli_type: str) -> str:
+    """获取 CLI 命令（优先自定义命令，回退到默认值）
+
+    Args:
+        cli_type: CLI 类型名称（如 "claude"、"codex"）
+
+    Returns:
+        实际执行的命令字符串
+    """
+    config = load_user_config()
+
+    # 优先从自定义命令配置获取
+    custom_cmd = config.ui_settings.custom_commands.get_command(cli_type)
+    if custom_cmd:
+        logger.debug(f"使用自定义命令: {cli_type} -> {custom_cmd}")
+        return custom_cmd
+
+    # 回退到默认值
+    default_commands = {
+        "claude": "claude",
+        "codex": "codex",
+    }
+    return default_commands.get(cli_type, cli_type)
+
+
+def set_custom_commands(commands: List[CustomCommand]) -> None:
+    """设置自定义命令列表"""
+    config = load_user_config()
+    config.ui_settings.custom_commands.commands = commands
+    save_user_config(config)
+    logger.info(f"已保存 {len(commands)} 个自定义命令")
+
+
+def is_custom_commands_enabled() -> bool:
+    """检查自定义命令功能是否启用"""
+    config = load_user_config()
+    return config.ui_settings.custom_commands.is_visible()
