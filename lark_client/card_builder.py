@@ -41,7 +41,7 @@ def _get_matching_commands(user_config: Optional["UserConfig"], cli_type: str) -
 
     Args:
         user_config: 用户配置对象
-        cli_type: CLI 类型
+        cli_type: CLI 类型（字符串或 CliType 枚举值）
 
     Returns:
         匹配的命令列表，每个元素包含 name 和 command
@@ -51,11 +51,13 @@ def _get_matching_commands(user_config: Optional["UserConfig"], cli_type: str) -
         return [{"name": "Claude", "command": str(CliType.CLAUDE)}]
 
     commands = user_config.ui_settings.custom_commands.commands
+    # 将 cli_type 标准化为字符串进行比较（支持字符串和枚举输入）
+    cli_type_str = str(cli_type) if isinstance(cli_type, CliType) else cli_type
     # 过滤匹配 cli_type 的命令
     matched = [
         {"name": cmd.name, "command": cmd.command}
         for cmd in commands
-        if cmd.cli_type == cli_type
+        if cmd.cli_type == cli_type_str
     ]
 
     return matched
@@ -731,7 +733,12 @@ def _determine_header(
             return "🔐 等待权限确认", "red"
         return "🤔 等待选择", "blue"
 
-    cli_name = CLI_NAMES.get(CliType(cli_type), "Unknown")
+    # 尝试将 cli_type 转换为枚举，失败时使用默认值
+    try:
+        cli_type_enum = CliType(cli_type)
+    except ValueError:
+        cli_type_enum = CliType.CLAUDE
+    cli_name = CLI_NAMES.get(cli_type_enum, "Unknown")
     return f"✅ {cli_name} 就绪", "green"
 
 

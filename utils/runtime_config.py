@@ -352,7 +352,7 @@ class CustomCommandsConfig:
         """获取默认命令（第一个命令）"""
         if self.commands:
             return self.commands[0].command
-        return "claude"
+        return str(CliType.CLAUDE)
 
     def is_visible(self) -> bool:
         """判断是否显示自定义命令选择器"""
@@ -367,11 +367,18 @@ class CustomCommandsConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CustomCommandsConfig":
-        """从字典创建"""
+        """从字典创建，支持迁移旧配置（无 cli_type 字段）"""
         commands_data = data.get("commands", [])
         commands = []
         for cmd_data in commands_data:
             try:
+                # 迁移旧配置：如果没有 cli_type 字段，根据 name 推断
+                if not cmd_data.get("cli_type"):
+                    name_lower = cmd_data.get("name", "").lower()
+                    if "codex" in name_lower:
+                        cmd_data = {**cmd_data, "cli_type": str(CliType.CODEX)}
+                    else:
+                        cmd_data = {**cmd_data, "cli_type": str(CliType.CLAUDE)}
                 commands.append(CustomCommand.from_dict(cmd_data))
             except ValueError as e:
                 logger.warning(f"跳过无效自定义命令: {e}")
@@ -954,25 +961,28 @@ def get_cli_command(cli_type: str) -> str:
     """获取 CLI 命令（优先自定义命令，回退到默认值）
 
     Args:
-        cli_type: CLI 类型名称（如 "claude"、"codex"）
+        cli_type: CLI 类型名称（如 "claude"、"codex" 或 CliType 枚举）
 
     Returns:
         实际执行的命令字符串
     """
+    # 标准化为字符串（支持枚举和字符串输入）
+    cli_type_str = str(cli_type) if isinstance(cli_type, CliType) else cli_type
+
     config = load_user_config()
 
     # 优先从自定义命令配置获取
-    custom_cmd = config.ui_settings.custom_commands.get_command(cli_type)
+    custom_cmd = config.ui_settings.custom_commands.get_command(cli_type_str)
     if custom_cmd:
-        logger.debug(f"使用自定义命令: {cli_type} -> {custom_cmd}")
+        logger.debug(f"使用自定义命令: {cli_type_str} -> {custom_cmd}")
         return custom_cmd
 
     # 回退到默认值
     default_commands = {
-        "claude": "claude",
-        "codex": "codex",
+        str(CliType.CLAUDE): str(CliType.CLAUDE),
+        str(CliType.CODEX): str(CliType.CODEX),
     }
-    return default_commands.get(cli_type, cli_type)
+    return default_commands.get(cli_type_str, cli_type_str)
 
 
 def set_custom_commands(commands: List[CustomCommand]) -> None:
