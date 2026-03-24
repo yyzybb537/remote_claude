@@ -33,7 +33,7 @@
 pid, fd = pty.fork()
 if pid == 0:
     # 子进程
-    os.execvpe(_cmd_parts[0], _cmd_parts + self.claude_args, child_env)
+    os.execvpe(_cmd_parts[0], _cmd_parts + self.cli_args, child_env)
 ```
 
 **影响**:
@@ -42,9 +42,9 @@ if pid == 0:
 - 难以调试：用户看不到残留进程
 
 **建议**:
-1. 使用 `subprocess.Popen` 替代 `pty.fork()`，获得更好的进程控制
-2. 实现进程组管理，确保子进程随父进程终止
-3. 添加心跳检测，父进程退出时自动清理子进程
+1. 使用进程组管理（`os.setsid()`），确保子进程随父进程终止
+2. 注册信号处理器（SIGTERM/SIGINT），优雅清理子进程
+3. **约束**：修复时必须保证不影响现有的 attach 逻辑
 
 ---
 
@@ -159,9 +159,9 @@ fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
 - 用户环境多样性难以预测
 
 **建议**:
-1. 检测文件系统类型，NFS 上发出警告
-2. 或使用 `portalocker` 库处理跨平台锁
-3. 文档说明不支持网络文件系统
+1. 检测文件系统类型，NFS 上发出警告信息
+2. 在配置加载/保存时输出警告日志
+3. **约束**：仅增加警告，不做更复杂的兼容处理
 
 ---
 

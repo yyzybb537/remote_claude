@@ -853,9 +853,9 @@ def main():
         parser.print_help()
         return 0
 
-    # 将剩余参数合并到 claude_args（支持 cx/cdx 脚本中使用 -- 分隔符）
-    if args.command == "start" and hasattr(args, 'claude_args'):
-        args.claude_args = args.claude_args + remaining
+    # 将剩余参数合并到 cli_args（支持 cx/cdx 脚本中使用 -- 分隔符）
+    if args.command == "start" and hasattr(args, 'cli_args'):
+        args.cli_args = args.cli_args + remaining
 
     return args.func(args)
 
