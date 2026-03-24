@@ -19,6 +19,7 @@ import os
 import sys
 import subprocess
 import time
+import json
 import signal
 from datetime import datetime
 from pathlib import Path
@@ -169,9 +170,7 @@ def cmd_start(args):
     # （如 kitty keyboard protocol）直接在 Claude CLI ↔ 用户终端之间流通，
     # 从而支持 Shift+Enter 等扩展键
     from client.client import run_client
-    run_client(session_name)
-
-    return 0
+    return run_client(session_name)
 
 
 def cmd_attach(args):

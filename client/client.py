@@ -108,10 +108,10 @@ class RemoteClient:
             )
             return False
 
-    async def run(self):
-        """运行客户端"""
+    async def run(self) -> int:
+        """运行客户端，返回退出码（0=成功，非零=失败）"""
         if not await self.connect():
-            return
+            return 1  # 连接失败
 
         self.running = True
         _track_stats('terminal', 'connect', session_name=self.session_name)
@@ -135,6 +135,8 @@ class RemoteClient:
             )
         finally:
             self._cleanup()
+
+        return 0  # 正常退出
 
     def _setup_terminal(self):
         """设置终端 raw mode"""
@@ -271,14 +273,14 @@ class RemoteClient:
         print("\n已断开连接")
 
 
-def run_client(session_name: str):
-    """运行客户端"""
+def run_client(session_name: str) -> int:
+    """运行客户端，返回退出码（0=成功，非零=失败）"""
     client = RemoteClient(session_name)
 
     try:
-        asyncio.run(client.run())
+        return asyncio.run(client.run())
     except KeyboardInterrupt:
-        pass
+        return 130  # 128 + SIGINT(2)，Unix 惯例
 
 
 if __name__ == "__main__":
