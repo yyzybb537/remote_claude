@@ -9,6 +9,18 @@
         {"label": "退出会话", "value": "/exit", "icon": "🚪"},
         {"label": "帮助", "value": "/help", "icon": "❓"}
       ]
+    },
+    "notify": {
+      "ready_enabled": true,
+      "urgent_enabled": false
+    },
+    "bypass_enabled": false,
+    "custom_commands": {
+      "enabled": false,
+      "commands": [
+        {"name": "Claude", "cli_type": "claude", "command": "claude", "description": "Claude Code CLI"},
+        {"name": "Codex", "cli_type": "codex", "command": "codex", "description": "OpenAI Codex CLI"}
+      ]
     }
   }
 }
