@@ -34,6 +34,31 @@ except Exception:
     _VERSION = ""
 
 
+def _get_matching_commands(user_config: Optional["UserConfig"], cli_type: str) -> List[Dict[str, str]]:
+    """获取匹配指定 cli_type 的自定义命令列表
+
+    Args:
+        user_config: 用户配置对象
+        cli_type: CLI 类型
+
+    Returns:
+        匹配的命令列表，每个元素包含 name 和 command
+    """
+    if not user_config or not user_config.ui_settings.custom_commands.is_visible():
+        # 未启用自定义命令，返回默认命令
+        return [{"name": "Claude", "command": "claude"}]
+
+    commands = user_config.ui_settings.custom_commands.commands
+    # 过滤匹配 cli_type 的命令
+    matched = [
+        {"name": cmd.name, "command": cmd.command}
+        for cmd in commands
+        if cmd.cli_type == cli_type
+    ]
+
+    return matched
+
+
 def _build_header(title: str, template: str) -> dict:
     """构建卡片 header，自动附加版本号副标题"""
     h: dict = {"title": {"tag": "plain_text", "content": title}, "template": template}
@@ -675,7 +700,8 @@ def _determine_header(
     if is_loading:
         return f"⏳ {loading_text}", "orange"
 
-    has_streaming = any(b.get("is_streaming", False) for b in blocks)
+    # 优化：只检查最后一个 block 是否 streaming（通常只有最后一个可能在 streaming）
+    has_streaming = blocks[-1].get("is_streaming", False) if blocks else False
 
     if has_streaming or status_line:
         if status_line:
@@ -703,7 +729,7 @@ def _determine_header(
             return "🔐 等待权限确认", "red"
         return "🤔 等待选择", "blue"
 
-    cli_name = CLI_NAMES.get(cli_type, "Claude")
+    cli_name = CLI_NAMES.get(cli_type, "Unknown")
     return f"✅ {cli_name} 就绪", "green"
 
 
@@ -1102,7 +1128,7 @@ def build_status_card(connected: bool, session_name: Optional[str] = None) -> Di
     else:
         title = "⚪ 未连接"
         template = "grey"
-        content = "使用 `/attach <会话名>` 连接到 Claude 会话"
+        content = "使用 `/attach <会话名>` 连接到 Claude/Codex 会话"
 
     return {
         "schema": "2.0",
@@ -1124,7 +1150,16 @@ def _dir_session_name(path: str) -> str:
     return name or "session"
 
 
-def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool = False, session_groups: Optional[Dict[str, str]] = None, page: int = 0) -> Dict[str, Any]:
+def build_dir_card(
+    target,
+    entries: List[Dict],
+    _: List[Dict],
+    tree: bool = False,
+    session_groups: Optional[Dict[str, str]] = None,
+    page: int = 0,
+    user_config: Optional["UserConfig"] = None,
+    cli_type: str = "claude",
+) -> Dict[str, Any]:
     """构建目录浏览卡片
 
     顶层目录（depth==0）带两个操作按钮：
@@ -1203,6 +1238,47 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
                     "session_name": auto_session
                 }}]
             }
+
+            # 获取匹配的命令列表
+            matched_commands = _get_matching_commands(user_config, cli_type)
+
+            # 构建启动按钮（横排）
+            launch_buttons = []
+            for i, cmd in enumerate(matched_commands):
+                btn_type = "primary" if i == 0 else "default"
+                launch_buttons.append({
+                    "tag": "column",
+                    "width": "auto",
+                    "elements": [{
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": cmd["name"]},
+                        "type": btn_type,
+                        "behaviors": [{
+                            "type": "callback",
+                            "value": {
+                                "action": "dir_start",
+                                "path": full_path,
+                                "session_name": auto_session,
+                                "cli_command": cmd["command"],
+                            }
+                        }]
+                    }]
+                })
+
+            # 构建右侧列元素
+            if launch_buttons:
+                right_column_elements = [
+                    {
+                        "tag": "column_set",
+                        "flex_mode": "none",
+                        "columns": launch_buttons,
+                    },
+                    group_btn,
+                ]
+            else:
+                # 无匹配命令，隐藏启动按钮
+                right_column_elements = [group_btn]
+
             elements.append({
                 "tag": "column_set",
                 "flex_mode": "none",
@@ -1225,19 +1301,7 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
                         "tag": "column",
                         "width": "weighted",
                         "weight": 2,
-                        "elements": [
-                            {
-                                "tag": "button",
-                                "text": {"tag": "plain_text", "content": "Claude"},
-                                "type": "primary",
-                                "behaviors": [{"type": "callback", "value": {
-                                    "action": "dir_start",
-                                    "path": full_path,
-                                    "session_name": auto_session
-                                }}]
-                            },
-                            group_btn
-                        ]
+                        "elements": right_column_elements
                     }
                 ]
             })
@@ -1368,7 +1432,8 @@ def build_session_closed_card(session_name: str) -> Dict[str, Any]:
 def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     session_groups: Optional[Dict[str, str]] = None, page: int = 0,
                     notify_enabled: bool = True, urgent_enabled: bool = False,
-                    bypass_enabled: bool = False) -> Dict[str, Any]:
+                    bypass_enabled: bool = False,
+                    user_config: Optional["UserConfig"] = None) -> Dict[str, Any]:
     """构建快捷操作菜单卡片（/menu 和 /list 共用）：内嵌会话列表 + 快捷操作"""
     elements = []
 
@@ -1474,6 +1539,25 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
         "type": "default",
         "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_bypass"}}]
     })
+
+    # 自定义命令配置显示
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "markdown", "content": "**自定义命令**"})
+
+    if user_config and user_config.ui_settings.custom_commands.is_visible():
+        custom_cmds = user_config.ui_settings.custom_commands.commands
+        for cmd in custom_cmds:
+            # 格式: "claude → aider (AI pair programming)"
+            desc = f" _{cmd.description}_" if cmd.description else ""
+            elements.append({
+                "tag": "markdown",
+                "content": f"- **{cmd.name}** → `{cmd.command}`{desc}"
+            })
+    else:
+        elements.append({
+            "tag": "markdown",
+            "content": "_未配置，使用默认命令_"
+        })
 
     return {
         "schema": "2.0",
