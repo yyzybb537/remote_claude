@@ -561,6 +561,8 @@ run_unit_tests() {
     local core_tests=(
         "tests/test_session_truncate.py"
         "tests/test_runtime_config.py"
+        "tests/test_biz_enum.py"
+        "tests/test_custom_commands.py"
     )
 
     # 非核心测试列表（失败继续）
