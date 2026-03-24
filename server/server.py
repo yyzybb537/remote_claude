@@ -51,7 +51,7 @@ SERVER_LOG_LEVEL_MAP = {
     "ERROR": logging.ERROR,
 }.get(_SERVER_LOG_LEVEL, logging.INFO)  # 默认 INFO
 
-# 加载用户 .env 配置（支持 CLAUDE_COMMAND 等）
+# 加载用户 .env 配置
 try:
     from dotenv import load_dotenv
     load_dotenv(get_env_file())
@@ -821,13 +821,11 @@ class ClientConnection:
 class ProxyServer:
     """Proxy Server"""
 
-    def __init__(self, session_name: str, claude_args: list = None,
-                 claude_cmd: str = "claude",
+    def __init__(self, session_name: str, cli_args: list = None,
                  cli_type: str = "claude",
                  debug_screen: bool = False, debug_verbose: bool = False):
         self.session_name = session_name
-        self.claude_args = claude_args or []
-        self.claude_cmd = claude_cmd
+        self.cli_args = cli_args or []
         self.cli_type = cli_type
         self.debug_screen = debug_screen
         self.debug_verbose = debug_verbose
@@ -964,10 +962,23 @@ class ProxyServer:
         logger.info(f"日志已切换到运行阶段: {safe_name}_server.log")
 
     def _get_effective_cmd(self) -> str:
-        """根据 cli_type 返回实际执行的命令（codex 时使用 'codex'，否则用 claude_cmd）"""
-        if self.cli_type == "codex":
-            return "codex"
-        return self.claude_cmd
+        """根据 cli_type 返回实际执行的命令
+
+        优先级：
+        1. 自定义命令配置（config.json）
+        2. 默认值（claude 或 codex）
+        """
+        # 优先从自定义命令配置获取
+        try:
+            from utils.runtime_config import get_cli_command
+            custom_cmd = get_cli_command(self.cli_type)
+            if custom_cmd:
+                return custom_cmd
+        except Exception as e:
+            logger.debug(f"读取自定义命令配置失败: {e}")
+
+        # 回退到默认值
+        return "codex" if self.cli_type == "codex" else "claude"
 
     def _start_pty(self):
         """启动 PTY 并运行 Claude"""
@@ -990,7 +1001,7 @@ class ProxyServer:
         # 提前计算命令（fork 后父子进程共享，方便父进程打印和子进程执行）
         import shlex as _shlex
         _cmd_parts = _shlex.split(self._get_effective_cmd())
-        _full_cmd = ' '.join(_cmd_parts + self.claude_args)
+        _full_cmd = ' '.join(_cmd_parts + self.cli_args)
 
         try:
             pid, fd = pty.fork()
@@ -1017,7 +1028,7 @@ class ProxyServer:
             child_env.pop('TMUX', None)
             child_env.pop('TMUX_PANE', None)
             try:
-                os.execvpe(_cmd_parts[0], _cmd_parts + self.claude_args, child_env)
+                os.execvpe(_cmd_parts[0], _cmd_parts + self.cli_args, child_env)
             except (FileNotFoundError, PermissionError) as _e:
                 msg = f"启动失败: 命令 '{_cmd_parts[0]}' 无法执行: {_e}"
                 os.write(1, (msg + "\n").encode())  # 写到 PTY
@@ -1238,12 +1249,11 @@ class ProxyServer:
         logger.info("已关闭")
 
 
-def run_server(session_name: str, claude_args: list = None,
-               claude_cmd: str = "claude",
+def run_server(session_name: str, cli_args: list = None,
                cli_type: str = "claude",
                debug_screen: bool = False, debug_verbose: bool = False):
     """运行服务器"""
-    server = ProxyServer(session_name, claude_args, claude_cmd=claude_cmd,
+    server = ProxyServer(session_name, cli_args,
                          cli_type=cli_type,
                          debug_screen=debug_screen, debug_verbose=debug_verbose)
 
@@ -1266,7 +1276,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Remote Claude Server")
     parser.add_argument("session_name", help="会话名称")
-    parser.add_argument("claude_args", nargs="*", help="传递给 Claude/Codex 的参数")
+    parser.add_argument("cli_args", nargs="*", help="传递给 CLI 的参数")
     parser.add_argument("--cli-type", default="claude", choices=["claude", "codex"],
                         help="后端 CLI 类型（默认 claude）")
     parser.add_argument("--debug-screen", action="store_true",
@@ -1296,8 +1306,6 @@ if __name__ == "__main__":
     startup_handler._startup_handler = True  # 标记为启动日志 handler
     logging.getLogger().addHandler(startup_handler)
 
-    claude_cmd = os.environ.get("CLAUDE_COMMAND", "claude")
-    logger.info(f"CLAUDE_COMMAND={claude_cmd!r}")
-    run_server(args.session_name, args.claude_args, claude_cmd=claude_cmd,
+    run_server(args.session_name, args.cli_args,
                cli_type=args.cli_type,
                debug_screen=args.debug_screen, debug_verbose=args.debug_verbose)

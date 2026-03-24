@@ -87,11 +87,11 @@ def cmd_start(args):
 
     # 构建 server 命令
     server_script = SCRIPT_DIR / "server" / "server.py"
-    claude_args = args.claude_args if args.claude_args else []
-    claude_args_str = " ".join(f"'{arg}'" for arg in claude_args)
-    debug_flag = " --debug-screen" if getattr(args, "debug_screen", False) else ""
-    debug_verbose_flag = " --debug-verbose" if getattr(args, "debug_verbose", False) else ""
-    cli_type = getattr(args, "cli", "claude")
+    cli_args = args.cli_args if args.cli_args else []
+    cli_args_str = " ".join(f"'{arg}'" for arg in cli_args)
+    debug_flag = " --debug-screen" if args.debug_screen else ""
+    debug_verbose_flag = " --debug-verbose" if args.debug_verbose else ""
+    cli_type = args.cli
     cli_type_flag = f" --cli-type {cli_type}" if cli_type != "claude" else ""
 
     # 捕获用户终端环境变量（tmux 会覆盖这些值，导致 Claude CLI 无法启用 kitty keyboard protocol）
@@ -101,7 +101,7 @@ def cmd_start(args):
         if val:
             env_prefix += f"{key}='{val}' "
 
-    server_cmd = f"{env_prefix}uv run --project '{SCRIPT_DIR}' python3 '{server_script}'{debug_flag}{debug_verbose_flag}{cli_type_flag} -- '{session_name}' {claude_args_str}"
+    server_cmd = f"{env_prefix}uv run --project '{SCRIPT_DIR}' python3 '{server_script}'{debug_flag}{debug_verbose_flag}{cli_type_flag} -- '{session_name}' {cli_args_str}"
 
     # 配置启动日志（写文件 + stdout）
     _log_path = USER_DATA_DIR / "startup.log"
@@ -735,9 +735,9 @@ def main():
     start_parser = subparsers.add_parser("start", help="启动新会话")
     start_parser.add_argument("name", help="会话名称")
     start_parser.add_argument(
-        "claude_args",
+        "cli_args",
         nargs="*",
-        help="传递给 Claude 的参数"
+        help="传递给 CLI 的参数"
     )
     start_parser.add_argument(
         "--debug-screen",
