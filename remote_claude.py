@@ -182,6 +182,11 @@ def cmd_start(args):
         tmux_kill_session(session_name)
         return 1
 
+    # 再次检查 tmux 会话（socket 可能刚创建就被 server 关闭）
+    if not tmux_session_exists(session_name):
+        print("错误: Server 进程已退出")
+        return 1
+
     print(f"会话已启动: rc-{session_name}")
     print(f"正在连接...")
 
