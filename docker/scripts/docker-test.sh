@@ -758,6 +758,14 @@ EOF
 
 # 步骤 10：清理
 cleanup() {
+    print_header "清理"
+
+    if [ $FAILED -eq 0 ]; then
+        log_success "所有测试通过，容器将自动退出"
+        exit 0
+    fi
+
+    # 测试失败：保持容器运行便于调试
     local cid="$HOSTNAME"
     echo ""
     echo -e "${GREEN}容器保持运行，操作命令：${NC}"
@@ -766,9 +774,7 @@ cleanup() {
     echo -e "  停止容器: docker stop ${cid}"
     echo ""
 
-    log_success "清理完成"
-
-    # 保持容器运行，直到手动 docker stop
+    log_warning "存在 $FAILED 个失败测试，容器保持运行便于调试"
     sleep infinity
 }
 
