@@ -18,17 +18,36 @@ docker/
 
 ### 构建镜像
 
+使用 BuildKit 加速构建（推荐）：
+
 ```bash
+# 启用 BuildKit（Linux/macOS）
+export DOCKER_BUILDKIT=1
+
+# 构建镜像（使用缓存）
 docker-compose -f docker/docker-compose.test.yml build
+
+# 或使用 docker buildx 获得更好的缓存性能
+docker buildx build --cache-to type=local,dest=.docker-cache --cache-from type=local,src=.docker-cache -f docker/Dockerfile.test -t remote-claude-npm-test .
 ```
 
 ### 运行测试
 
-```bash
-# 运行测试（测试完成后容器保持运行，可继续进入调试）
-docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
+**本地调试模式（默认，保留容器）：**
 
-# 交互式运行（直接进入 bash，手动执行测试）
+```bash
+docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
+```
+
+**CI 模式（自动销毁）：**
+
+```bash
+AUTO_CLEANUP=true docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
+```
+
+**交互式运行（直接进入 bash）：**
+
+```bash
 docker-compose -f docker/docker-compose.test.yml run npm-test /bin/bash
 # 容器内执行：
 /project/docker/scripts/docker-test.sh
@@ -68,15 +87,15 @@ test-results/
 ### 宿主机快速使用
 
 ```bash
-# 方式一：直接运行（需要宿主机有 Python 3.11+）
+# 方式一：直接运行（推荐）
 cd test-results/npm-install/node_modules/remote-claude
 ./bin/cla  # 启动 Claude 会话
 
-# 方式二：使用虚拟环境中的 Python（推荐，完全隔离）
+# 方式二：使用 uv run（推荐）
 cd test-results/npm-install/node_modules/remote-claude
-.venv/bin/python remote_claude.py --help
+uv run python3 remote_claude.py --help
 
-# 方式三：激活虚拟环境后使用
+# 方式三：激活虚拟环境后使用（传统方式）
 source test-results/npm-install/.venv/bin/activate
 remote-claude --help
 ```
@@ -106,10 +125,10 @@ remote-claude --help
 
 ```bash
 # 验证 Python 环境
-test-results/npm-install/.venv/bin/python --version
+uv run python3 --version
 
 # 验证依赖
-test-results/npm-install/.venv/bin/python -c "import lark_oapi; print('✓ 依赖完整')"
+uv run python3 -c "import lark_oapi; print('✓ 依赖完整')"
 
 # 验证命令可用
 test-results/npm-install/node_modules/remote-claude/bin/cla --help
@@ -204,7 +223,7 @@ rm -rf test-results
 - name: Run Docker Tests
   run: |
     docker-compose -f docker/docker-compose.test.yml build
-    docker-compose -f docker/docker-compose.test.yml run --rm npm-test
+    AUTO_CLEANUP=true docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
 
 - name: Upload Test Results
   if: always()
@@ -214,6 +233,40 @@ rm -rf test-results
     path: test-results/
 ```
 
+关键配置：
+- `AUTO_CLEANUP=true` — 测试完成后自动退出
+- `--rm` — 容器退出后自动删除
+
+## 性能优化
+
+### BuildKit 缓存挂载
+
+Dockerfile 使用 `--mount=type=cache` 加速构建：
+- `apt` 缓存：避免重复下载系统包
+- `npm` 缓存：加速 npm 包安装
+- `uv` 缓存：加速 Python 依赖安装
+
+### 并行测试执行
+
+设置环境变量 `TEST_PARALLEL=true` 启用并行测试：
+- 自动检测并使用 GNU parallel
+- 默认 4 线程并行执行单元测试
+- 大幅缩短测试时间（约 30-50%）
+
+### Docker Compose 缓存卷
+
+`docker-compose.test.yml` 定义了持久化缓存卷：
+- `npm-cache`：npm 包缓存
+- `uv-cache`：uv 依赖缓存
+- 跨构建复用，避免重复下载
+
+### .dockerignore
+
+项目根目录的 `.dockerignore` 排除不需要的文件：
+- 减少构建上下文大小
+- 加快镜像构建速度
+- 避免敏感信息泄露
+
 ## 设计决策
 
 ### 为什么选择 Ubuntu 而非 Alpine？
@@ -222,16 +275,16 @@ rm -rf test-results
 - tmux 在 Alpine 上编译复杂
 - Ubuntu 22.04 稳定且体积可控
 
-### 为什么跳过 Codex CLI？
-
-- 用户明确选择不需要
-- 节省构建时间和镜像空间
-- Codex 是可选功能，不影响核心流程
-
 ### 为什么使用非 root 用户？
 
 - 模拟真实用户安装场景
 - 避免权限问题导致的假阳性测试
+
+### 为什么添加 GNU parallel？
+
+- 支持并行执行单元测试，缩短测试时间
+- 自动检测，无依赖时回退到串行执行
+- 通过 `--will-cite` 禁用引用提示，避免 CI 噪音
 
 ## 文件说明
 
@@ -242,6 +295,22 @@ rm -rf test-results
 - `test-results/` - 测试结果输出目录（包含测试报告和日志）
 
 ## 常见问题
+
+### 构建卡在 `--mount=type=cache` 步骤？
+
+Docker Desktop (macOS) 上 BuildKit 缓存可能损坏，导致构建卡住。解决方法：
+
+```bash
+# 方法 1：清理构建缓存后重试（推荐）
+docker builder prune -f
+docker-compose -f docker/docker-compose.test.yml build --no-cache
+
+# 方法 2：完全重置 Docker（更彻底）
+docker system prune -af --volumes
+
+# 方法 3：重启 Docker Desktop
+# 在 Docker Desktop 菜单中选择 "Restart"
+```
 
 ### 测试失败但本地成功？
 
