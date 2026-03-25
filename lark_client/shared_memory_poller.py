@@ -350,6 +350,7 @@ class SharedMemoryPoller:
             return
 
         active.sequence += 1
+        active.last_activity_time = time.time()
         success = await self._card_service.update_card(
             card_id=active.card_id,
             sequence=active.sequence,
@@ -426,7 +427,11 @@ class SharedMemoryPoller:
 
         if card_id:
             await self._card_service.send_card(tracker.chat_id, card_id)
-            tracker.cards.append(CardSlice(card_id=card_id, start_idx=start_idx))
+            tracker.cards.append(CardSlice(
+                card_id=card_id,
+                start_idx=start_idx,
+                last_activity_time=time.time(),
+            ))
             tracker.content_hash = self._compute_hash(blocks_slice, status_line, bottom_bar, agent_panel, option_block)
             _safe_track_stats('card', 'create', session_name=tracker.session_name,
                          chat_id=tracker.chat_id)
@@ -473,7 +478,11 @@ class SharedMemoryPoller:
         new_card_id = await self._card_service.create_card(new_card_dict)
         if new_card_id:
             await self._card_service.send_card(tracker.chat_id, new_card_id)
-            tracker.cards.append(CardSlice(card_id=new_card_id, start_idx=new_start))
+            tracker.cards.append(CardSlice(
+                card_id=new_card_id,
+                start_idx=new_start,
+                last_activity_time=time.time(),
+            ))
             tracker.content_hash = self._compute_hash(new_blocks, status_line, bottom_bar, agent_panel, option_block)
             _safe_track_stats('card', 'create', session_name=tracker.session_name,
                          chat_id=tracker.chat_id)
@@ -546,7 +555,11 @@ class SharedMemoryPoller:
         new_card_id = await self._card_service.create_card(new_card_dict)
         if new_card_id:
             await self._card_service.send_card(tracker.chat_id, new_card_id)
-            tracker.cards.append(CardSlice(card_id=new_card_id, start_idx=new_start))
+            tracker.cards.append(CardSlice(
+                card_id=new_card_id,
+                start_idx=new_start,
+                last_activity_time=time.time(),
+            ))
             tracker.content_hash = self._compute_hash(new_blocks, status_line, bottom_bar, agent_panel, option_block)
             logger.info(
                 f"[NEW after FREEZE] session={tracker.session_name} start_idx={new_start} "
