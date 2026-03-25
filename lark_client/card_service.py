@@ -314,6 +314,20 @@ class CardService:
             logger.error(f"发送文本异常: {e}")
             return None
 
+    async def send_expired_card(self, chat_id: str, session_name: Optional[str] = None) -> Optional[str]:
+        """发送过期提示卡片
+
+        Args:
+            chat_id: 飞书 chat_id
+            session_name: 会话名称（可选）
+
+        Returns:
+            消息 ID（失败返回 None）
+        """
+        from lark_client.card_builder import build_expired_card
+        card = build_expired_card(session_name)
+        return await self.create_and_send_card(chat_id, card)
+
     # 管理活跃卡片的方法
     def get_active_card(self, chat_id: str) -> Optional[CardState]:
         """获取聊天的活跃卡片"""

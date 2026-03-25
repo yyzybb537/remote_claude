@@ -1448,6 +1448,41 @@ def build_session_closed_card(session_name: str) -> Dict[str, Any]:
     }
 
 
+def build_expired_card(session_name: Optional[str] = None) -> Dict[str, Any]:
+    """构建过期提示卡片
+
+    Args:
+        session_name: 会话名称（可选）
+
+    Returns:
+        飞书卡片 JSON
+    """
+    elements = [
+        {
+            "tag": "markdown",
+            "content": "**该卡片已超过 1 小时无活动，可能已失效。**\n请使用菜单按钮刷新当前状态。"
+        },
+        {"tag": "hr"},
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "🔄 刷新"},
+            "type": "primary",
+            "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
+        }
+    ]
+
+    header_text = "⚠️ 卡片已过期"
+    if session_name:
+        header_text += f" ({session_name})"
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": _build_header(header_text, "orange"),
+        "body": {"elements": elements}
+    }
+
+
 def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     session_groups: Optional[Dict[str, str]] = None, page: int = 0,
                     notify_enabled: bool = True, urgent_enabled: bool = False,
