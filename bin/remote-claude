@@ -1,17 +1,20 @@
 #!/bin/bash
+# remote-claude - Remote Claude 主命令入口
+
 # 解析符号链接，兼容 macOS（不支持 readlink -f）
 SOURCE="$0"
 while [ -L "$SOURCE" ]; do
     DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
     SOURCE="$(readlink "$SOURCE")"
-    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$DIR/$SOURCE" ;;
+    esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
-
-# uv 路径兜底
-if ! command -v uv &>/dev/null; then
-    [ -f "$HOME/.local/bin/uv" ] && export PATH="$HOME/.local/bin:$PATH"
-fi
+# 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
+# _common.sh 末尾会自动调用 _lazy_init 进行初始化检查
+. "$SCRIPT_DIR/scripts/_common.sh"
 
 # log 子命令：查看最后启动的 session 日志
 if [ "$1" = "log" ]; then
@@ -50,7 +53,9 @@ fi
 
 # lark 子命令：检查 .env 配置
 if [ "$1" = "lark" ]; then
-    source "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
+    . "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
 fi
 
-exec uv run --project "$SCRIPT_DIR" python3 "$SCRIPT_DIR/remote_claude.py" "$@"
+# 切换到项目目录，使用 uv run 调用入口点
+cd "$SCRIPT_DIR"
+exec uv run remote-claude "$@"
