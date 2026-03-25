@@ -198,7 +198,7 @@ def cmd_start(args):
     # 直接在前台运行 client（不走 tmux），让终端能力协商序列
     # （如 kitty keyboard protocol）直接在 Claude CLI ↔ 用户终端之间流通，
     # 从而支持 Shift+Enter 等扩展键
-    from client.client import run_client
+    from client import run_client
     return run_client(session_name)
 
 
@@ -215,7 +215,7 @@ def cmd_attach(args):
     print(f"连接到会话: {session_name}")
 
     # 直接运行 client（不通过 tmux）
-    from client.client import run_client
+    from client import run_client
     return run_client(session_name)
 
 
