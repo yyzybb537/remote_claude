@@ -686,6 +686,71 @@ remote_claude/
 └── backup/                     # 归档（与项目无关的工具脚本）
 ```
 
+## 安装流程
+
+Remote Claude 支持多种安装方式：
+
+### npm/pnpm 全局安装（推荐）
+
+```bash
+npm install -g remote-claude
+# 或
+pnpm add -g remote-claude
+```
+
+**安装过程：**
+1. npm/pnpm 下载并解压包文件
+2. `postinstall` 钩子自动执行：
+   - 检查/安装 uv 包管理器
+   - 创建 Python 虚拟环境（`.venv/`）
+   - 使用 `uv sync --frozen` 安装依赖
+3. 创建全局可用的快捷命令（`cla`, `cl`, `cx`, `cdx`）
+
+**特点：**
+- 安装后即可使用，无需额外初始化
+- Python 环境完全隔离，不影响系统
+- 使用 uv 管理的 Python 版本
+
+### 本地克隆安装
+
+```bash
+git clone https://github.com/yyzybb537/remote_claude.git
+cd remote_claude
+./scripts/install.sh
+```
+
+**安装过程：**
+1. 检查操作系统（macOS/Linux）
+2. 检查/安装 uv
+3. 创建虚拟环境并安装依赖
+4. 创建快捷命令符号链接
+
+### 依赖变更检测
+
+首次运行命令时，`_lazy_init` 会检查：
+- `.venv` 是否存在
+- `pyproject.toml` 是否比 `.venv` 新
+- `uv.lock` 是否比 `.venv` 新
+
+如果检测到变更，会自动重新同步依赖。
+
+### 卸载流程
+
+```bash
+npm uninstall -g remote-claude
+```
+
+**卸载过程：**
+1. `preuninstall` 钩子执行清理：
+   - 删除快捷命令符号链接
+   - 清理 shell 配置文件中的 PATH 设置
+   - 删除虚拟环境
+   - 停止飞书客户端并清理运行时文件
+   - 询问是否删除配置文件
+   - 可选：清理 uv 缓存
+
+---
+
 ## 常用命令
 
 ```bash
