@@ -44,6 +44,53 @@ from server.biz_enum import CliType
 # 模块级用户配置（用于快捷命令选择器）
 _user_config = load_user_config()
 
+# ── 自动应答选项解析 ─────────────────────────────────────────────────────────
+
+# 无明确语义关键词（用于识别确认类选项）
+VAGUE_KEYWORDS = {
+    # 中文
+    '继续', '好的', '是', '确认', '明白', '可以', '行', '对',
+    # 英文
+    'continue', 'yes', 'ok', 'proceed', 'go ahead', 'sure', 'confirm', 'alright', 'fine'
+}
+
+
+def analyze_option_block(option_block: dict) -> tuple:
+    """分析选项块，返回应答类型和内容
+
+    根据选项内容采用三种策略：
+    1. 推荐选项优先：选择标记为 "(recommended)" 或 "推荐" 的选项
+    2. 无明确语义时回复"继续"：第一个选项为确认类文本时发送"继续"
+    3. 兜底选择第一项：其他情况选择第一个选项
+
+    Args:
+        option_block: 选项块字典，包含 options 列表
+
+    Returns:
+        (action_type, action_value)
+        action_type: "select" | "input"
+        action_value: 选项 value 或输入文本
+    """
+    options = option_block.get('options', [])
+    if not options:
+        return ("input", "继续")
+
+    # 策略一：查找推荐选项
+    for opt in options:
+        label = opt.get('label', '').lower()
+        if '(recommended)' in label or '推荐' in label:
+            return ("select", opt.get('value'))
+
+    # 策略二：检查第一个选项是否为无明确语义的确认类选项
+    # 如果第一个选项包含模糊关键词（如"继续"、"Yes"、"OK"），则发送"继续"
+    first_label = options[0].get('label', '').lower().strip()
+    if any(kw in first_label for kw in VAGUE_KEYWORDS):
+        return ("input", "继续")
+
+    # 策略三：兜底选择第一项
+    return ("select", options[0].get('value'))
+
+
 # ── 常量 ──────────────────────────────────────────────────────────────────────
 INITIAL_WINDOW = 30    # 首次 attach 最多显示最近 30 个 blocks
 from .config import MAX_CARD_BLOCKS  # 单张卡片最多 N 个 blocks → 超限冻结（可通过 .env 配置）
