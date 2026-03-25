@@ -9,21 +9,12 @@
 
 set -e
 
-# 颜色定义
-RED=$'\033[0;31m'
-GREEN=$'\033[0;32m'
-YELLOW=$'\033[1;33m'
-NC=$'\033[0m' # No Color
-
 # 脚本目录
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 打印函数
-print_info() { echo -e "${GREEN}ℹ${NC} $1"; }
-print_success() { echo -e "${GREEN}✓${NC} $1"; }
-print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
-print_error() { echo -e "${RED}✗${NC} $1"; }
+# 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
+source "$SCRIPT_DIR/_common.sh"
 
 print_header() {
     echo ""
@@ -44,46 +35,13 @@ detect_os() {
     print_success "操作系统: $OS"
 }
 
-# 检查并安装 uv
-check_and_install_uv() {
+# 检查并安装 uv（使用 _common.sh 中的函数）
+check_and_install_uv_install() {
     print_header "检查 uv 包管理器"
 
-    local RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
-
-    # 1. 从 runtime.json 读取 uv_path（需 jq）
-    if [[ -f "$RUNTIME_FILE" ]] && command -v jq &> /dev/null; then
-        local UV_PATH=$(jq -r '.uv_path // empty' "$RUNTIME_FILE" 2>/dev/null)
-        if [[ -n "$UV_PATH" && -x "$UV_PATH" ]]; then
-            # 配置路径有效
-            print_success "uv（$UV_PATH）"
-            export PATH="$(dirname "$UV_PATH"):$PATH"
-            return 0
-        elif [[ -n "$UV_PATH" ]]; then
-            # 配置路径失效，清除并尝试系统 uv
-            print_warning "配置的 uv 路径失效（$UV_PATH），尝试系统 uv..."
-            # 清除失效路径
-            local TMP_FILE=$(mktemp)
-            jq '.uv_path = null' "$RUNTIME_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$RUNTIME_FILE"
-        fi
-    fi
-
-    # 2. 检测系统 uv
-    if command -v uv &> /dev/null; then
+    if check_and_install_uv; then
         UV_VERSION=$(uv --version)
         print_success "$UV_VERSION 已安装"
-        _save_uv_path_install
-        return 0
-    fi
-
-    print_warning "未找到 uv，正在安装..."
-
-    # 3. 多来源安装
-    _install_uv_multi_source_install
-
-    # 4. 安装成功后写入路径
-    if command -v uv &> /dev/null; then
-        print_success "uv 安装成功"
-        _save_uv_path_install
         return 0
     fi
 
@@ -96,103 +54,21 @@ check_and_install_uv() {
     exit 1
 }
 
-_install_uv_multi_source_install() {
-    # 检测可用的 pip 命令
-    local PIP_CMD=""
-    if command -v pip3 &> /dev/null; then
-        PIP_CMD="pip3"
-    elif command -v pip &> /dev/null; then
-        PIP_CMD="pip"
-    fi
-
-    # 方式一：官方安装脚本（推荐）
-    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh 2>/dev/null; then
-        export PATH="$HOME/.local/bin:$PATH"
-    fi
-
-    # 方式二：pip + PyPI
-    if ! command -v uv &> /dev/null && [[ -n "$PIP_CMD" ]]; then
-        print_warning "尝试 pip 安装 uv（官方 PyPI）..."
-        ($PIP_CMD install uv --quiet 2>/dev/null || \
-         $PIP_CMD install uv --quiet --break-system-packages 2>/dev/null) && \
-            export PATH="$HOME/.local/bin:$PATH"
-    fi
-
-    # 方式三：pip + 清华镜像
-    if ! command -v uv &> /dev/null && [[ -n "$PIP_CMD" ]]; then
-        print_warning "尝试 pip 安装 uv（清华镜像）..."
-        ($PIP_CMD install uv --quiet \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-            --trusted-host pypi.tuna.tsinghua.edu.cn 2>/dev/null || \
-         $PIP_CMD install uv --quiet \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-            --trusted-host pypi.tuna.tsinghua.edu.cn \
-            --break-system-packages 2>/dev/null) && \
-            export PATH="$HOME/.local/bin:$PATH"
-    fi
-
-    # 方式四：conda/mamba
-    if ! command -v uv &> /dev/null; then
-        if command -v mamba &> /dev/null; then
-            print_warning "尝试 mamba 安装 uv..."
-            mamba install -c conda-forge uv -y --quiet 2>/dev/null || true
-        elif command -v conda &> /dev/null; then
-            print_warning "尝试 conda 安装 uv..."
-            conda install -c conda-forge uv -y --quiet 2>/dev/null || true
-        fi
-    fi
-
-    # 方式五：brew（macOS）
-    if ! command -v uv &> /dev/null && [[ "$OS" == "Darwin" ]] && command -v brew &> /dev/null; then
-        print_warning "尝试 brew install uv..."
-        brew install uv 2>/dev/null || true
-    fi
-}
-
-_save_uv_path_install() {
-    local UV_PATH=$(command -v uv 2>/dev/null)
-    if [[ -n "$UV_PATH" ]]; then
-        local RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
-        mkdir -p "$(dirname "$RUNTIME_FILE")"
-
-        if [[ -f "$RUNTIME_FILE" ]] && command -v jq &> /dev/null; then
-            local TMP_FILE=$(mktemp)
-            jq --arg path "$UV_PATH" '.uv_path = $path' "$RUNTIME_FILE" > "$TMP_FILE" && \
-                mv "$TMP_FILE" "$RUNTIME_FILE"
-            print_info "已记录 uv 路径: $UV_PATH"
-        elif [[ ! -f "$RUNTIME_FILE" ]]; then
-            echo "{\"version\":\"1.0\",\"uv_path\":\"$UV_PATH\"}" > "$RUNTIME_FILE"
-            print_info "已记录 uv 路径: $UV_PATH"
-        fi
-    fi
-}
-
 # 创建虚拟环境并安装依赖
 setup_virtual_env() {
     print_header "创建 Python 虚拟环境"
 
     cd "$PROJECT_ROOT"
 
-    # 读取 .python-version 文件（如存在）
-    local PYTHON_VERSION="3.11"
-    if [[ -f ".python-version" ]]; then
-        PYTHON_VERSION=$(cat .python-version | tr -d '[:space:]')
-        print_info "使用 Python 版本: $PYTHON_VERSION"
-    fi
-
     # 使用 uv 创建虚拟环境
+    # Python 版本由 pyproject.toml 的 requires-python 决定，uv 自动管理
     print_info "正在创建虚拟环境..."
-    if ! uv venv --python "$PYTHON_VERSION" 2>/dev/null; then
-        # 如果指定版本不可用，尝试让 uv 自动安装
-        print_warning "Python $PYTHON_VERSION 不可用，正在安装..."
-        uv python install "$PYTHON_VERSION"
-        uv venv --python "$PYTHON_VERSION"
-    fi
+    uv venv
     print_success "虚拟环境创建成功"
 
     # 安装依赖
     print_info "正在安装依赖..."
-    uv sync
+    uv sync --frozen || uv sync
     print_success "依赖安装完成"
 }
 
@@ -250,7 +126,7 @@ main() {
     echo ""
 
     detect_os
-    check_and_install_uv
+    check_and_install_uv_install
     setup_virtual_env
     verify_installation
     show_next_steps
