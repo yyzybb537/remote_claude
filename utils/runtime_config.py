@@ -357,6 +357,47 @@ class NotifySettings:
 
 
 @dataclass
+class AutoAnswerSettings:
+    """自动应答设置"""
+    default_delay_seconds: int = 10
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "default_delay_seconds": self.default_delay_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AutoAnswerSettings":
+        """从字典创建"""
+        return cls(
+            default_delay_seconds=data.get("default_delay_seconds", 10),
+        )
+
+
+@dataclass
+class CardExpirySettings:
+    """卡片过期设置"""
+    enabled: bool = True
+    expiry_seconds: int = 3600  # 1小时
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "enabled": self.enabled,
+            "expiry_seconds": self.expiry_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CardExpirySettings":
+        """从字典创建"""
+        return cls(
+            enabled=data.get("enabled", True),
+            expiry_seconds=data.get("expiry_seconds", 3600),
+        )
+
+
+@dataclass
 class CustomCommand:
     """自定义 CLI 命令配置"""
     name: str           # 显示名称，如 "Claude"、"Aider"
@@ -467,6 +508,8 @@ class UISettings:
     notify: NotifySettings = field(default_factory=lambda: NotifySettings())
     bypass_enabled: bool = False  # 新会话 bypass 开关（默认关闭）
     custom_commands: CustomCommandsConfig = field(default_factory=lambda: CustomCommandsConfig())
+    auto_answer: AutoAnswerSettings = field(default_factory=lambda: AutoAnswerSettings())
+    card_expiry: CardExpirySettings = field(default_factory=lambda: CardExpirySettings())
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -475,6 +518,8 @@ class UISettings:
             "notify": self.notify.to_dict(),
             "bypass_enabled": self.bypass_enabled,
             "custom_commands": self.custom_commands.to_dict(),
+            "auto_answer": self.auto_answer.to_dict(),
+            "card_expiry": self.card_expiry.to_dict(),
         }
 
     @classmethod
@@ -483,11 +528,15 @@ class UISettings:
         qc_data = data.get("quick_commands", {})
         notify_data = data.get("notify", {})
         cc_data = data.get("custom_commands", {})
+        auto_answer_data = data.get("auto_answer", {})
+        card_expiry_data = data.get("card_expiry", {})
         return cls(
             quick_commands=QuickCommandsConfig.from_dict(qc_data),
             notify=NotifySettings.from_dict(notify_data),
             bypass_enabled=data.get("bypass_enabled", False),
             custom_commands=CustomCommandsConfig.from_dict(cc_data),
+            auto_answer=AutoAnswerSettings.from_dict(auto_answer_data),
+            card_expiry=CardExpirySettings.from_dict(card_expiry_data),
         )
 
 
@@ -502,6 +551,7 @@ class RuntimeConfig:
     session_mappings: Dict[str, str] = field(default_factory=dict)
     lark_group_mappings: Dict[str, str] = field(default_factory=dict)
     ready_notify_count: int = 0  # 全局就绪通知计数器
+    session_auto_answer: Dict[str, dict] = field(default_factory=dict)  # session 自动应答状态
 
     def get_session_mapping(self, truncated_name: str) -> Optional[str]:
         """获取截断名称对应的原始路径
@@ -585,6 +635,7 @@ class RuntimeConfig:
             "session_mappings"   : self.session_mappings,
             "lark_group_mappings": self.lark_group_mappings,
             "ready_notify_count": self.ready_notify_count,
+            "session_auto_answer": self.session_auto_answer,
         }
 
     @classmethod
@@ -596,6 +647,7 @@ class RuntimeConfig:
             session_mappings=data.get("session_mappings", {}),
             lark_group_mappings=data.get("lark_group_mappings", {}),
             ready_notify_count=data.get("ready_notify_count", 0),
+            session_auto_answer=data.get("session_auto_answer", {}),
         )
 
 
@@ -1016,6 +1068,26 @@ def increment_ready_notify_count() -> int:
     return config.ready_notify_count
 
 
+# ============== 自动应答配置访问函数 ==============
+
+def get_auto_answer_delay() -> int:
+    """获取自动应答延迟时间（秒）"""
+    config = load_user_config()
+    return config.ui_settings.auto_answer.default_delay_seconds
+
+
+def get_card_expiry_enabled() -> bool:
+    """获取卡片过期功能是否启用"""
+    config = load_user_config()
+    return config.ui_settings.card_expiry.enabled
+
+
+def get_card_expiry_seconds() -> int:
+    """获取卡片过期时间（秒）"""
+    config = load_user_config()
+    return config.ui_settings.card_expiry.expiry_seconds
+
+
 # ============== 自定义命令配置访问函数 ==============
 
 def get_custom_commands() -> List[CustomCommand]:
@@ -1070,3 +1142,34 @@ def is_custom_commands_enabled() -> bool:
     """检查自定义命令功能是否启用"""
     config = load_user_config()
     return config.ui_settings.custom_commands.is_visible()
+
+
+# ============== Session 自动应答状态管理 ==============
+
+def load_session_auto_answer() -> Dict[str, dict]:
+    """加载所有 session 的自动应答状态"""
+    config = load_runtime_config()
+    return config.session_auto_answer
+
+
+def save_session_auto_answer(states: Dict[str, dict]) -> None:
+    """保存所有 session 的自动应答状态"""
+    config = load_runtime_config()
+    config.session_auto_answer = states
+    save_runtime_config(config)
+
+
+def get_session_auto_answer_enabled(session_name: str) -> bool:
+    """获取指定 session 的自动应答开关状态"""
+    states = load_session_auto_answer()
+    return states.get(session_name, {}).get("enabled", False)
+
+
+def set_session_auto_answer_enabled(session_name: str, enabled: bool, enabled_by: str = "") -> None:
+    """设置指定 session 的自动应答开关状态"""
+    states = load_session_auto_answer()
+    if enabled:
+        states[session_name] = {"enabled": True, "enabled_by": enabled_by}
+    else:
+        states.pop(session_name, None)
+    save_session_auto_answer(states)
