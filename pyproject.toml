@@ -1,11 +1,11 @@
 [project]
 name = "remote-claude"
-version = "0.1.0"
+version = "1.0.4"
 description = "双端共享 Claude CLI 工具"
 requires-python = ">=3.11"
 dependencies = [
-    "lark-oapi>=1.4.24",
-    "python-dotenv>=1.0.0",
+    "lark-oapi==1.5.3",
+    "python-dotenv==1.2.2",
     "pyte>=0.8.0",
     "mixpanel>=5.0.0",
     "python-socks[asyncio]>=2.0.0",
@@ -14,9 +14,10 @@ dependencies = [
 [project.scripts]
 remote-claude = "remote_claude:main"
 
-# uv 配置 - 确保依赖版本一致性
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -523,7 +523,10 @@ check_file_integrity() {
         "client/client.py"
         "utils/protocol.py"
         "lark_client/main.py"
-        "init.sh"
+        "scripts/install.sh"
+        "scripts/setup.sh"
+        "scripts/uninstall.sh"
+        "scripts/completion.sh"
         "pyproject.toml"
         "resources/defaults/.env.example"
         "resources/defaults/config.default.json"
@@ -535,7 +538,7 @@ check_file_integrity() {
         if [ -f "$file" ]; then
             log_success "文件存在: $file"
         else
-            log_error "文件缺失: $file"
+            log_warning "文件缺失: $file"
             missing_files+=("$file")
         fi
     done
@@ -755,13 +758,6 @@ EOF
 
 # 步骤 10：清理
 cleanup() {
-    print_header "清理"
-
-    if [ "${AUTO_CLEANUP:-false}" = "true" ]; then
-        log_info "CI 模式：测试完成，容器将自动销毁"
-        exit 0
-    fi
-
     local cid="$HOSTNAME"
     echo ""
     echo -e "${GREEN}容器保持运行，操作命令：${NC}"

@@ -53,7 +53,7 @@ if _LARK_LOG_LEVEL in _LOG_LEVEL_MAP:
     LARK_LOG_LEVEL = _LOG_LEVEL_MAP[_LARK_LOG_LEVEL]
 else:
     # 无效日志级别，输出警告并回退到 WARNING
-    LARK_LOG_LEVEL = 30
+    LARK_LOG_LEVEL = _LOG_LEVEL_MAP["WARNING"]
     # 延迟输出警告（在 logging 配置后）
     import logging
     logging.getLogger('LarkConfig').warning(

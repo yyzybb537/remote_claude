@@ -9,6 +9,10 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
+# _common.sh 会自动从 runtime.json 读取 uv_path，并设置 PATH
+. "$PROJECT_ROOT/scripts/_common.sh"
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "飞书客户端管理功能测试"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -16,12 +20,12 @@ echo ""
 
 # 1. 检查初始状态（应该未运行）
 echo "1. 检查初始状态..."
-uv run python3 remote_claude.py lark status
+uv run remote-claude lark status
 echo ""
 
 # 2. 启动飞书客户端
 echo "2. 启动飞书客户端..."
-uv run python3 remote_claude.py lark start
+uv run remote-claude lark start
 echo ""
 
 # 3. 等待 2 秒
@@ -31,12 +35,12 @@ echo ""
 
 # 4. 查看状态
 echo "4. 查看状态..."
-uv run python3 remote_claude.py lark status
+uv run remote-claude lark status
 echo ""
 
 # 5. 尝试重复启动（应该提示已在运行）
 echo "5. 尝试重复启动（应该提示已在运行）..."
-uv run python3 remote_claude.py lark start || true
+uv run remote-claude lark start || true
 echo ""
 
 # 6. 等待 5 秒，让日志积累一些内容
@@ -46,12 +50,12 @@ echo ""
 
 # 7. 再次查看状态（运行时长应该增加）
 echo "7. 再次查看状态..."
-uv run python3 remote_claude.py lark status
+uv run remote-claude lark status
 echo ""
 
 # 8. 重启
 echo "8. 重启飞书客户端..."
-uv run python3 remote_claude.py lark restart
+uv run remote-claude lark restart
 echo ""
 
 # 9. 等待 2 秒
@@ -61,17 +65,17 @@ echo ""
 
 # 10. 查看状态（启动时间应该更新）
 echo "10. 查看状态（启动时间应该更新）..."
-uv run python3 remote_claude.py lark status
+uv run remote-claude lark status
 echo ""
 
 # 11. 停止
 echo "11. 停止飞书客户端..."
-uv run python3 remote_claude.py lark stop
+uv run remote-claude lark stop
 echo ""
 
 # 12. 确认已停止
 echo "12. 确认已停止..."
-uv run python3 remote_claude.py lark status
+uv run remote-claude lark status
 echo ""
 
 # 13. 检查残留文件（应该已清理）

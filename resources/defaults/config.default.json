@@ -16,7 +16,7 @@
     },
     "bypass_enabled": false,
     "custom_commands": {
-      "enabled": false,
+      "enabled": true,
       "commands": [
         {"name": "Claude", "cli_type": "claude", "command": "claude", "description": "Claude Code CLI"},
         {"name": "Codex", "cli_type": "codex", "command": "codex", "description": "OpenAI Codex CLI"}

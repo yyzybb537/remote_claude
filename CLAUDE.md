@@ -700,11 +700,11 @@ pnpm add -g remote-claude
 
 **安装过程：**
 1. npm/pnpm 下载并解压包文件
-2. `postinstall` 钩子自动执行：
+2. `postinstall` 钩子自动执行 `scripts/install.sh --npm`：
    - 检查/安装 uv 包管理器
    - 创建 Python 虚拟环境（`.venv/`）
    - 使用 `uv sync --frozen` 安装依赖
-3. 创建全局可用的快捷命令（`cla`, `cl`, `cx`, `cdx`）
+   - 执行 `scripts/setup.sh` 完成初始化
 
 **特点：**
 - 安装后即可使用，无需额外初始化
@@ -723,7 +723,7 @@ cd remote_claude
 1. 检查操作系统（macOS/Linux）
 2. 检查/安装 uv
 3. 创建虚拟环境并安装依赖
-4. 创建快捷命令符号链接
+4. 执行完整初始化（创建目录、符号链接、配置补全）
 
 ### 依赖变更检测
 
@@ -740,14 +740,11 @@ cd remote_claude
 npm uninstall -g remote-claude
 ```
 
-**卸载过程：**
-1. `preuninstall` 钩子执行清理：
-   - 删除快捷命令符号链接
-   - 清理 shell 配置文件中的 PATH 设置
-   - 删除虚拟环境
-   - 停止飞书客户端并清理运行时文件
-   - 询问是否删除配置文件
-   - 可选：清理 uv 缓存
+卸载时会：
+- 删除快捷命令符号链接
+- 停止飞书客户端
+- 清理虚拟环境
+- 询问是否保留配置文件
 
 ---
 

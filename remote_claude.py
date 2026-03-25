@@ -38,6 +38,7 @@ from utils.session import (
     USER_DATA_DIR, ensure_user_data_dir, get_lark_log_file,
     get_env_snapshot_path,
 )
+from server.biz_enum import CliType
 
 # 获取脚本所在目录
 SCRIPT_DIR = Path(__file__).parent.absolute()
@@ -91,8 +92,7 @@ def cmd_start(args):
     cli_args_str = " ".join(f"'{arg}'" for arg in cli_args)
     debug_flag = " --debug-screen" if args.debug_screen else ""
     debug_verbose_flag = " --debug-verbose" if args.debug_verbose else ""
-    cli_type = args.cli
-    cli_type_flag = f" --cli-type {cli_type}" if cli_type != "claude" else ""
+    cli_type_flag = f" --cli-type {args.cli}"
 
     # 捕获用户终端环境变量（tmux 会覆盖这些值，导致 Claude CLI 无法启用 kitty keyboard protocol）
     env_prefix = ""
@@ -600,6 +600,7 @@ def cmd_config_reset(args):
         USER_CONFIG_LOCK_FILE,
         RUNTIME_LOCK_FILE,
         cleanup_backup_files,
+        ConfigType,
     )
 
     # 确定要重置的配置文件
@@ -659,7 +660,7 @@ def cmd_config_reset(args):
                 print(f"✓ 已清理锁文件: {USER_CONFIG_LOCK_FILE}")
             except FileNotFoundError:
                 pass
-            cleanup_backup_files("config")
+            cleanup_backup_files(ConfigType.CONFIG)
             print("✓ 已清理 config 备份文件")
 
         if reset_all or reset_runtime:
@@ -668,7 +669,7 @@ def cmd_config_reset(args):
                 print(f"✓ 已清理锁文件: {RUNTIME_LOCK_FILE}")
             except FileNotFoundError:
                 pass
-            cleanup_backup_files("runtime")
+            cleanup_backup_files(ConfigType.RUNTIME)
             print("✓ 已清理 runtime 备份文件")
 
         print()
@@ -751,8 +752,8 @@ def main():
     )
     start_parser.add_argument(
         "--cli",
-        default="claude",
-        choices=["claude", "codex"],
+        default=CliType.CLAUDE,
+        choices=[CliType.CLAUDE, CliType.CODEX],
         help="后端 CLI 类型（默认 claude）"
     )
     start_parser.set_defaults(func=cmd_start)

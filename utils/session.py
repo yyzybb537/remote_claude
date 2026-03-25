@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional, List
 import uuid
 
+from server.biz_enum import CliType
 
 # 常量
 SOCKET_DIR = Path("/tmp/remote-claude")
@@ -388,13 +389,13 @@ def list_active_sessions() -> List[dict]:
                     from server.shared_state import SharedStateReader
                     reader = SharedStateReader(session_name)
                     snapshot = reader.read()
-                    cli_type = snapshot.get("cli_type", "claude")
+                    cli_type = snapshot.get("cli_type", CliType.CLAUDE)
                 except Exception as e:
                     # 添加详细日志记录，便于诊断问题
                     import logging
                     logger = logging.getLogger('Session')
                     logger.warning(f"读取共享内存 cli_type 失败: session={session_name}, error={e}")
-                    cli_type = "claude"  # 读取失败时使用默认值
+                    cli_type = CliType.CLAUDE  # 读取失败时使用默认值
 
                 sessions.append({
                     "name": session_name,

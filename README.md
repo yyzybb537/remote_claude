@@ -70,10 +70,10 @@ cd remote_claude
 ```bash
 git clone https://github.com/yyzybb537/remote_claude.git
 cd remote_claude
-./init.sh
+./scripts/setup.sh
 ```
 
-`init.sh` 会自动安装 uv、tmux 等依赖，配置飞书环境（可选），并写入 `cla` / `cl` / `cx` / `cdx` 快捷命令。执行完成后重启终端生效。
+`scripts/setup.sh` 会自动安装 uv、tmux 等依赖，配置飞书环境（可选），并写入 `cla` / `cl` / `cx` / `cdx` 快捷命令。执行完成后重启终端生效。
 
 ### 1.3 Docker 产物安装（免安装环境）
 
@@ -392,15 +392,21 @@ Remote Claude 使用两个配置文件：
     "custom_commands": {
       "enabled": true,
       "commands": [
-        {"name": "claude", "command": "/usr/local/bin/claude", "description": "Claude Code CLI"},
-        {"name": "codex", "command": "codex", "description": "OpenAI Codex CLI"}
+        {"name": "Claude", "cli_type": "claude", "command": "/usr/local/bin/claude", "description": "Claude Code CLI"},
+        {"name": "Codex", "cli_type": "codex", "command": "codex", "description": "OpenAI Codex CLI"}
       ]
     }
   }
 }
 ```
 
-配置后，启动会话时会使用配置中的命令路径。
+**配置字段说明**：
+- `name`: 显示名称，最长 20 字符
+- `cli_type`: CLI 类型，必须为 `"claude"` 或 `"codex"`（用于终端解析器选择）
+- `command`: 实际执行的命令路径
+- `description`: 可选描述
+
+配置后，目录浏览卡片的「启动」按钮会根据配置显示对应的命令选项。
 
 ### 安装 uv
 

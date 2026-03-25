@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+
 class TestCardInteraction(unittest.TestCase):
     """卡片交互测试"""
 
@@ -120,9 +121,7 @@ class TestCardInteraction(unittest.TestCase):
 class TestQuickCommandLoading(unittest.TestCase):
     """快捷命令 loading 状态测试"""
 
-    @patch('lark_client.lark_handler.card_service')
-    @patch('lark_client.lark_handler.build_stream_card')
-    def test_handle_quick_command_shows_loading(self, mock_build_card, mock_card_service):
+    def test_handle_quick_command_shows_loading(self):
         """测试快捷命令发送时显示 loading 状态"""
         from lark_client.lark_handler import LarkHandler
 
@@ -141,34 +140,35 @@ class TestQuickCommandLoading(unittest.TestCase):
         mock_bridge = handler._bridges["test_chat"]
         mock_bridge.send_input = AsyncMock(return_value=True)
 
-        mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
-        mock_card_service.update_card = AsyncMock(return_value=True)
+        with patch('lark_client.lark_handler.build_loading_card_from_snapshot') as mock_build_loading_card, \
+                patch('lark_client.lark_handler.card_service') as mock_card_service:
+            mock_build_loading_card.return_value = {"header": {}, "body": {"elements": []}}
+            mock_card_service.update_card = AsyncMock(return_value=True)
 
-        # 运行测试
-        asyncio.run(handler.handle_quick_command("user_123", "test_chat", "/clear"))
+            # 运行测试
+            asyncio.run(handler.handle_quick_command("user_123", "test_chat", "/clear"))
 
-        # 验证 update_card 被调用且带有 loading 参数
-        mock_build_card.assert_called_once()
-        call_kwargs = mock_build_card.call_args[1]
-        self.assertTrue(call_kwargs.get("is_loading", False), "应该设置 is_loading=True")
-        self.assertIn("/clear", call_kwargs.get("loading_text", ""))
+            # 验证 build_loading_card_from_snapshot 被调用
+            mock_build_loading_card.assert_called_once()
+            # loading_text 是第三个位置参数
+            call_args = mock_build_loading_card.call_args.args
+            # loading_text 应包含命令
+            self.assertIn("/clear", call_args[2])
 
-        # 验证 update_card 被调用
-        mock_card_service.update_card.assert_called()
+            # 验证 update_card 被调用
+            mock_card_service.update_card.assert_called()
 
-        # 验证命令被发送
-        mock_bridge.send_input.assert_called_once_with("/clear")
+            # 验证命令被发送
+            mock_bridge.send_input.assert_called_once_with("/clear")
 
-        # 验证 kick 被调用
-        handler._poller.kick.assert_called_once_with("test_chat")
+            # 验证 kick 被调用
+            handler._poller.kick.assert_called_once_with("test_chat")
 
 
 class TestOptionSelectLoading(unittest.TestCase):
     """选项选择 loading 状态测试"""
 
-    @patch('lark_client.lark_handler.card_service')
-    @patch('lark_client.lark_handler.build_stream_card')
-    def test_handle_option_select_shows_loading(self, mock_build_card, mock_card_service):
+    def test_handle_option_select_shows_loading(self):
         """测试选项选择时显示 loading 状态"""
         from lark_client.lark_handler import LarkHandler
 
@@ -176,6 +176,7 @@ class TestOptionSelectLoading(unittest.TestCase):
         handler._bridges = {"test_chat": MagicMock(running=True)}
         handler._chat_sessions = {"test_chat": "test-session"}
         handler._runtime_config = None
+        handler._user_config = None
         handler._poller = MagicMock()
         handler._poller.get_active_card_id = MagicMock(return_value="card_123")
         handler._poller.read_snapshot = MagicMock(return_value={
@@ -197,30 +198,32 @@ class TestOptionSelectLoading(unittest.TestCase):
         mock_bridge = handler._bridges["test_chat"]
         mock_bridge.send_raw = AsyncMock(return_value=True)
 
-        mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
-        mock_card_service.update_card = AsyncMock(return_value=True)
+        with patch('lark_client.lark_handler.build_loading_card_from_snapshot') as mock_build_card, \
+                patch('lark_client.lark_handler.card_service') as mock_card_service:
+            mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
+            mock_card_service.update_card = AsyncMock(return_value=True)
 
-        # 运行测试
-        asyncio.run(handler.handle_option_select("user_123", "test_chat", "2", option_total=2))
+            # 运行测试
+            asyncio.run(handler.handle_option_select("user_123", "test_chat", "2", option_total=2))
 
-        # 验证 update_card 被调用且带有 loading 参数
-        mock_build_card.assert_called_once()
-        call_kwargs = mock_build_card.call_args[1]
-        self.assertTrue(call_kwargs.get("is_loading", False), "应该设置 is_loading=True")
+            # 验证 build_loading_card_from_snapshot 被调用且带有 loading 参数
+            mock_build_card.assert_called()
+            # loading_text 是第三个位置参数
+            call_args = mock_build_card.call_args.args
+            self.assertEqual(call_args[2], "正在选择...")
 
 
 class TestStreamDetachLoading(unittest.TestCase):
     """断开连接 loading 状态测试"""
 
-    @patch('lark_client.lark_handler.card_service')
-    @patch('lark_client.lark_handler.build_stream_card')
-    def test_handle_stream_detach_shows_loading(self, mock_build_card, mock_card_service):
+    def test_handle_stream_detach_shows_loading(self):
         """测试断开连接时显示 loading 状态"""
         from lark_client.lark_handler import LarkHandler
 
         handler = LarkHandler()
         handler._chat_sessions = {"test_chat": "test-session"}
         handler._runtime_config = None
+        handler._user_config = None
         handler._poller = MagicMock()
         handler._poller.get_active_card_id = MagicMock(return_value="card_123")
         handler._poller.read_snapshot = MagicMock(return_value={
@@ -236,19 +239,23 @@ class TestStreamDetachLoading(unittest.TestCase):
         handler._bridges = {}
         handler._detached_slices = {}
 
-        mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
-        mock_card_service.update_card = AsyncMock(return_value=True)
-
         # Mock _remove_binding_by_chat 和 _detach
         handler._remove_binding_by_chat = MagicMock()
         handler._detach = AsyncMock()
 
-        # 运行测试
-        asyncio.run(handler._handle_stream_detach("user_123", "test_chat", "test-session"))
+        with patch('lark_client.lark_handler.build_loading_card_from_snapshot') as mock_build_loading_card, \
+                patch('lark_client.lark_handler.card_service') as mock_card_service:
+            mock_build_loading_card.return_value = {"header": {}, "body": {"elements": []}}
+            mock_card_service.update_card = AsyncMock(return_value=True)
 
-        # 验证第一个 build_stream_card 调用带有 loading 参数
-        loading_calls = [c for c in mock_build_card.call_args_list if c[1].get("is_loading")]
-        self.assertTrue(len(loading_calls) > 0, "应该有 loading 状态的卡片构建")
+            # 运行测试
+            asyncio.run(handler._handle_stream_detach("user_123", "test_chat", "test-session"))
+
+            # 验证 build_loading_card_from_snapshot 被调用
+            # loading_text 是第三个位置参数
+            loading_calls = [c for c in mock_build_loading_card.call_args_list
+                             if len(c.args) > 2 and "断开" in c.args[2]]
+            self.assertTrue(len(loading_calls) > 0, "应该有断开连接的 loading 状态卡片构建")
 
 
 if __name__ == "__main__":

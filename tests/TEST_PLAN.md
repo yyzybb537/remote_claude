@@ -15,6 +15,7 @@
 | `test_stream_poller.py` | 流式卡片模型（card_builder + poller） | `uv run python3 tests/test_stream_poller.py` |
 | `test_session_truncate.py` | 会话名称截断、映射存储、快捷命令验证 | `uv run python3 tests/test_session_truncate.py` |
 | `test_runtime_config.py` | 运行时配置加载/保存/迁移/可见性判断 | `uv run python3 tests/test_runtime_config.py` |
+| `test_history_buffer.py` | 环形历史缓冲区（Ring Buffer 实现） | `uv run python3 tests/test_history_buffer.py` |
 | `test_renderer.py` | 终端渲染器 | `uv run python3 tests/test_renderer.py` |
 
 ### 层 2：集成测试（需要活跃会话）
@@ -212,6 +213,7 @@ echo "快速回归测试通过"
 | `lark_client/config.py` | 手动验证日志级别 |
 | `server/parsers/*.py` | `test_component_parser.py` |
 | `utils/protocol.py` | `test_integration.py` |
+| `server/server.py` (HistoryBuffer) | `test_history_buffer.py` |
 
 ---
 

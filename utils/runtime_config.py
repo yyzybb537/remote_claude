@@ -52,6 +52,34 @@ LEGACY_LARK_GROUP_MAPPING_FILE = USER_DATA_DIR / "lark_group_mapping.json"
 
 # ============== NFS 文件系统检测 ==============
 
+def _find_longest_nfs_mount(str_path: str, mounts: list, mount_point_idx: int, fstype_idx: int = None) -> str:
+    """从挂载点列表中查找匹配路径的最长 NFS 挂载点
+
+    Args:
+        str_path: 要检查的路径
+        mounts: 挂载点行列表（每行已 split）
+        mount_point_idx: 挂载点在 split 结果中的索引
+        fstype_idx: 文件系统类型在 split 结果中的索引（可选，用于精确匹配）
+
+    Returns:
+        最长匹配的挂载点，无匹配返回空字符串
+    """
+    matched_point = ""
+    for parts in mounts:
+        if len(parts) < 3:
+            continue
+        mount_point = parts[mount_point_idx]
+        # 如果提供了 fstype_idx，检查是否为 NFS
+        if fstype_idx is not None:
+            fstype = parts[fstype_idx].lower()
+            if "nfs" not in fstype:
+                continue
+        # 匹配最长前缀
+        if str_path.startswith(mount_point) and len(mount_point) > len(matched_point):
+            matched_point = mount_point
+    return matched_point
+
+
 def _is_nfs_filesystem() -> bool:
     """检测配置目录是否位于 NFS 或网络文件系统上
 
@@ -71,27 +99,22 @@ def _is_nfs_filesystem() -> bool:
                 text=True,
                 timeout=5
             )
-            for line in result.stdout.split("\n"):
-                # NFS 挂载行格式: //server/path on /mount/point (nfs, ...)
-                if "nfs" in line.lower():
-                    parts = line.split()
-                    if len(parts) >= 3:
-                        mount_point = parts[2]
-                        if str_path.startswith(mount_point):
-                            return True
+            # NFS 挂载行格式: //server/path on /mount/point (nfs, ...)
+            # mount 输出没有固定列，需检查整行是否含 nfs
+            mounts = [line.split() for line in result.stdout.split("\n") if "nfs" in line.lower()]
+            # macOS mount 输出: device on mount_point (options)
+            # parts[2] 是 mount_point
+            return bool(_find_longest_nfs_mount(str_path, mounts, mount_point_idx=2))
 
         # Linux: 检查 /proc/mounts
         elif platform.system() == "Linux":
             try:
                 with open("/proc/mounts", "r") as f:
-                    for line in f:
-                        # 格式: device mount_point fstype options ...
-                        parts = line.split()
-                        if len(parts) >= 3:
-                            fstype = parts[2].lower()
-                            mount_point = parts[1]
-                            if "nfs" in fstype and str_path.startswith(mount_point):
-                                return True
+                    # 格式: device mount_point fstype options ...
+                    mounts = [line.split() for line in f]
+                return bool(_find_longest_nfs_mount(
+                    str_path, mounts, mount_point_idx=1, fstype_idx=2
+                ))
             except (IOError, FileNotFoundError):
                 pass
 
@@ -120,34 +143,76 @@ def _check_filesystem_and_warn() -> None:
         _nfs_warning_shown = True
 
 
-# 模块加载时执行检查
-_check_filesystem_and_warn()
+# 延迟检查：首次访问配置文件时才执行 NFS 检测
+# 避免模块导入时的阻塞开销
+def _ensure_filesystem_checked() -> None:
+    """确保文件系统检查已执行（延迟到首次使用）"""
+    if not _nfs_checked:
+        _check_filesystem_and_warn()
 
 
 # ============== 备份文件管理 ==============
 
-def _backup_corrupted_file(path: Path) -> Path:
+def _backup_corrupted_file(path: Path, lock_path: Optional[Path] = None) -> Path:
     """备份损坏的配置文件，保留最近 MAX_BACKUP_FILES 个备份
+
+    使用文件锁保护备份操作，避免并发备份导致的数据竞争。
 
     Args:
         path: 损坏的配置文件路径
+        lock_path: 锁文件路径（可选，用于保护备份操作）
 
     Returns:
         备份文件路径
     """
-    # 生成带时间戳的备份文件名
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup = path.with_suffix(f".json.bak.{timestamp}")
-    path.rename(backup)
+    # 确定锁文件路径
+    if lock_path is None:
+        # 根据配置文件类型确定锁文件
+        filename = path.name
+        if "runtime" in filename:
+            lock_path = RUNTIME_LOCK_FILE
+        elif "config" in filename:
+            lock_path = USER_CONFIG_LOCK_FILE
+        else:
+            lock_path = Path(str(path) + ".lock")
 
-    # 清理旧备份，只保留最近 MAX_BACKUP_FILES 个
-    backup_pattern = str(path.with_suffix(".json.bak.*"))
-    backups = sorted(glob.glob(backup_pattern))
-    for old_backup in backups[:-MAX_BACKUP_FILES]:
-        Path(old_backup).unlink()
-        logger.info(f"清理旧备份: {old_backup}")
+    # 使用文件锁保护整个备份操作
+    try:
+        with open(lock_path, 'a+', encoding="utf-8") as lock_fd:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+            try:
+                # 检查原文件是否还存在（可能被其他进程处理）
+                if not path.exists():
+                    logger.warning(f"配置文件已不存在，跳过备份: {path}")
+                    return path.with_suffix(".json.bak.missing")
 
-    return backup
+                # 生成带时间戳的备份文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup = path.with_suffix(f".json.bak.{timestamp}")
+                path.rename(backup)
+
+                # 清理旧备份，只保留最近 MAX_BACKUP_FILES 个
+                backup_pattern = str(path.with_suffix(".json.bak.*"))
+                backups = sorted(glob.glob(backup_pattern))
+                for old_backup in backups[:-MAX_BACKUP_FILES]:
+                    try:
+                        Path(old_backup).unlink()
+                        logger.info(f"清理旧备份: {old_backup}")
+                    except OSError as e:
+                        logger.warning(f"清理旧备份失败: {old_backup}, {e}")
+
+                return backup
+            finally:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+    except OSError as e:
+        logger.warning(f"无法获取备份锁，直接备份: {e}")
+        # 回退：无锁备份
+        if path.exists():
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup = path.with_suffix(f".json.bak.{timestamp}")
+            path.rename(backup)
+            return backup
+        return path.with_suffix(".json.bak.missing")
 
 
 def check_stale_backup() -> Optional[Path]:
@@ -345,6 +410,13 @@ class CustomCommandsConfig:
         """根据名称获取命令"""
         for cmd in self.commands:
             if cmd.name == name:
+                return cmd.command
+        return None
+
+    def get_command_by_cli_type(self, cli_type: str) -> Optional[str]:
+        """根据 CLI 类型获取命令"""
+        for cmd in self.commands:
+            if cmd.cli_type == cli_type:
                 return cmd.command
         return None
 
@@ -583,6 +655,7 @@ def _save_config_with_lock(
         lock_path: 锁文件路径
     """
     ensure_user_data_dir()
+    _ensure_filesystem_checked()  # 巻加延迟检测调用
 
     try:
         # 使用 'a+' 模式打开锁文件：
@@ -971,8 +1044,8 @@ def get_cli_command(cli_type: str) -> str:
 
     config = load_user_config()
 
-    # 优先从自定义命令配置获取
-    custom_cmd = config.ui_settings.custom_commands.get_command(cli_type_str)
+    # 优先从自定义命令配置获取（按 cli_type 匹配）
+    custom_cmd = config.ui_settings.custom_commands.get_command_by_cli_type(cli_type_str)
     if custom_cmd:
         logger.debug(f"使用自定义命令: {cli_type_str} -> {custom_cmd}")
         return custom_cmd

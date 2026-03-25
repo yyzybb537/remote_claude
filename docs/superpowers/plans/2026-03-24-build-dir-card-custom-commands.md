@@ -18,7 +18,7 @@
 ## 文件修改清单
 
 ### 新增文件
-- `server/cli_type.py` - CliType 枚举定义
+- `server/biz_enum.py` - CliType 枚举定义（及其他业务枚举）
 
 ### 修改文件
 - `utils/runtime_config.py` - CustomCommand 数据类修改
@@ -37,15 +37,15 @@
 ### Task 1: 新增 CliType 枚举定义
 
 **Files:**
-- Create: `server/cli_type.py`
-- Test: `tests/test_cli_type.py` (新建)
+- Create: `server/biz_enum.py`
+- Test: `tests/test_biz_enum.py` (新建)
 
-- [ ] **Step 1: Write失败测试**
+- [ ] **Step 1: 写失败测试**
 
 ```python
 def test_cli_type_enum_values():
     """测试 CliType 枚举值是否正确"""
-    from server.cli_type import CliType
+    from server.biz_enum import CliType
 
     assert CliType.CLAUDE == "claude"
     assert CliType.CODEX == "codex"
@@ -64,7 +64,7 @@ def test_cli_type_string_conversion():
 - [ ] **Step 2: 运行测试验证失败**
 
 ```bash
-uv run python tests/test_cli_type.py
+uv run python tests/test_biz_enum.py
 # 预期: 测试通过（尚未实现）
 ```
 
@@ -84,14 +84,14 @@ class CliType(StrEnum):
 - [ ] **Step 4: 运行测试验证通过**
 
 ```bash
-uv run python tests/test_cli_type.py
+uv run python tests/test_biz_enum.py
 # 预期: 测试通过
 ```
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add server/cli_type.py tests/test_cli_type.py
+git add server/biz_enum.py tests/test_biz_enum.py
 git commit -m "feat: add CliType enum for CLI type identification"
 ```
 
@@ -109,7 +109,7 @@ git commit -m "feat: add CliType enum for CLI type identification"
 def test_custom_command_requires_cli_type():
     """测试 CustomCommand 必须验证 cli_type 字段"""
     from utils.runtime_config import CustomCommand
-    from server.cli_type import CliType
+    from server.biz_enum import CliType
     import pytest
 
     # 正常情况
@@ -172,7 +172,7 @@ class CustomCommand:
 同时在文件顶部添加导入:
 
 ```python
-from server.cli_type import CliType
+from server.biz_enum import CliType
 ```
 
 - [ ] **Step 4: 更新 from_dict 方法**
@@ -200,7 +200,7 @@ uv run python tests/test_custom_commands.py
 - [ ] **Step 6: 提交**
 
 ```bash
-git add utils/runtime_config.py server/cli_type.py tests/test_custom_commands.py
+git add utils/runtime_config.py server/biz_enum.py tests/test_custom_commands.py
 git commit -m "feat: add cli_type field to CustomCommand data class"
 ```
 

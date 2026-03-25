@@ -36,28 +36,27 @@ except Exception:
     _VERSION = ""
 
 
-def _get_matching_commands(user_config: Optional["UserConfig"], cli_type: str) -> List[Dict[str, str]]:
-    """获取匹配指定 cli_type 的自定义命令列表
+def _get_matching_commands(user_config: Optional["UserConfig"]) -> List[Dict[str, str]]:
+    """获取自定义命令列表
 
     Args:
         user_config: 用户配置对象
-        cli_type: CLI 类型（字符串或 CliType 枚举值）
 
     Returns:
-        匹配的命令列表，每个元素包含 name 和 command
+        命令列表，每个元素包含 name 和 command。
+        如果未配置自定义命令，返回默认命令列表。
     """
     if not user_config or not user_config.ui_settings.custom_commands.is_visible():
-        # 未启用自定义命令，返回默认命令
-        return [{"name": "Claude", "command": str(CliType.CLAUDE)}]
+        # 未配置自定义命令，返回默认命令列表（Claude 和 Codex）
+        return [
+            {"name": "Claude", "command": str(CliType.CLAUDE)},
+            {"name": "Codex", "command": str(CliType.CODEX)},
+        ]
 
     commands = user_config.ui_settings.custom_commands.commands
-    # 将 cli_type 标准化为字符串进行比较（支持字符串和枚举输入）
-    cli_type_str = str(cli_type) if isinstance(cli_type, CliType) else cli_type
-    # 过滤匹配 cli_type 的命令
     matched = [
         {"name": cmd.name, "command": cmd.command}
         for cmd in commands
-        if cmd.cli_type == cli_type_str
     ]
 
     return matched
@@ -704,7 +703,9 @@ def _determine_header(
     if is_loading:
         return f"⏳ {loading_text}", "orange"
 
-    # 优化：只检查最后一个 block 是否 streaming（通常只有最后一个可能在 streaming）
+    # 优化：只检查最后一个 block 是否 streaming
+    # 原因：Claude CLI 的输出模型是追加式的，streaming 状态只出现在最新 block
+    # 如果中间 block 仍在 streaming（理论上不应该发生），它会在下一帧变成最后一个
     has_streaming = blocks[-1].get("is_streaming", False) if blocks else False
 
     if has_streaming or status_line:
@@ -1167,7 +1168,6 @@ def build_dir_card(
     session_groups: Optional[Dict[str, str]] = None,
     page: int = 0,
     user_config: Optional["UserConfig"] = None,
-    cli_type: str = "claude",
 ) -> Dict[str, Any]:
     """构建目录浏览卡片
 
@@ -1248,12 +1248,11 @@ def build_dir_card(
                 }}]
             }
 
-            # 获取匹配的命令列表
-            matched_commands = _get_matching_commands(user_config, cli_type)
+            commands = _get_matching_commands(user_config)
 
             # 构建启动按钮（横排）
             launch_buttons = []
-            for i, cmd in enumerate(matched_commands):
+            for i, cmd in enumerate(commands):
                 btn_type = "primary" if i == 0 else "default"
                 launch_buttons.append({
                     "tag": "column",

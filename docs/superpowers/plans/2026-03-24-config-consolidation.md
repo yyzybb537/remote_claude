@@ -10,15 +10,14 @@
 
 ## 任务列表
 
-### 任务 1：修改 package.json 并创建 .pnpmfile.cjs
+### 任务 1：修改 package.json 的 pnpm 配置
 
-**目标**：添加 pnpm 配置和卸载脚本钩子，确保 pnpm 安装时正确执行初始化脚本
+**目标**：配置 pnpm 允许执行项目自身的生命周期脚本
 
-**背景**：pnpm v10 默认阻止所有生命周期脚本执行。`onlyBuiltDependencies` 只控制依赖包的脚本，不影响项目自身的 `postinstall`。需要使用 `.pnpmfile.cjs` 的 `afterAllResolved` hook 来确保初始化脚本执行。
+**背景**：pnpm v10 默认阻止所有生命周期脚本执行（包括项目自身的 `postinstall`）。需要在 `onlyBuiltDependencies` 中显式声明允许执行脚本的包名。
 
 **文件**：
 - `package.json`
-- `.pnpmfile.cjs`（新增）
 
 **package.json 变更内容**：
 
@@ -30,68 +29,26 @@
     "preuninstall": "sh scripts/uninstall.sh"
   },
   "pnpm": {
-    "onlyBuiltDependencies": []
+    "onlyBuiltDependencies": ["remote-claude"]
   }
 }
-```
-
-**新增 .pnpmfile.cjs**：
-
-```javascript
-// .pnpmfile.cjs
-// pnpm v10+ 默认阻止生命周期脚本，此文件确保初始化脚本正确执行
-// 参考: https://pnpm.io/pnpmfile
-
-const { execSync } = require('child_process');
-const path = require('path');
-
-function afterAllResolved(lockfile, context) {
-  // 仅在首次安装（node_modules 不存在）时执行初始化
-  const nodeModulesPath = path.join(process.cwd(), 'node_modules');
-  const fs = require('fs');
-
-  if (!fs.existsSync(nodeModulesPath)) {
-    context.log('pnpm: 首次安装，执行初始化脚本...');
-
-    try {
-      // 执行 postinstall 脚本
-      execSync('sh scripts/postinstall.sh', {
-        stdio: 'inherit',
-        cwd: process.cwd(),
-      });
-      context.log('pnpm: 初始化脚本执行完成');
-    } catch (error) {
-      context.log(`pnpm: 初始化脚本执行失败: ${error.message}`);
-      // 不抛出错误，允许安装继续
-    }
-  }
-
-  return lockfile;
-}
-
-module.exports = {
-  hooks: {
-    afterAllResolved,
-  },
-};
 ```
 
 **说明**：
 - 使用 `sh` 替代 `bash`，兼容不同 shell 环境（zsh、fish 等）
 - `sh` 是 POSIX 标准，脚本内部通过 shebang 指定实际解释器
-- `onlyBuiltDependencies: []` 告诉 pnpm 不要为任何依赖包执行构建脚本
-- `.pnpmfile.cjs` 的 `afterAllResolved` hook 确保初始化脚本在 pnpm 安装后执行
-- 检查 `node_modules` 是否存在来区分首次安装和后续安装
+- `onlyBuiltDependencies: ["remote-claude"]` 告诉 pnpm 允许 `remote-claude` 包执行生命周期脚本
+- 注意：`onlyBuiltDependencies` 需要填写**包名**（package.json 中的 `name` 字段），不是文件路径
 
 **验证**：
-- `pnpm install` 能正确执行初始化脚本（首次安装）
-- `pnpm install` 重复执行不会重复运行初始化
+- `pnpm install` 能正确执行 `postinstall` 脚本
+- `pnpm install` 不再显示 "Ignored build scripts" 警告
 - `npm install` 能正确执行 `postinstall`
 - `pnpm uninstall` 能触发 `preuninstall`
 - `npm uninstall` 能触发 `preuninstall`
 
 **参考资料**：
-- [pnpm .pnpmfile.cjs 文档](https://pnpm.io/pnpmfile)
+- [pnpm onlyBuiltDependencies 文档](https://pnpm.io/package-json#pnpmonlybuiltdependencies)
 - [pnpm v10 供应链安全](https://pnpm.io/supply-chain-security)
 
 ---

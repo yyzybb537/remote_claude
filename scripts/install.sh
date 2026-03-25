@@ -1,33 +1,28 @@
-#!/bin/bash
+#!/bin/sh
 #
 # Remote Claude 一键安装脚本
 # 自动安装 uv 并创建虚拟环境，用户无需预装 Python
 #
-# 用法：curl -fsSL https://raw.githubusercontent.com/.../scripts/install.sh | bash
+# 用法：curl -fsSL https://raw.githubusercontent.com/.../scripts/install.sh | sh
 # 或：./scripts/install.sh
+# POSIX sh 兼容，支持 sh/bash/zsh
 #
 
 set -e
 
-# 脚本目录
+# 脚本目录（scripts/ 目录）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# 项目根目录
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
-source "$SCRIPT_DIR/_common.sh"
-
-print_header() {
-    echo ""
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}$1${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
-}
+# 使用 . 而非 source，兼容 POSIX sh
+. "$SCRIPT_DIR/_common.sh"
 
 # 检测操作系统
 detect_os() {
     OS=$(uname -s)
-    if [[ "$OS" != "Darwin" && "$OS" != "Linux" ]]; then
+    if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
         print_error "不支持的操作系统: $OS"
         print_error "Remote Claude 仅支持 macOS 和 Linux"
         exit 1
@@ -58,7 +53,7 @@ check_and_install_uv_install() {
 setup_virtual_env() {
     print_header "创建 Python 虚拟环境"
 
-    cd "$PROJECT_ROOT"
+    cd "$PROJECT_DIR"
 
     # 使用 uv 创建虚拟环境
     # Python 版本由 pyproject.toml 的 requires-python 决定，uv 自动管理
@@ -76,7 +71,7 @@ setup_virtual_env() {
 verify_installation() {
     print_header "验证安装"
 
-    cd "$PROJECT_ROOT"
+    cd "$PROJECT_DIR"
 
     print_info "Python 版本: $(uv run python3 --version)"
     print_info "安装路径: $(uv run which python3 2>/dev/null || echo 'uv 管理')"
@@ -91,33 +86,70 @@ verify_installation() {
     print_success "安装验证完成"
 }
 
-# 显示下一步
-show_next_steps() {
-    print_header "安装完成！"
+# 运行 setup.sh 完成初始化
+run_init_script() {
+    print_header "运行初始化脚本"
 
-    cat << EOF
-${YELLOW}下一步操作：${NC}
+    setup_script="$SCRIPT_DIR/setup.sh"
 
-1. 初始化项目（推荐）：
-   ${GREEN}./init.sh${NC}
+    if [ ! -f "$setup_script" ]; then
+        print_error "未找到 setup.sh 脚本: $setup_script"
+        exit 1
+    fi
 
-2. 运行 Remote Claude（推荐方式）：
-   ${GREEN}uv run python3 remote_claude.py --help${NC}
+    print_info "执行 setup.sh 进行完整初始化..."
 
-3. 或手动激活虚拟环境（传统方式）：
-   ${GREEN}source .venv/bin/activate${NC}
-   ${GREEN}python3 remote_claude.py --help${NC}
+    # 根据参数调用 setup.sh
+    if $NPM_MODE && $LAZY_MODE; then
+        sh "$setup_script" --npm --lazy
+    elif $NPM_MODE; then
+        sh "$setup_script" --npm
+    elif $LAZY_MODE; then
+        sh "$setup_script" --lazy
+    else
+        sh "$setup_script"
+    fi
 
-${YELLOW}提示：${NC}
-- 虚拟环境位于 ${GREEN}.venv/${NC} 目录
-- 推荐使用 ${GREEN}uv run python3 ...${NC} 自动激活虚拟环境执行命令
-- 详细文档请阅读 README.md
+    if [ $? -eq 0 ]; then
+        print_success "setup.sh 执行完成"
+    else
+        print_error "setup.sh 执行失败"
+        exit 1
+    fi
+}
 
-EOF
+# 显示完成信息
+show_completion() {
+    print_header "安装完成"
+
+    shell_rc=$(get_shell_rc)
+
+    echo "${GREEN}可用命令:${NC}"
+    echo "  ${GREEN}cla${NC}  - 启动 Claude"
+    echo "  ${GREEN}cl${NC}   - 启动 Claude (跳过权限)"
+    echo "  ${GREEN}cx${NC}   - 启动 Codex"
+    echo "  ${GREEN}cdx${NC}  - 启动 Codex (需权限)"
+    echo "  ${GREEN}remote-claude${NC} - 管理工具"
+    echo ""
+    echo "${YELLOW}提示:${NC} 重新打开终端或运行 ${GREEN}source $shell_rc${NC} 生效"
 }
 
 # 主流程
 main() {
+    # 解析参数
+    NPM_MODE=false
+    LAZY_MODE=false
+    for arg in "$@"; do
+        [ "$arg" = "--npm" ] && NPM_MODE=true
+        [ "$arg" = "--lazy" ] && LAZY_MODE=true
+    done
+
+    # 如果在包管理器缓存中，跳过初始化
+    if _is_in_package_manager_cache; then
+        echo "检测到缓存安装，跳过初始化"
+        exit 0
+    fi
+
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}   Remote Claude 一键安装${NC}"
@@ -125,11 +157,20 @@ main() {
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
+    # 延迟模式：只运行必要步骤
+    if $LAZY_MODE; then
+        check_and_install_uv_install
+        setup_virtual_env
+        print_success "Python 环境初始化完成"
+        return 0
+    fi
+
     detect_os
     check_and_install_uv_install
     setup_virtual_env
     verify_installation
-    show_next_steps
+    run_init_script
+    show_completion
 }
 
 # 运行主流程

@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 # 确保能导入项目模块
 sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 
 
 # ── card_builder 测试 ─────────────────────────────────────────────────────────

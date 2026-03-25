@@ -30,34 +30,17 @@ _root = Path(__file__).parent.parent
 sys.path.insert(0, str(_root / "server"))
 sys.path.insert(0, str(_root))
 
-try:
-    from stats import track as _track_stats
-except ImportError:
-    _track_stats = None
-except OSError as e:
-    logger.warning(f"stats 模块加载失败（系统错误），统计功能将禁用: {e}")
-    _track_stats = None
-except Exception as e:
-    logger.warning(f"stats 模块加载异常: {e}")
-    _track_stats = None
-
-
-def _safe_track_stats(*args, **kwargs):
-    """安全调用统计追踪函数，模块未加载时静默跳过"""
-    if _track_stats is not None:
-        try:
-            _track_stats(*args, **kwargs)
-        except (ConnectionError, TimeoutError) as e:
-            logger.debug(f"统计追踪失败（网络错误）: {e}")
-        except Exception as e:
-            logger.debug(f"统计追踪失败: {e}")
-
 from utils.session import ensure_user_data_dir, USER_DATA_DIR
-from utils.runtime_config import load_user_config
+from utils.runtime_config import (
+    load_user_config,
+    get_notify_ready_enabled,
+    get_notify_urgent_enabled,
+    increment_ready_notify_count,
+)
+from utils.stats_helper import safe_track_stats as _safe_track_stats
+from server.biz_enum import CliType
 
-# 模块级用户配置（从 config.json 加载，用于快捷命令选择器）
-# 注意：此处使用模块级缓存以避免重复读取文件。如需动态更新配置，需重启进程。
-# lark_handler.py 使用实例级 self._runtime_config 以支持依赖注入和测试。
+# 模块级用户配置（用于快捷命令选择器）
 _user_config = load_user_config()
 
 # ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -565,19 +548,19 @@ class SharedMemoryPoller:
         current_ready = _is_ready(blocks, status_line, option_block)
         prev_ready = tracker.prev_is_ready
         tracker.prev_is_ready = current_ready
-        return current_ready and not prev_ready and tracker.is_group and _notify_enabled
+        return current_ready and not prev_ready and tracker.is_group and get_notify_ready_enabled()
 
     async def _send_ready_notification(
         self, tracker: StreamTracker, cli_type: str = "claude"
     ) -> None:
         """发送就绪通知（加急或新消息），应在卡片操作完成后调用"""
-        count = _increment_ready_count()
+        count = increment_ready_notify_count()
         uid = tracker.notify_user_id or "all"
-        cli_name = "Claude" if cli_type == "claude" else "Codex"
+        cli_name = "Claude" if cli_type == CliType.CLAUDE else "Codex"
         logger.info(f"就绪提醒: chat_id={tracker.chat_id[:8]}..., count={count}, uid={uid}, "
                     f"last_msg={'有' if tracker.last_notify_message_id else '无'}")
 
-        if tracker.last_notify_message_id and uid != "all" and _urgent_enabled:
+        if tracker.last_notify_message_id and uid != "all" and get_notify_urgent_enabled():
             # 已有通知消息 + 加急开关开启 → 尝试加急
             try:
                 ok = await self._card_service.send_urgent_app(
@@ -628,39 +611,6 @@ class SharedMemoryPoller:
         except Exception as e:
             logger.warning(f"取消加急失败: {e}")
 
-    def get_notify_enabled(self) -> bool:
-        """获取就绪通知开关状态"""
-        return _notify_enabled
-
-    def set_notify_enabled(self, enabled: bool) -> None:
-        """更新就绪通知开关状态并持久化"""
-        global _notify_enabled
-        _notify_enabled = enabled
-        _save_notify_enabled(enabled)
-        logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
-
-    def get_urgent_enabled(self) -> bool:
-        """获取加急通知开关状态"""
-        return _urgent_enabled
-
-    def set_urgent_enabled(self, enabled: bool) -> None:
-        """更新加急通知开关状态并持久化"""
-        global _urgent_enabled
-        _urgent_enabled = enabled
-        _save_urgent_enabled(enabled)
-        logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
-
-    def get_bypass_enabled(self) -> bool:
-        """获取新会话 bypass 开关状态"""
-        return _bypass_enabled
-
-    def set_bypass_enabled(self, enabled: bool) -> None:
-        """更新新会话 bypass 开关状态并持久化"""
-        global _bypass_enabled
-        _bypass_enabled = enabled
-        _save_bypass_enabled(enabled)
-        logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
-
     @staticmethod
     def _compute_hash(
         blocks: list, status_line: Optional[dict],
@@ -686,121 +636,3 @@ def _is_ready(blocks: list, status_line: Optional[dict], option_block: Optional[
     """数据层就绪判断：无 streaming block、无 status_line（option_block 不影响就绪）"""
     has_streaming = any(b.get("is_streaming", False) for b in blocks)
     return not has_streaming and status_line is None
-
-
-_READY_COUNT_FILE = USER_DATA_DIR / "ready_notify_count"
-_NOTIFY_ENABLED_FILE = USER_DATA_DIR / "ready_notify_enabled"
-_URGENT_ENABLED_FILE = USER_DATA_DIR / "urgent_notify_enabled"
-_BYPASS_ENABLED_FILE = USER_DATA_DIR / "bypass_enabled"
-
-
-def _load_notify_enabled() -> bool:
-    """读取就绪通知开关状态，不存在或解析失败返回 True（默认开启）"""
-    try:
-        return _NOTIFY_ENABLED_FILE.read_text().strip() == "1"
-    except FileNotFoundError:
-        return True
-    except PermissionError as e:
-        logger.warning(f"无法读取就绪通知开关文件（权限错误）: {e}")
-        return True
-    except OSError as e:
-        logger.warning(f"读取就绪通知开关失败（系统错误）: {e}")
-        return True
-
-
-def _save_notify_enabled(enabled: bool) -> None:
-    """持久化就绪通知开关状态"""
-    try:
-        ensure_user_data_dir()
-        _NOTIFY_ENABLED_FILE.write_text("1" if enabled else "0")
-    except PermissionError as e:
-        logger.warning(f"保存就绪通知开关失败（权限错误）: {e}")
-    except OSError as e:
-        logger.warning(f"保存就绪通知开关失败（系统错误）: {e}")
-    except Exception as e:
-        logger.warning(f"_save_notify_enabled 失败: {e}")
-
-
-def _load_urgent_enabled() -> bool:
-    """读取加急通知开关状态，不存在或解析失败返回 False（默认关闭）"""
-    try:
-        return _URGENT_ENABLED_FILE.read_text().strip() == "1"
-    except FileNotFoundError:
-        return False
-    except PermissionError as e:
-        logger.warning(f"无法读取加急通知开关文件（权限错误）: {e}")
-        return False
-    except OSError as e:
-        logger.warning(f"读取加急通知开关失败（系统错误）: {e}")
-        return False
-
-
-def _save_urgent_enabled(enabled: bool) -> None:
-    """持久化加急通知开关状态"""
-    try:
-        ensure_user_data_dir()
-        _URGENT_ENABLED_FILE.write_text("1" if enabled else "0")
-    except PermissionError as e:
-        logger.warning(f"保存加急通知开关失败（权限错误）: {e}")
-    except OSError as e:
-        logger.warning(f"保存加急通知开关失败（系统错误）: {e}")
-    except Exception as e:
-        logger.warning(f"_save_urgent_enabled 失败: {e}")
-
-
-def _load_bypass_enabled() -> bool:
-    """读取新会话 bypass 开关状态，不存在或解析失败返回 False（默认关闭）"""
-    try:
-        return _BYPASS_ENABLED_FILE.read_text().strip() == "1"
-    except FileNotFoundError:
-        return False
-    except PermissionError as e:
-        logger.warning(f"无法读取 bypass 开关文件（权限错误）: {e}")
-        return False
-    except OSError as e:
-        logger.warning(f"读取 bypass 开关失败（系统错误）: {e}")
-        return False
-
-
-def _save_bypass_enabled(enabled: bool) -> None:
-    """持久化新会话 bypass 开关状态"""
-    try:
-        ensure_user_data_dir()
-        _BYPASS_ENABLED_FILE.write_text("1" if enabled else "0")
-    except PermissionError as e:
-        logger.warning(f"保存 bypass 开关失败（权限错误）: {e}")
-    except OSError as e:
-        logger.warning(f"保存 bypass 开关失败（系统错误）: {e}")
-    except Exception as e:
-        logger.warning(f"_save_bypass_enabled 失败: {e}")
-
-
-# 模块级开关状态：启动时加载一次
-_notify_enabled: bool = _load_notify_enabled()
-_urgent_enabled: bool = _load_urgent_enabled()
-_bypass_enabled: bool = _load_bypass_enabled()
-
-
-def _increment_ready_count() -> int:
-    """原子递增全局就绪提醒计数器，返回新值（持久化到文件）"""
-    try:
-        ensure_user_data_dir()
-        try:
-            count = int(_READY_COUNT_FILE.read_text().strip())
-        except FileNotFoundError:
-            count = 0
-        except ValueError:
-            logger.warning("就绪计数文件内容无效，重置为 0")
-            count = 0
-        count += 1
-        _READY_COUNT_FILE.write_text(str(count))
-        return count
-    except PermissionError as e:
-        logger.warning(f"_increment_ready_count 失败（权限错误）: {e}")
-        return 1
-    except OSError as e:
-        logger.warning(f"_increment_ready_count 失败（系统错误）: {e}")
-        return 1
-    except Exception as e:
-        logger.warning(f"_increment_ready_count 失败: {e}")
-        return 1

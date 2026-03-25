@@ -1,20 +1,20 @@
-#!/bin/bash
+#!/bin/sh
+# cx - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Codex（跳过权限）
+
 # 解析符号链接，兼容 macOS（不支持 readlink -f）
 SOURCE="$0"
 while [ -L "$SOURCE" ]; do
     DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
     SOURCE="$(readlink "$SOURCE")"
-    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+    case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
-
-# uv 路径兜底
-if ! command -v uv &>/dev/null; then
-    [ -f "$HOME/.local/bin/uv" ] && export PATH="$HOME/.local/bin:$PATH"
-fi
+. "$SCRIPT_DIR/scripts/_common.sh"
 
 # 检查飞书配置
-source "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
+. "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
 
-uv run --project "$SCRIPT_DIR" python3 "$SCRIPT_DIR/remote_claude.py" lark start
-uv run --project "$SCRIPT_DIR" python3 "$SCRIPT_DIR/remote_claude.py" start "${PWD}_$(date +%m%d_%H%M%S)" --cli codex -- --dangerously-bypass-approvals-and-sandbox "$@"
+# 切换到项目目录，使用 uv run 调用入口点
+cd "$SCRIPT_DIR"
+uv run remote-claude lark start
+uv run remote-claude start "${PWD}_$(date +%m%d_%H%M%S)" --cli codex -- --dangerously-bypass-approvals-and-sandbox "$@"

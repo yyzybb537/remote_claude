@@ -21,23 +21,26 @@ import mmap
 import struct
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
+
+from server.biz_enum import CliType
 
 # ── 布局常量 ──────────────────────────────────────────────────────────────────
-MMAP_SIZE        = 200 * 1024 * 1024  # 200MB
-HEADER_SIZE      = 64
+MMAP_SIZE = 200 * 1024 * 1024  # 200MB
+HEADER_SIZE = 64
 
-HEADER_OFFSET    = 0
+HEADER_OFFSET = 0
 COMPLETED_OFFSET = HEADER_SIZE  # @64，快照数据起始
 
-MAGIC   = b'RCMQ'
+MAGIC = b'RCMQ'
 VERSION = 2
 
 # Header 内字段偏移
-_H_MAGIC          = 0   # 4B
-_H_VERSION        = 4   # 4B uint32
-_H_SNAPSHOT_LEN   = 8   # 4B uint32 — 快照 JSON 长度
-_H_SEQUENCE       = 12  # 4B uint32 — 写入序列号（单调递增）
+_H_MAGIC = 0  # 4B
+_H_VERSION = 4  # 4B uint32
+_H_SNAPSHOT_LEN = 8  # 4B uint32 — 快照 JSON 长度
+_H_SEQUENCE = 12  # 4B uint32 — 写入序列号（单调递增）
+
+
 # [16:64] 保留
 
 
@@ -132,15 +135,15 @@ class SharedStateWriter:
                 option_block_dict['block_id'] = _block_id_from_dict(option_block_dict)
 
             snapshot = {
-                "blocks": blocks,
-                "status_line": _component_to_dict(window.status_line) if window.status_line else None,
-                "bottom_bar": _component_to_dict(window.bottom_bar) if window.bottom_bar else None,
-                "agent_panel": agent_panel_dict,
-                "option_block": option_block_dict,
+                "blocks"         : blocks,
+                "status_line"    : _component_to_dict(window.status_line) if window.status_line else None,
+                "bottom_bar"     : _component_to_dict(window.bottom_bar) if window.bottom_bar else None,
+                "agent_panel"    : agent_panel_dict,
+                "option_block"   : option_block_dict,
                 "input_area_text": window.input_area_text,
-                "timestamp": window.timestamp,
-                "layout_mode": window.layout_mode,
-                "cli_type": getattr(window, "cli_type", "unknown"),
+                "timestamp"      : window.timestamp,
+                "layout_mode"    : window.layout_mode,
+                "cli_type"       : getattr(window, "cli_type", "unknown"),
             }
             data = json.dumps(snapshot, ensure_ascii=False).encode('utf-8')
 
@@ -178,7 +181,7 @@ class SharedStateReader:
     反映跨进程写入更新的问题。每次 read() 打开文件读取后关闭，保证读到最新数据。
     """
 
-    _EMPTY = {"blocks": [], "status_line": None, "bottom_bar": None, "option_block": None, "cli_type": "claude"}
+    _EMPTY = {"blocks": [], "status_line": None, "bottom_bar": None, "option_block": None, "cli_type": CliType.CLAUDE}
 
     def __init__(self, session_name: str):
         self._path = get_mq_path(session_name)

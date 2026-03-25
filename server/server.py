@@ -740,27 +740,44 @@ class OutputWatcher:
 # ── 全量快照架构 end ─────────────────────────────────────────────────────────
 
 
+from collections import deque
+
+
 class HistoryBuffer:
-    """环形历史缓冲区"""
+    """环形历史缓冲区
+
+    使用 collections.deque 的 maxlen 参数自动实现环形覆盖。
+    按 bytes 块存储，而非单个字节，避免 join 时类型问题。
+    """
 
     def __init__(self, max_size: int = HISTORY_BUFFER_SIZE):
-        self.max_size = max_size
-        self.buffer = bytearray()
+        self._max_size = max_size
+        self._buffer = deque()  # 存储 bytes 块
+        self._total_size = 0    # 总字节数
 
     def append(self, data: bytes):
-        """追加数据"""
-        self.buffer.extend(data)
-        # 超出大小时截断前面的数据
-        if len(self.buffer) > self.max_size:
-            self.buffer = self.buffer[-self.max_size:]
+        """追加数据，超出容量时自动丢弃最旧数据"""
+        if not data:
+            return
+        self._buffer.append(data)
+        self._total_size += len(data)
+        # 超出容量时丢弃最旧的数据
+        while self._total_size > self._max_size and self._buffer:
+            old = self._buffer.popleft()
+            self._total_size -= len(old)
 
     def get_all(self) -> bytes:
         """获取所有历史数据"""
-        return bytes(self.buffer)
+        return b''.join(self._buffer)
 
     def clear(self):
         """清空缓冲区"""
-        self.buffer.clear()
+        self._buffer.clear()
+        self._total_size = 0
+
+    def __len__(self) -> int:
+        """返回当前有效数据大小"""
+        return self._total_size
 
 
 class ClientConnection:
@@ -825,12 +842,12 @@ class ProxyServer:
     """Proxy Server"""
 
     def __init__(self, session_name: str, cli_args: list = None,
-                 cli_type: str = "claude",
+                 cli_type: CliType = CliType.CLAUDE,
                  cli_command: Optional[str] = None,
                  debug_screen: bool = False, debug_verbose: bool = False):
         self.session_name = session_name
         self.cli_args = cli_args or []
-        self.cli_type = cli_type
+        self.cli_type = cli_type if isinstance(cli_type, CliType) else CliType(cli_type)
         self.cli_command = cli_command  # 直接指定的 CLI 命令（优先级最高）
         self.debug_screen = debug_screen
         self.debug_verbose = debug_verbose
@@ -898,6 +915,9 @@ class ProxyServer:
 
         # 启动 PTY 读取任务
         asyncio.create_task(self._read_pty())
+
+        # 启动子进程监控任务
+        asyncio.create_task(self._monitor_child_process())
 
         # 切换到运行阶段日志
         self._switch_to_runtime_logging()
@@ -1078,6 +1098,33 @@ class ProxyServer:
             logger.info(f"{cli_label} 已启动 (PID: {pid}, PTY: {self.PTY_COLS}×{self.PTY_ROWS})")
 
     _COALESCE_MAX = 64 * 1024  # 64KB，防止单次广播过大
+
+    async def _monitor_child_process(self):
+        """监控子进程状态，如果子进程退出则触发 shutdown
+
+        与 _read_pty 逻辑一致：子进程退出后，_read_pty 会检测到 PTY 关闭并调用 _shutdown，
+        本任务作为补充，确保在 _read_pty 可能阻塞时也能检测到子进程退出。
+        """
+        while self.running and self.child_pid is not None:
+            try:
+                pid, status = os.waitpid(self.child_pid, os.WNOHANG)
+                if pid != 0:  # 子进程已退出
+                    exit_code = os.waitstatus_to_exitcode(status)
+                    logger.error(f"CLI 进程意外退出 (exit_code={exit_code})")
+                    await self._shutdown()
+                    return
+            except ChildProcessError:
+                logger.info("CLI 进程已退出（子进程已回收）")
+                await self._shutdown()
+                return
+            except ProcessLookupError:
+                logger.info("CLI 进程已退出（进程未找到）")
+                await self._shutdown()
+                return
+            except Exception as e:
+                logger.warning(f"监控子进程时发生错误: {e}")
+
+            await asyncio.sleep(1)  # 每 1 秒检查一次
 
     async def _read_pty(self):
         """读取 PTY 输出并广播"""
@@ -1260,7 +1307,7 @@ class ProxyServer:
 
 
 def run_server(session_name: str, cli_args: list = None,
-               cli_type: str = "claude",
+               cli_type: CliType = CliType.CLAUDE,
                cli_command: Optional[str] = None,
                debug_screen: bool = False, debug_verbose: bool = False):
     """运行服务器"""

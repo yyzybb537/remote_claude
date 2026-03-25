@@ -120,7 +120,7 @@ class TestCustomCommandsConfigDataClass:
         assert len(config.commands) == 2
 
     def test_get_command(self):
-        """测试 get_command 方法"""
+        """测试 get_command 方法（向后兼容）"""
         config = CustomCommandsConfig(
             enabled=True,
             commands=[
@@ -131,6 +131,20 @@ class TestCustomCommandsConfigDataClass:
         assert config.get_command("claude") == "/usr/local/bin/claude"
         assert config.get_command("codex") == "codex"
         assert config.get_command("unknown") is None
+
+    def test_get_command_by_cli_type(self):
+        """测试 get_command_by_cli_type 方法"""
+        config = CustomCommandsConfig(
+            enabled=True,
+            commands=[
+                CustomCommand("claude", "claude", "/usr/local/bin/claude"),
+                CustomCommand("codex", "codex", "/opt/codex"),
+            ]
+        )
+        # 使用 cli_type 匹配
+        assert config.get_command_by_cli_type("claude") == "/usr/local/bin/claude"
+        assert config.get_command_by_cli_type("codex") == "/opt/codex"
+        assert config.get_command_by_cli_type("unknown") is None
 
     def test_get_default_command(self):
         """测试 get_default_command 方法"""
@@ -244,10 +258,6 @@ class TestGetCliCommand:
                 assert cmd == "unknown"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__])
-
-
 class TestDirStartCallback:
     """测试 dir_start 回调处理"""
 
@@ -276,15 +286,17 @@ class TestDirStartCallback:
 
 
 class TestGetMatchingCommands:
-    """测试 _get_matching_commands 辅助函数"""
+    """测试 _get_matching_commands 辅助函数
+
+    注意：该函数已不再按 cli_type 过滤，返回所有自定义命令。
+    """
 
     def test_no_user_config(self):
-        """未启用自定义命令"""
+        """未启用自定义命令时返回默认命令"""
         from lark_client.card_builder import _get_matching_commands
 
         user_config = None
-        cli_type = "claude"
-        result = _get_matching_commands(user_config, cli_type)
+        result = _get_matching_commands(user_config)
         assert result == [{"name": "Claude", "command": "claude"}]
 
     def test_enabled_but_empty_list(self):
@@ -295,24 +307,11 @@ class TestGetMatchingCommands:
         user_config = Mock()
         user_config.ui_settings.custom_commands.is_visible.return_value = True
         user_config.ui_settings.custom_commands.commands = []
-        result = _get_matching_commands(user_config, "claude")
+        result = _get_matching_commands(user_config)
         assert result == []
 
-    def test_match_single_command(self):
-        """匹配单个命令"""
-        from lark_client.card_builder import _get_matching_commands
-        from unittest.mock import Mock
-
-        user_config = Mock()
-        user_config.ui_settings.custom_commands.is_visible.return_value = True
-        user_config.ui_settings.custom_commands.commands = [
-            CustomCommand(name="Claude", cli_type="claude", command="claude")
-        ]
-        result = _get_matching_commands(user_config, "claude")
-        assert result == [{"name": "Claude", "command": "claude"}]
-
-    def test_match_multiple_commands(self):
-        """匹配多个命令（同一 cli_type）"""
+    def test_returns_all_commands(self):
+        """返回所有命令（不再按 cli_type 过滤）"""
         from lark_client.card_builder import _get_matching_commands
         from unittest.mock import Mock
 
@@ -321,21 +320,27 @@ class TestGetMatchingCommands:
         user_config.ui_settings.custom_commands.commands = [
             CustomCommand(name="Claude", cli_type="claude", command="claude"),
             CustomCommand(name="Aider", cli_type="claude", command="aider --model claude-sonnet-4"),
+            CustomCommand(name="Codex", cli_type="codex", command="codex"),
         ]
-        result = _get_matching_commands(user_config, "claude")
-        assert len(result) == 2
+        result = _get_matching_commands(user_config)
+        assert len(result) == 3
         assert result[0]["name"] == "Claude"
         assert result[1]["name"] == "Aider"
+        assert result[2]["name"] == "Codex"
 
-    def test_no_matching_command(self):
-        """无匹配命令"""
+    def test_disabled_custom_commands(self):
+        """禁用自定义命令时返回默认命令"""
         from lark_client.card_builder import _get_matching_commands
         from unittest.mock import Mock
 
         user_config = Mock()
-        user_config.ui_settings.custom_commands.is_visible.return_value = True
+        user_config.ui_settings.custom_commands.is_visible.return_value = False
         user_config.ui_settings.custom_commands.commands = [
-            CustomCommand(name="Codex", cli_type="codex", command="codex")
+            CustomCommand(name="Claude", cli_type="claude", command="claude")
         ]
-        result = _get_matching_commands(user_config, "claude")
-        assert result == []
+        result = _get_matching_commands(user_config)
+        assert result == [{"name": "Claude", "command": "claude"}]
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

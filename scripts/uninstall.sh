@@ -4,32 +4,13 @@
 
 set -e
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-print_info() {
-    printf "${GREEN}ℹ${NC} %s\n" "$1"
-}
-
-print_success() {
-    printf "${GREEN}✓${NC} %s\n" "$1"
-}
-
-print_warning() {
-    printf "${YELLOW}⚠${NC} %s\n" "$1"
-}
-
-print_detail() {
-    printf "${BLUE}  %s${NC}\n" "$1"
-}
-
-# 获取脚本目录（符号链接解析）
+# 获取脚本目录（scripts/ 目录）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# 项目根目录
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 引入共享脚本（提供颜色定义、打印函数）
+. "$SCRIPT_DIR/_common.sh"
 
 # 1. 清理符号链接
 cleanup_symlinks() {
@@ -109,9 +90,9 @@ cleanup_virtual_env() {
     print_info "清理虚拟环境..."
 
     # 检查安装目录中的 .venv
-    if [ -d "$INSTALL_DIR/.venv" ]; then
-        rm -rf "$INSTALL_DIR/.venv"
-        print_success "已删除虚拟环境: $INSTALL_DIR/.venv"
+    if [ -d "$PROJECT_DIR/.venv" ]; then
+        rm -rf "$PROJECT_DIR/.venv"
+        print_success "已删除虚拟环境: $PROJECT_DIR/.venv"
     else
         print_detail "安装目录中没有虚拟环境"
     fi

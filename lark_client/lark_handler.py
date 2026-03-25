@@ -45,6 +45,7 @@ from utils.runtime_config import (
     set_bypass_enabled,
 )
 from utils.stats_helper import safe_track_stats as _safe_track_stats
+from utils.process import terminate_process
 
 
 def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
@@ -350,35 +351,43 @@ class LarkHandler:
             log_path = USER_DATA_DIR / "startup.log"
             start_time = _datetime.now()
 
-            with open(log_path, 'a') as stderr_fd:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=stderr_fd,
-                    start_new_session=True,
-                    cwd=work_dir,
-                    env=env,
-                )
+            proc = None  # 确保在 finally 中可访问
+            try:
+                with open(log_path, 'a') as stderr_fd:
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=stderr_fd,
+                        start_new_session=True,
+                        cwd=work_dir,
+                        env=env,
+                    )
 
-            socket_path = get_socket_path(session_name)
-            for i in range(120):
-                await asyncio.sleep(0.1)
-                if socket_path.exists():
-                    return True
-                if (i + 1) % 10 == 0:
-                    elapsed = (i + 1) // 10
-                    rc = proc.poll()
-                    if rc is not None:
-                        log_content = _read_log_since(start_time, log_path)
-                        logger.warning(f"会话启动失败: server 进程已退出 (exitcode={rc}, elapsed={elapsed}s)\n{log_content}")
-                        await card_service.send_text(chat_id, f"错误: Server 进程意外退出 (code={rc})\n\n{log_content}")
-                        return False
-                    logger.info(f"等待 server socket... ({elapsed}s)")
-            else:
-                log_content = _read_log_since(start_time, log_path)
-                logger.error(f"会话启动超时 (12s), session={session_name}\n{log_content}")
-                await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
-                return False
+                socket_path = get_socket_path(session_name)
+                for i in range(120):
+                    await asyncio.sleep(0.1)
+                    if socket_path.exists():
+                        return True
+                    if (i + 1) % 10 == 0:
+                        elapsed = (i + 1) // 10
+                        rc = proc.poll()
+                        if rc is not None:
+                            log_content = _read_log_since(start_time, log_path)
+                            logger.warning(f"会话启动失败: server 进程已退出 (exitcode={rc}, elapsed={elapsed}s)\n{log_content}")
+                            await card_service.send_text(chat_id, f"错误: Server 进程意外退出 (code={rc})\n\n{log_content}")
+                            return False
+                        logger.info(f"等待 server socket... ({elapsed}s)")
+                else:
+                    # 超时时终止子进程
+                    terminate_process(proc)
+                    log_content = _read_log_since(start_time, log_path)
+                    logger.error(f"会话启动超时 (12s), session={session_name}\n{log_content}")
+                    await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
+                    return False
+            except Exception as e:
+                # 异常时清理子进程
+                terminate_process(proc)
+                raise
 
         except Exception as e:
             logger.error(f"启动会话失败: {e}")

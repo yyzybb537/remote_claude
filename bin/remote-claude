@@ -1,5 +1,5 @@
-#!/bin/bash
-# remote-claude - Remote Claude 主命令入口
+#!/bin/sh
+# remote-claude - Remote Claude 主命令入口（POSIX sh 兼容）
 
 # 解析符号链接，兼容 macOS（不支持 readlink -f）
 SOURCE="$0"
@@ -25,7 +25,8 @@ if [ "$1" = "log" ]; then
         LOG_FILE="$LOG_DIR/${SESSION_SAFE}_messages.log"
     else
         # 找最后启动的 session（按创建时间排序，排除 lark.pid）
-        if [[ "$OSTYPE" == "darwin"* ]]; then
+        # 使用 uname 判断系统类型，兼容 POSIX sh
+        if uname | grep -q Darwin; then
             # macOS: stat -f "%B" 返回创建时间（秒）
             LATEST_PID=$(ls "$LOG_DIR"/_*.pid 2>/dev/null | while read f; do
                 stat -f "%B:%N" "$f" 2>/dev/null

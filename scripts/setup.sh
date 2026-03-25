@@ -1,47 +1,41 @@
-#!/bin/bash
+#!/bin/sh
+# setup.sh - 项目初始化脚本（POSIX sh 兼容，支持 sh/bash/zsh）
 
-# 脚本目录（全局变量）
+# 脚本目录（scripts/ 目录）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 项目根目录
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 颜色定义
-RED=$'\033[0;31m'
-GREEN=$'\033[0;32m'
-YELLOW=$'\033[1;33m'
-NC=$'\033[0m' # No Color
+# 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
+# 使用 . 而非 source，兼容 POSIX sh
+. "$SCRIPT_DIR/_common.sh"
 
-# 末尾汇总警告
-WARNINGS=()
-
-# 打印函数
-print_info() {
-    echo -e "${GREEN}ℹ${NC} $1"
+# 末尾汇总警告（使用简单变量，POSIX sh 不支持数组）
+WARNINGS_COUNT=0
+add_warning() {
+    WARNINGS_COUNT=$((WARNINGS_COUNT + 1))
+    eval "WARNING_${WARNINGS_COUNT}=\"\$1\""
 }
-
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}✗${NC} $1"
-}
-
-print_header() {
-    echo ""
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}$1${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
+print_warnings() {
+    if [ "$WARNINGS_COUNT" -gt 0 ]; then
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}⚠ 注意事项${NC}"
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        i=1
+        while [ "$i" -le "$WARNINGS_COUNT" ]; do
+            eval "w=\"\$WARNING_$i\""
+            echo -e "${YELLOW}⚠${NC} $w"
+            i=$((i + 1))
+        done
+        echo ""
+    fi
 }
 
 # 确保 ~/.local/bin 在 PATH 中
 setup_path() {
-    local PROFILE="$HOME/.bash_profile"
+    PROFILE="$HOME/.bash_profile"
     # 不存在则创建
-    [[ -f "$PROFILE" ]] || touch "$PROFILE"
+    [ -f "$PROFILE" ] || touch "$PROFILE"
 
     # 未写入 source .bashrc 则追加
     if ! grep -qF '.bashrc' "$PROFILE" 2>/dev/null; then
@@ -56,7 +50,7 @@ setup_path() {
     fi
 
     # 使当前脚本会话立即生效
-    source "$PROFILE" 2>/dev/null || true
+    . "$PROFILE" 2>/dev/null || true
     export PATH="$HOME/.local/bin:$PATH"
 }
 
@@ -65,7 +59,7 @@ check_os() {
     print_header "检查系统环境"
 
     OS=$(uname -s)
-    if [[ "$OS" != "Darwin" && "$OS" != "Linux" ]]; then
+    if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
         print_error "不支持的操作系统: $OS"
         print_error "Remote Claude 仅支持 macOS 和 Linux"
         exit 1
@@ -74,45 +68,21 @@ check_os() {
     print_success "操作系统: $OS"
 }
 
-# 检查 uv
+# 检查 uv（使用 _common.sh 中的函数）
 check_uv() {
     print_header "检查 uv"
 
-    local RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
-
-    # 1. 从 runtime.json 读取 uv_path（需 jq）
-    if [[ -f "$RUNTIME_FILE" ]] && command -v jq &> /dev/null; then
-        local UV_PATH=$(jq -r '.uv_path // empty' "$RUNTIME_FILE" 2>/dev/null)
-        if [[ -n "$UV_PATH" && -x "$UV_PATH" ]]; then
-            # 配置路径有效
-            print_success "uv（$UV_PATH）"
-            export PATH="$(dirname "$UV_PATH"):$PATH"
-            return
-        elif [[ -n "$UV_PATH" ]]; then
-            # 配置路径失效，清除并尝试系统 uv
-            print_warning "配置的 uv 路径失效（$UV_PATH），尝试系统 uv..."
-            # 清除失效路径
-            local TMP_FILE=$(mktemp)
-            jq '.uv_path = null' "$RUNTIME_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$RUNTIME_FILE"
-        fi
-    fi
-
-    # 2. 检测系统 uv
-    if command -v uv &> /dev/null; then
+    if check_and_install_uv; then
         UV_VERSION=$(uv --version)
         print_success "$UV_VERSION 已安装"
-        _save_uv_path
-        return
-    fi
-
-    # 3. 多来源安装
-    print_warning "未找到 uv，正在安装..."
-    _install_uv_multi_source
-
-    # 4. 安装成功后写入路径
-    if command -v uv &> /dev/null; then
-        print_success "uv 安装成功"
-        _save_uv_path
+        # 确保 ~/.local/bin 写入 shell rc
+        _RC=$(get_shell_rc)
+        if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
+            echo "" >> "$_RC"
+            echo "# uv" >> "$_RC"
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_RC"
+            print_success "已将 \$HOME/.local/bin 写入 $_RC"
+        fi
     else
         print_error "uv 安装失败，请手动安装："
         print_info "  pip3 install uv"
@@ -123,106 +93,19 @@ check_uv() {
     fi
 }
 
-_install_uv_multi_source() {
-    # 检测可用的 pip 命令
-    local PIP_CMD=""
-    if command -v pip3 &> /dev/null; then
-        PIP_CMD="pip3"
-    elif command -v pip &> /dev/null; then
-        PIP_CMD="pip"
-    fi
-
-    # 方式一：官方安装脚本（推荐，无需 Python）
-    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh 2>/dev/null; then
-        export PATH="$HOME/.local/bin:$PATH"
-    fi
-
-    # 方式二：pip + PyPI
-    if ! command -v uv &> /dev/null && [[ -n "$PIP_CMD" ]]; then
-        print_warning "尝试 pip 安装 uv（官方 PyPI）..."
-        ($PIP_CMD install uv --quiet 2>/dev/null || \
-         $PIP_CMD install uv --quiet --break-system-packages 2>/dev/null) && \
-            export PATH="$HOME/.local/bin:$PATH"
-    fi
-
-    # 方式三：pip + 清华镜像
-    if ! command -v uv &> /dev/null && [[ -n "$PIP_CMD" ]]; then
-        print_warning "尝试 pip 安装 uv（清华镜像）..."
-        ($PIP_CMD install uv --quiet \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-            --trusted-host pypi.tuna.tsinghua.edu.cn 2>/dev/null || \
-         $PIP_CMD install uv --quiet \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-            --trusted-host pypi.tuna.tsinghua.edu.cn \
-            --break-system-packages 2>/dev/null) && \
-            export PATH="$HOME/.local/bin:$PATH"
-    fi
-
-    # 方式四：conda/mamba
-    if ! command -v uv &> /dev/null; then
-        if command -v mamba &> /dev/null; then
-            print_warning "尝试 mamba 安装 uv..."
-            mamba install -c conda-forge uv -y --quiet 2>/dev/null || true
-        elif command -v conda &> /dev/null; then
-            print_warning "尝试 conda 安装 uv..."
-            conda install -c conda-forge uv -y --quiet 2>/dev/null || true
-        fi
-    fi
-
-    # 方式五：brew（macOS）
-    if ! command -v uv &> /dev/null && [[ "$OS" == "Darwin" ]] && command -v brew &> /dev/null; then
-        print_warning "尝试 brew install uv..."
-        brew install uv 2>/dev/null || true
-    fi
-}
-
-_save_uv_path() {
-    local UV_PATH=$(command -v uv 2>/dev/null)
-    if [[ -n "$UV_PATH" ]]; then
-        local RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
-        mkdir -p "$(dirname "$RUNTIME_FILE")"
-
-        if [[ -f "$RUNTIME_FILE" ]] && command -v jq &> /dev/null; then
-            # 更新现有文件
-            local TMP_FILE=$(mktemp)
-            jq --arg path "$UV_PATH" '.uv_path = $path' "$RUNTIME_FILE" > "$TMP_FILE" && \
-                mv "$TMP_FILE" "$RUNTIME_FILE"
-            print_info "已记录 uv 路径: $UV_PATH"
-        elif [[ ! -f "$RUNTIME_FILE" ]]; then
-            # 创建新文件
-            echo "{\"version\":\"1.0\",\"uv_path\":\"$UV_PATH\"}" > "$RUNTIME_FILE"
-            print_info "已记录 uv 路径: $UV_PATH"
-        fi
-
-        # 确保 ~/.local/bin 写入 shell rc
-        local _RC
-        if [[ -n "$ZSH_VERSION" ]] || [[ "$(basename "$SHELL")" == "zsh" ]]; then
-            _RC="$HOME/.zshrc"
-        else
-            _RC="$HOME/.bashrc"
-        fi
-        if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
-            echo "" >> "$_RC"
-            echo "# uv" >> "$_RC"
-            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_RC"
-            print_success "已将 \$HOME/.local/bin 写入 $_RC"
-        fi
-    fi
-}
-
 # 检查并安装 tmux（要求 3.6+）
 check_tmux() {
     print_header "检查 tmux"
 
     # CI 模式：跳过 tmux 版本检查（Docker 环境可能没有 sudo）
     if [ "$CI_MODE" = "true" ]; then
-        if command -v tmux &> /dev/null; then
+        if command -v tmux >/dev/null 2>&1; then
             TMUX_VERSION=$(tmux -V)
             print_success "$TMUX_VERSION 已安装（CI 模式跳过版本检查）"
             return
         else
             print_error "未找到 tmux"
-            WARNINGS+=("tmux 未安装，CI 模式跳过版本检查")
+            add_warning "tmux 未安装，CI 模式跳过版本检查"
             return
         fi
     fi
@@ -231,33 +114,33 @@ check_tmux() {
     REQUIRED_MINOR=6
 
     install_tmux() {
-        if [[ "$OS" == "Darwin" ]]; then
-            if ! command -v brew &> /dev/null; then
+        if [ "$OS" = "Darwin" ]; then
+            if ! command -v brew >/dev/null 2>&1; then
                 print_warning "未找到 Homebrew，正在自动安装..."
                 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
                 # 将 Homebrew 加入 PATH（Apple Silicon / Intel 路径不同）
-                if [[ -x "/opt/homebrew/bin/brew" ]]; then
+                if [ -x "/opt/homebrew/bin/brew" ]; then
                     eval "$(/opt/homebrew/bin/brew shellenv)"
-                elif [[ -x "/usr/local/bin/brew" ]]; then
+                elif [ -x "/usr/local/bin/brew" ]; then
                     eval "$(/usr/local/bin/brew shellenv)"
                 fi
-                if ! command -v brew &> /dev/null; then
+                if ! command -v brew >/dev/null 2>&1; then
                     print_error "Homebrew 安装失败，请手动安装后重试: https://brew.sh"
                     exit 1
                 fi
                 print_success "Homebrew 安装成功"
             fi
             brew install tmux 2>/dev/null || true
-        elif [[ "$OS" == "Linux" ]]; then
-            if command -v apt-get &> /dev/null; then
+        elif [ "$OS" = "Linux" ]; then
+            if command -v apt-get >/dev/null 2>&1; then
                 sudo apt-get update && sudo apt-get install -y tmux || true
-            elif command -v yum &> /dev/null; then
+            elif command -v yum >/dev/null 2>&1; then
                 sudo yum install -y tmux || true
-            elif command -v pacman &> /dev/null; then
+            elif command -v pacman >/dev/null 2>&1; then
                 sudo pacman -Sy --noconfirm tmux || true
-            elif command -v apk &> /dev/null; then
+            elif command -v apk >/dev/null 2>&1; then
                 sudo apk add --no-cache tmux || true
-            elif command -v zypper &> /dev/null; then
+            elif command -v zypper >/dev/null 2>&1; then
                 sudo zypper install -y tmux || true
             else
                 print_warning "无法识别包管理器，尝试从源码编译 tmux..."
@@ -269,72 +152,77 @@ check_tmux() {
     }
 
     install_tmux_from_source() {
-        local TMUX_VERSION_TAG="3.6a"
-        local TMUX_URL="https://github.com/tmux/tmux/releases/download/${TMUX_VERSION_TAG}/tmux-${TMUX_VERSION_TAG}.tar.gz"
+        TMUX_VERSION_TAG="3.6a"
+        TMUX_URL="https://github.com/tmux/tmux/releases/download/${TMUX_VERSION_TAG}/tmux-${TMUX_VERSION_TAG}.tar.gz"
 
         print_warning "包管理器版本不满足要求，尝试从源码编译 tmux ${TMUX_VERSION_TAG}..."
 
         # 安装编译依赖
-        if [[ "$OS" == "Darwin" ]]; then
+        if [ "$OS" = "Darwin" ]; then
             brew install libevent ncurses pkg-config bison 2>/dev/null || true
-        elif command -v apt-get &> /dev/null; then
+        elif command -v apt-get >/dev/null 2>&1; then
             sudo apt-get install -y build-essential libevent-dev libncurses5-dev libncursesw5-dev bison pkg-config || true
-        elif command -v yum &> /dev/null; then
+        elif command -v yum >/dev/null 2>&1; then
             sudo yum groupinstall -y "Development Tools" || true
             sudo yum install -y libevent-devel ncurses-devel bison || true
         fi
 
         # 确定安装前缀
-        local PREFIX="/usr/local"
+        PREFIX="/usr/local"
         if ! sudo -n true 2>/dev/null; then
             print_warning "无 sudo 权限，将安装到 \$HOME/.local"
             PREFIX="$HOME/.local"
         fi
 
         # 创建临时目录，编译完成后清理
-        local TMPDIR
         TMPDIR=$(mktemp -d)
-        trap "rm -rf '$TMPDIR'" RETURN
+        cleanup_tmpdir() {
+            rm -rf "$TMPDIR"
+        }
+        trap cleanup_tmpdir EXIT
 
         print_warning "下载 tmux-${TMUX_VERSION_TAG}.tar.gz..."
         if ! curl -fsSL "$TMUX_URL" -o "$TMPDIR/tmux.tar.gz"; then
             print_warning "下载失败，请检查网络或手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-            WARNINGS+=("tmux 源码下载失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+")
+            add_warning "tmux 源码下载失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
             return
         fi
 
         tar -xzf "$TMPDIR/tmux.tar.gz" -C "$TMPDIR"
-        local SRC_DIR
         SRC_DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "tmux-*" | head -1)
 
         print_warning "编译 tmux（可能需要几分钟）..."
-        if ! (cd "$SRC_DIR" && ./configure --prefix="$PREFIX" && make -j"$(nproc 2>/dev/null || echo 2)"); then
+        NPROC=$(nproc 2>/dev/null || echo 2)
+        if ! (cd "$SRC_DIR" && ./configure --prefix="$PREFIX" && make -j"$NPROC"); then
             print_warning "编译失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-            WARNINGS+=("tmux 源码编译失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+")
+            add_warning "tmux 源码编译失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
             return
         fi
 
-        if [[ "$PREFIX" == "/usr/local" ]]; then
-            sudo make -C "$SRC_DIR" install || { WARNINGS+=("tmux make install 失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"); return; }
-        else
-            make -C "$SRC_DIR" install || { WARNINGS+=("tmux make install 失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"); return; }
-            # 若 $HOME/.local/bin 不在 PATH 中，自动写入 shell 配置
-            if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-                export PATH="$HOME/.local/bin:$PATH"
-                local _RC
-                if [[ "$(basename "$SHELL")" == "zsh" ]]; then
-                    _RC="$HOME/.zshrc"
-                else
-                    _RC="$HOME/.bashrc"
-                fi
-                local _PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
-                if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
-                    echo "" >> "$_RC"
-                    echo "# remote-claude: tmux 路径" >> "$_RC"
-                    echo "$_PATH_LINE" >> "$_RC"
-                    print_success "已自动将 \$HOME/.local/bin 加入 PATH（写入 $_RC）"
-                fi
+        if [ "$PREFIX" = "/usr/local" ]; then
+            if ! sudo make -C "$SRC_DIR" install; then
+                add_warning "tmux make install 失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
+                return
             fi
+        else
+            if ! make -C "$SRC_DIR" install; then
+                add_warning "tmux make install 失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
+                return
+            fi
+            # 若 $HOME/.local/bin 不在 PATH 中，自动写入 shell 配置
+            case ":$PATH:" in
+                *":$HOME/.local/bin:"*) ;;
+                *)
+                    export PATH="$HOME/.local/bin:$PATH"
+                    _RC=$(get_shell_rc)
+                    if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
+                        echo "" >> "$_RC"
+                        echo "# remote-claude: tmux 路径" >> "$_RC"
+                        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_RC"
+                        print_success "已自动将 \$HOME/.local/bin 加入 PATH（写入 $_RC）"
+                    fi
+                    ;;
+            esac
         fi
 
         print_success "tmux ${TMUX_VERSION_TAG} 源码编译安装完成（前缀：${PREFIX}）"
@@ -342,19 +230,20 @@ check_tmux() {
 
     check_version() {
         # tmux -V 输出格式：tmux 3.6 或 tmux 3.4a
-        local ver_str
         ver_str=$(tmux -V | awk '{print $2}')
-        local major minor
         major=$(echo "$ver_str" | cut -d. -f1)
         minor=$(echo "$ver_str" | cut -d. -f2 | tr -dc '0-9')
-        if [[ "$major" -gt "$REQUIRED_MAJOR" ]] || \
-           [[ "$major" -eq "$REQUIRED_MAJOR" && "${minor:-0}" -ge "$REQUIRED_MINOR" ]]; then
+        [ -z "$minor" ] && minor=0
+        if [ "$major" -gt "$REQUIRED_MAJOR" ]; then
+            return 0
+        fi
+        if [ "$major" -eq "$REQUIRED_MAJOR" ] && [ "$minor" -ge "$REQUIRED_MINOR" ]; then
             return 0
         fi
         return 1
     }
 
-    if command -v tmux &> /dev/null; then
+    if command -v tmux >/dev/null 2>&1; then
         TMUX_VERSION=$(tmux -V)
         if check_version; then
             print_success "$TMUX_VERSION 已安装（满足 >= ${REQUIRED_MAJOR}.${REQUIRED_MINOR}）"
@@ -369,7 +258,7 @@ check_tmux() {
                     print_success "tmux 已升级至 $(tmux -V)"
                 else
                     print_warning "源码编译后版本仍不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-                    WARNINGS+=("tmux 版本不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+，请手动升级")
+                    add_warning "tmux 版本不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+，请手动升级"
                 fi
             else
                 print_success "tmux 已升级至 $(tmux -V)"
@@ -382,59 +271,57 @@ check_tmux() {
             install_tmux_from_source
             if ! check_version; then
                 print_warning "源码编译后版本仍不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-                WARNINGS+=("tmux 版本不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+，请手动升级")
+                add_warning "tmux 版本不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+，请手动升级"
             fi
         fi
     fi
 }
 
-# 检查 Claude CLI
-check_claude() {
-    print_header "检查 Claude CLI"
+# 检查 CLI 工具（Claude 或 Codex，至少需要一个）
+check_cli_tools() {
+    print_header "检查 CLI 工具"
 
-    if command -v claude &> /dev/null; then
+    has_claude=false
+    has_codex=false
+
+    if command -v claude >/dev/null 2>&1; then
+        has_claude=true
         print_success "Claude CLI 已安装"
-        return
     fi
 
-    print_warning "未找到 Claude CLI"
-    print_info "请访问 https://claude.ai/code 安装 Claude CLI"
-
-    if $NPM_MODE; then
-        print_info "（npm 模式：跳过交互，请安装后重新运行）"
-        return
-    fi
-
-    read -p "$(echo -e ${YELLOW}是否已安装 Claude CLI？${NC} [y/N]: )" -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_error "请先安装 Claude CLI 后再运行此脚本"
-        exit 1
-    fi
-
-    if ! command -v claude &> /dev/null; then
-        print_error "仍未找到 claude 命令，请检查安装或 PATH 配置"
-        exit 1
-    fi
-}
-
-# 检查 Codex CLI
-check_codex() {
-    print_header "检查 Codex CLI"
-
-    if command -v codex &> /dev/null; then
+    if command -v codex >/dev/null 2>&1; then
+        has_codex=true
         print_success "Codex CLI 已安装"
+    fi
+
+    if $has_claude || $has_codex; then
         return
     fi
 
-    print_warning "未找到 Codex CLI"
-    print_info "请运行以下命令安装 Codex CLI："
-    print_info "  npm install -g @openai/codex"
-    print_info "或访问 https://github.com/openai/codex 了解更多"
+    print_warning "未找到 Claude CLI 或 Codex CLI"
+    print_info "请至少安装以下其中一个："
+    print_info "  Claude CLI: https://claude.ai/code"
+    print_info "  Codex CLI:  npm install -g @openai/codex"
 
     if $NPM_MODE; then
         print_info "（npm 模式：跳过交互，请安装后重新运行）"
         return
+    fi
+
+    printf "%b" "${YELLOW}是否已安装 CLI 工具？${NC} [y/N]: "
+    read -r REPLY
+    echo
+    case "$REPLY" in
+        [Yy]*) ;;
+        *)
+            print_error "请先安装 Claude CLI 或 Codex CLI 后再运行此脚本"
+            exit 1
+            ;;
+    esac
+
+    if ! command -v claude >/dev/null 2>&1 && ! command -v codex >/dev/null 2>&1; then
+        print_error "仍未找到 claude 或 codex 命令，请检查安装或 PATH 配置"
+        exit 1
     fi
 }
 
@@ -447,10 +334,25 @@ install_dependencies() {
         exit 1
     fi
 
-    print_info "正在通过 uv 同步依赖..."
-    if $NPM_MODE; then
-        uv sync || { print_error "依赖安装失败"; exit 1; }
+    # 检测并配置 PyPI 镜像（按优先级：清华 > 阿里 > 官方）
+    mirror_url=""
+    mirror_name=""
+
+    # 检测清华镜像可达性
+    if curl -sSf --connect-timeout 3 "https://pypi.tuna.tsinghua.edu.cn/simple/" >/dev/null 2>&1; then
+        mirror_url="https://pypi.tuna.tsinghua.edu.cn/simple/"
+        mirror_name="清华"
+    # 检测阿里镜像可达性
+    elif curl -sSf --connect-timeout 3 "https://mirrors.aliyun.com/pypi/simple/" >/dev/null 2>&1; then
+        mirror_url="https://mirrors.aliyun.com/pypi/simple/"
+        mirror_name="阿里"
+    fi
+
+    if [ -n "$mirror_url" ]; then
+        print_info "使用 ${mirror_name}镜像加速..."
+        uv sync --index-url "$mirror_url" || { print_error "依赖安装失败"; exit 1; }
     else
+        print_info "使用官方 PyPI..."
         uv sync || { print_error "依赖安装失败"; exit 1; }
     fi
 
@@ -458,7 +360,7 @@ install_dependencies() {
 
     # 上报 init_install 事件（后台执行，不阻塞，失败静默）
     # 使用 uv run 确保使用项目虚拟环境中的 Python
-    uv run python3 scripts/report_install.py &>/dev/null &
+    uv run python3 scripts/report_install.py >/dev/null 2>&1 &
 }
 
 # 配置飞书环境
@@ -466,7 +368,7 @@ configure_lark() {
     print_header "配置飞书客户端"
 
     ENV_FILE="$HOME/.remote-claude/.env"
-    TEMPLATE_ENV="$SCRIPT_DIR/resources/defaults/.env.example"
+    TEMPLATE_ENV="$PROJECT_DIR/resources/defaults/.env.example"
     mkdir -p "$HOME/.remote-claude"
 
     # 迁移旧 .env（项目根目录）到新位置
@@ -485,20 +387,24 @@ configure_lark() {
         exit 1
     fi
 
-    read -p "$(echo -e ${YELLOW}是否需要配置飞书客户端？${NC} [y/N]: )" -n 1 -r
+    printf "%b" "${YELLOW}是否需要配置飞书客户端？${NC} [y/N]: "
+    read -r REPLY
     echo
 
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        cp "$TEMPLATE_ENV" "$ENV_FILE"
-        print_success ".env 文件已创建于 $ENV_FILE"
-        print_warning "请编辑 $ENV_FILE，填写以下信息："
-        print_info "  - FEISHU_APP_ID: 飞书应用的 App ID"
-        print_info "  - FEISHU_APP_SECRET: 飞书应用的 App Secret"
-        print_info ""
-        print_info "获取方式: 登录飞书开放平台 -> 创建应用 -> 凭证与基础信息"
-    else
-        print_info "跳过飞书配置（可稍后手动配置）"
-    fi
+    case "$REPLY" in
+        [Yy]*)
+            cp "$TEMPLATE_ENV" "$ENV_FILE"
+            print_success ".env 文件已创建于 $ENV_FILE"
+            print_warning "请编辑 $ENV_FILE，填写以下信息："
+            print_info "  - FEISHU_APP_ID: 飞书应用的 App ID"
+            print_info "  - FEISHU_APP_SECRET: 飞书应用的 App Secret"
+            print_info ""
+            print_info "获取方式: 登录飞书开放平台 -> 创建应用 -> 凭证与基础信息"
+            ;;
+        *)
+            print_info "跳过飞书配置（可稍后手动配置）"
+            ;;
+    esac
 }
 
 # 创建必要目录
@@ -523,15 +429,184 @@ create_directories() {
     fi
 }
 
+# 迁移旧通知/bypass 配置文件
+migrate_legacy_notify_files() {
+    print_header "迁移旧配置文件"
+
+    DATA_DIR="$HOME/.remote-claude"
+    CONFIG_FILE="$DATA_DIR/config.json"
+    RUNTIME_FILE="$DATA_DIR/runtime.json"
+
+    # 定义旧文件路径
+    LEGACY_NOTIFY_ENABLED="$DATA_DIR/ready_notify_enabled"
+    LEGACY_URGENT_ENABLED="$DATA_DIR/urgent_notify_enabled"
+    LEGACY_BYPASS_ENABLED="$DATA_DIR/bypass_enabled"
+    LEGACY_READY_COUNT="$DATA_DIR/ready_notify_count"
+
+    migrated_count=0
+    migrated_list=""
+
+    if [ -f "$LEGACY_NOTIFY_ENABLED" ] || [ -f "$LEGACY_URGENT_ENABLED" ] || [ -f "$LEGACY_BYPASS_ENABLED" ]; then
+        if command -v jq >/dev/null 2>&1; then
+            # 确保 config.json 存在
+            if [ ! -f "$CONFIG_FILE" ]; then
+                cp "$PROJECT_DIR/resources/defaults/config.default.json" "$CONFIG_FILE"
+                print_success "创建默认配置: $CONFIG_FILE"
+            fi
+
+            # 迁移 notify_enabled
+            if [ -f "$LEGACY_NOTIFY_ENABLED" ]; then
+                value=$(cat "$LEGACY_NOTIFY_ENABLED" 2>/dev/null | tr -d '[:space:]')
+                if [ "$value" = "1" ]; then
+                    tmp_file=$(mktemp)
+                    jq '.ui_settings.notify.ready_enabled = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                elif [ "$value" = "0" ]; then
+                    tmp_file=$(mktemp)
+                    jq '.ui_settings.notify.ready_enabled = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                fi
+                rm -f "$LEGACY_NOTIFY_ENABLED"
+                migrated_count=$((migrated_count + 1))
+                migrated_list="$migrated_list ready_notify_enabled"
+            fi
+
+            # 迁移 urgent_enabled
+            if [ -f "$LEGACY_URGENT_ENABLED" ]; then
+                value=$(cat "$LEGACY_URGENT_ENABLED" 2>/dev/null | tr -d '[:space:]')
+                if [ "$value" = "1" ]; then
+                    tmp_file=$(mktemp)
+                    jq '.ui_settings.notify.urgent_enabled = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                elif [ "$value" = "0" ]; then
+                    tmp_file=$(mktemp)
+                    jq '.ui_settings.notify.urgent_enabled = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                fi
+                rm -f "$LEGACY_URGENT_ENABLED"
+                migrated_count=$((migrated_count + 1))
+                migrated_list="$migrated_list urgent_notify_enabled"
+            fi
+
+            # 迁移 bypass_enabled
+            if [ -f "$LEGACY_BYPASS_ENABLED" ]; then
+                value=$(cat "$LEGACY_BYPASS_ENABLED" 2>/dev/null | tr -d '[:space:]')
+                if [ "$value" = "1" ]; then
+                    tmp_file=$(mktemp)
+                    jq '.ui_settings.bypass_enabled = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                elif [ "$value" = "0" ]; then
+                    tmp_file=$(mktemp)
+                    jq '.ui_settings.bypass_enabled = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                fi
+                rm -f "$LEGACY_BYPASS_ENABLED"
+                migrated_count=$((migrated_count + 1))
+                migrated_list="$migrated_list bypass_enabled"
+            fi
+
+            # 迁移 ready_notify_count 到 runtime.json
+            if [ -f "$LEGACY_READY_COUNT" ]; then
+                count=$(cat "$LEGACY_READY_COUNT" 2>/dev/null | tr -d '[:space:]')
+                if [ -n "$count" ] && _is_numeric "$count"; then
+                    # 确保 runtime.json 存在
+                    if [ ! -f "$RUNTIME_FILE" ]; then
+                        cp "$PROJECT_DIR/resources/defaults/runtime.default.json" "$RUNTIME_FILE"
+                        print_success "创建运行时配置: $RUNTIME_FILE"
+                    fi
+                    tmp_file=$(mktemp)
+                    jq --argjson count "$count" '.ready_notify_count = $count' "$RUNTIME_FILE" > "$tmp_file" && mv "$tmp_file" "$RUNTIME_FILE"
+                fi
+                rm -f "$LEGACY_READY_COUNT"
+                migrated_count=$((migrated_count + 1))
+                migrated_list="$migrated_list ready_notify_count"
+            fi
+
+            if [ "$migrated_count" -gt 0 ]; then
+                print_success "已迁移旧配置文件:$migrated_list"
+            fi
+        else
+            print_warning "未安装 jq，跳过旧配置文件迁移（程序启动时会自动迁移）"
+        fi
+    else
+        print_info "无旧配置文件需要迁移"
+    fi
+}
+
+# 迁移 CLAUDE_COMMAND 环境变量到自定义命令配置
+migrate_claude_command() {
+    print_header "迁移 CLAUDE_COMMAND 环境变量"
+
+    DATA_DIR="$HOME/.remote-claude"
+    CONFIG_FILE="$DATA_DIR/config.json"
+    ENV_FILE="$DATA_DIR/.env"
+
+    # 检查 .env 文件中是否存在 CLAUDE_COMMAND
+    claude_cmd=""
+    if [ -f "$ENV_FILE" ]; then
+        claude_cmd=$(grep -E "^CLAUDE_COMMAND=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    fi
+
+    # 如果没有在 .env 中找到，检查当前环境变量
+    if [ -z "$claude_cmd" ] && [ -n "$CLAUDE_COMMAND" ]; then
+        claude_cmd="$CLAUDE_COMMAND"
+    fi
+
+    if [ -z "$claude_cmd" ]; then
+        print_info "未检测到 CLAUDE_COMMAND 环境变量，跳过迁移"
+        return
+    fi
+
+    if [ "$claude_cmd" = "claude" ]; then
+        print_info "CLAUDE_COMMAND 为默认值 'claude'，无需迁移"
+        # 从 .env 中移除该行
+        if [ -f "$ENV_FILE" ]; then
+            tmp_file=$(mktemp)
+            grep -v "^CLAUDE_COMMAND=" "$ENV_FILE" > "$tmp_file" 2>/dev/null || true
+            mv "$tmp_file" "$ENV_FILE"
+            print_info "已从 .env 中移除 CLAUDE_COMMAND 配置"
+        fi
+        return
+    fi
+
+    # 需要迁移到 custom_commands 配置
+    if command -v jq >/dev/null 2>&1; then
+        # 确保 config.json 存在
+        if [ ! -f "$CONFIG_FILE" ]; then
+            cp "$PROJECT_DIR/resources/defaults/config.default.json" "$CONFIG_FILE"
+            print_success "创建默认配置: $CONFIG_FILE"
+        fi
+
+        # 检查 custom_commands 是否已配置
+        existing_cmd=$(jq -r '.ui_settings.custom_commands.commands[0].command // empty' "$CONFIG_FILE" 2>/dev/null)
+
+        if [ -n "$existing_cmd" ] && [ "$existing_cmd" != "claude" ]; then
+            print_info "custom_commands 已配置命令: $existing_cmd，跳过迁移"
+        else
+            # 更新 custom_commands 配置
+            tmp_file=$(mktemp)
+            jq --arg cmd "$claude_cmd" '
+                .ui_settings.custom_commands.enabled = true |
+                .ui_settings.custom_commands.commands[0].command = $cmd
+            ' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+            print_success "已迁移 CLAUDE_COMMAND='$claude_cmd' 到 custom_commands 配置"
+        fi
+
+        # 从 .env 中移除 CLAUDE_COMMAND 行
+        if [ -f "$ENV_FILE" ]; then
+            tmp_file=$(mktemp)
+            grep -v "^CLAUDE_COMMAND=" "$ENV_FILE" > "$tmp_file" 2>/dev/null || true
+            mv "$tmp_file" "$ENV_FILE"
+            print_info "已从 .env 中移除 CLAUDE_COMMAND 配置"
+        fi
+    else
+        print_warning "未安装 jq，跳过 CLAUDE_COMMAND 迁移（请手动配置 custom_commands）"
+    fi
+}
+
 # 初始化配置文件
 init_config_files() {
     print_header "初始化配置文件"
 
-    local CONFIG_FILE="$USER_DATA_DIR/config.json"
-    local RUNTIME_FILE="$USER_DATA_DIR/runtime.json"
-    local LEGACY_FILE="$USER_DATA_DIR/lark_group_mapping.json"
-    local CONFIG_TEMPLATE="$SCRIPT_DIR/resources/defaults/config.default.json"
-    local RUNTIME_TEMPLATE="$SCRIPT_DIR/resources/defaults/runtime.default.json"
+    CONFIG_FILE="$USER_DATA_DIR/config.json"
+    RUNTIME_FILE="$USER_DATA_DIR/runtime.json"
+    LEGACY_FILE="$USER_DATA_DIR/lark_group_mapping.json"
+    CONFIG_TEMPLATE="$PROJECT_DIR/resources/defaults/config.default.json"
+    RUNTIME_TEMPLATE="$PROJECT_DIR/resources/defaults/runtime.default.json"
 
     if [ ! -f "$CONFIG_TEMPLATE" ]; then
         print_error "未找到配置模板: $CONFIG_TEMPLATE"
@@ -563,14 +638,12 @@ init_config_files() {
     if [ -f "$LEGACY_FILE" ]; then
         print_info "检测到旧配置文件: $LEGACY_FILE"
         # 使用 jq 解析 JSON 并合并
-        if command -v jq &> /dev/null; then
+        if command -v jq >/dev/null 2>&1; then
             # 读取旧映射
-            local legacy_mappings
             legacy_mappings=$(cat "$LEGACY_FILE" 2>/dev/null)
             # 检查是否为有效 JSON 且非空
-            if echo "$legacy_mappings" | jq -e '.' > /dev/null 2>&1; then
+            if echo "$legacy_mappings" | jq -e '.' >/dev/null 2>&1; then
                 # 合并到 runtime.json（仅当 lark_group_mappings 为空时）
-                local runtime_lark_mappings
                 runtime_lark_mappings=$(jq '.lark_group_mappings' "$RUNTIME_FILE" 2>/dev/null)
                 if [ "$runtime_lark_mappings" = "{}" ] || [ "$runtime_lark_mappings" = "null" ]; then
                     # 合并映射
@@ -609,44 +682,38 @@ set_permissions() {
 configure_shell() {
     print_header "安装快捷命令"
 
-    chmod +x "$SCRIPT_DIR/bin/cla" "$SCRIPT_DIR/bin/cl" "$SCRIPT_DIR/bin/cx" "$SCRIPT_DIR/bin/cdx" "$SCRIPT_DIR/bin/remote-claude" 2>/dev/null || true
+    chmod +x "$PROJECT_DIR/bin/cla" "$PROJECT_DIR/bin/cl" "$PROJECT_DIR/bin/cx" "$PROJECT_DIR/bin/cdx" "$PROJECT_DIR/bin/remote-claude" 2>/dev/null || true
 
     # 优先 /usr/local/bin，权限不够则选 ~/bin 或 ~/.local/bin 中已在 PATH 里的
     BIN_DIR="/usr/local/bin"
-    if ! ln -sf "$SCRIPT_DIR/bin/cla" "$BIN_DIR/cla" 2>/dev/null; then
-        if [[ ":$PATH:" == *":$HOME/bin:"* ]]; then
+    if ! ln -sf "$PROJECT_DIR/bin/cla" "$BIN_DIR/cla" 2>/dev/null; then
+        if _path_contains "$HOME/bin"; then
             BIN_DIR="$HOME/bin"
-        elif [[ ":$PATH:" == *":$HOME/.local/bin:"* ]]; then
+        elif _path_contains "$HOME/.local/bin"; then
             BIN_DIR="$HOME/.local/bin"
         else
             BIN_DIR="$HOME/.local/bin"
             # 自动写入 PATH 到 shell 配置文件
             export PATH="$BIN_DIR:$PATH"
-            local _RC
-            if [[ -n "$ZSH_VERSION" ]] || [[ "$(basename "$SHELL")" == "zsh" ]]; then
-                _RC="$HOME/.zshrc"
-            else
-                _RC="$HOME/.bashrc"
-            fi
-            local _PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+            _RC=$(get_shell_rc)
             if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
                 echo "" >> "$_RC"
                 echo "# remote-claude: 快捷命令路径" >> "$_RC"
-                echo "$_PATH_LINE" >> "$_RC"
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_RC"
                 print_success "已自动将 \$HOME/.local/bin 加入 PATH（写入 $_RC）"
             fi
         fi
         mkdir -p "$BIN_DIR"
-        ln -sf "$SCRIPT_DIR/bin/cla"           "$BIN_DIR/cla"          2>/dev/null || true
-        ln -sf "$SCRIPT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
-        ln -sf "$SCRIPT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
-        ln -sf "$SCRIPT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
-        ln -sf "$SCRIPT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/cla"           "$BIN_DIR/cla"          2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
     else
-        ln -sf "$SCRIPT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
-        ln -sf "$SCRIPT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
-        ln -sf "$SCRIPT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
-        ln -sf "$SCRIPT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
+        ln -sf "$PROJECT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
     fi
 
     print_success "已安装 cla、cl、cx、cdx 和 remote-claude 到 $BIN_DIR"
@@ -657,15 +724,10 @@ configure_shell() {
     print_info "  remote-claude - Remote Claude 主命令（start/attach/list/kill/lark）"
 
     # 安装 shell 自动补全
-    local COMPLETION_LINE="source \"$SCRIPT_DIR/scripts/completion.sh\""
-    local SHELL_RC=""
-    if [[ -n "$ZSH_VERSION" ]] || [[ "$(basename "$SHELL")" == "zsh" ]]; then
-        SHELL_RC="$HOME/.zshrc"
-    else
-        SHELL_RC="$HOME/.bashrc"
-    fi
+    COMPLETION_LINE="source \"$PROJECT_DIR/completion.sh\""
+    SHELL_RC=$(get_shell_rc)
 
-    if [[ -f "$SHELL_RC" ]] && grep -qF "$SCRIPT_DIR/scripts/completion.sh" "$SHELL_RC" 2>/dev/null; then
+    if [ -f "$SHELL_RC" ] && grep -qF "$PROJECT_DIR/completion.sh" "$SHELL_RC" 2>/dev/null; then
         print_info "自动补全已配置（$SHELL_RC）"
     else
         echo "" >> "$SHELL_RC"
@@ -681,14 +743,17 @@ restart_lark_client() {
 
     LARK_PID_FILE="/tmp/remote-claude/lark.pid"
 
-    if [ ! -f "$LARK_PID_FILE" ] && ! pgrep -f "lark_client/main.py" &>/dev/null; then
+    if [ ! -f "$LARK_PID_FILE" ] && ! pgrep -f "lark_client/main.py" >/dev/null 2>&1; then
         print_info "飞书客户端未运行，跳过重启"
         return
     fi
 
     print_info "正在重启飞书客户端..."
-    cd "$SCRIPT_DIR"
-    uv run remote-claude lark restart || { WARNINGS+=("飞书客户端重启失败，请手动运行: uv run remote-claude lark restart"); return; }
+    cd "$PROJECT_DIR"
+    if ! uv run remote-claude lark restart; then
+        add_warning "飞书客户端重启失败，请手动运行: uv run remote-claude lark restart"
+        return
+    fi
     print_success "飞书客户端已重启"
 }
 
@@ -707,7 +772,7 @@ ${YELLOW}快捷命令：${NC}
 详细使用说明请阅读 README.md
 
 ${YELLOW}提示：${NC}请运行以下命令使 PATH 生效，或重新打开终端：
-  source ~/.bash_profile
+  . ~/.bash_profile
 
 EOF
 }
@@ -716,8 +781,10 @@ EOF
 main() {
     # 解析参数
     NPM_MODE=false
+    LAZY_MODE=false
     for arg in "$@"; do
-        [[ "$arg" == "--npm" ]] && NPM_MODE=true
+        [ "$arg" = "--npm" ] && NPM_MODE=true
+        [ "$arg" = "--lazy" ] && LAZY_MODE=true
     done
 
     # CI 模式：跳过 tmux 版本检查（CI 环境可能没有 sudo）
@@ -732,32 +799,34 @@ main() {
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
+    # 延迟初始化模式：只运行必要步骤
+    if $LAZY_MODE; then
+        setup_path
+        check_uv
+        install_dependencies
+        print_success "Python 环境初始化完成"
+        return 0
+    fi
+
     setup_path
     check_os
     check_uv
     check_tmux
-    check_claude
-    check_codex
+    check_cli_tools
     install_dependencies
     if ! $NPM_MODE; then
         configure_lark
     fi
     create_directories
     init_config_files
+    migrate_legacy_notify_files
+    migrate_claude_command
     set_permissions
     configure_shell
     restart_lark_client
     show_usage
 
-    if [ ${#WARNINGS[@]} -gt 0 ]; then
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${YELLOW}⚠ 注意事项${NC}"
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        for w in "${WARNINGS[@]}"; do
-            echo -e "${YELLOW}⚠${NC} $w"
-        done
-        echo ""
-    fi
+    print_warnings
 }
 
 # 运行主流程

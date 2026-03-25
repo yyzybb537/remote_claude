@@ -3,10 +3,12 @@
 便携式 Python 环境验证测试
 
 测试项目：
-1. .python-version 文件存在
+1. pyproject.toml 的 requires-python 配置
 2. uv 可用性
 3. 虚拟环境创建
 4. 核心模块导入
+
+注意：Python 版本由 uv 自动管理，无需 .python-version 文件
 """
 
 import sys
@@ -36,13 +38,19 @@ def test(name, fn):
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
-def test_python_version_file():
-    """测试 .python-version 文件存在"""
-    version_file = PROJECT_ROOT / ".python-version"
-    assert version_file.exists(), ".python-version 文件不存在"
-    with open(version_file) as f:
-        version = f.read().strip()
-    assert version == "3.11", f"预期版本 3.11，实际 {version}"
+def test_requires_python():
+    """测试 pyproject.toml 中的 requires-python 配置"""
+    import tomllib
+
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    assert pyproject.exists(), "pyproject.toml 不存在"
+
+    with open(pyproject, "rb") as f:
+        data = tomllib.load(f)
+
+    requires_python = data.get("project", {}).get("requires-python", "")
+    assert requires_python, "requires-python 未配置"
+    assert "3.11" in requires_python, f"预期 requires-python 包含 3.11，实际 {requires_python}"
 
 
 def test_uv_available():
@@ -66,7 +74,6 @@ def test_venv_creation():
         )
         # install.sh 应该成功
         print(f"  install.sh 退出码: {result.returncode}")
-
 
     assert venv_dir.exists(), "install.sh 运行后 .venv 仍不存在"
 
@@ -96,7 +103,7 @@ def main():
     print()
 
     # 运行测试
-    test("Python 版本文件", test_python_version_file)
+    test("requires-python 配置", test_requires_python)
     test("uv 可用性", test_uv_available)
     test("虚拟环境创建", test_venv_creation)
     test("核心模块导入", test_core_imports)

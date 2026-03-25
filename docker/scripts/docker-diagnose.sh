@@ -59,7 +59,7 @@ collect_dependency_versions() {
     echo "=== 依赖版本 ===" > "$DIAG_DIR/dependencies.txt"
 
     echo "Python:" >> "$DIAG_DIR/dependencies.txt"
-    python3 --version 2>&1 >> "$DIAG_DIR/dependencies.txt"
+    uv run python3 --version 2>&1 >> "$DIAG_DIR/dependencies.txt"
     echo "" >> "$DIAG_DIR/dependencies.txt"
 
     echo "Node.js:" >> "$DIAG_DIR/dependencies.txt"
@@ -110,16 +110,10 @@ collect_python_info() {
 
     echo "=== Python 包列表 ===" > "$DIAG_DIR/python.txt"
 
-    # 全局包
-    echo "--- 全局包 ---" >> "$DIAG_DIR/python.txt"
-    pip3 list 2>&1 >> "$DIAG_DIR/python.txt"
+    # 项目虚拟环境包（uv 管理）
+    echo "--- 项目依赖 ---" >> "$DIAG_DIR/python.txt"
+    uv pip list 2>&1 >> "$DIAG_DIR/python.txt"
     echo "" >> "$DIAG_DIR/python.txt"
-
-    # 虚拟环境包
-    if [ -d "$RESULTS_DIR/npm-install/node_modules/remote-claude/.venv" ]; then
-        echo "--- 虚拟环境包 ---" >> "$DIAG_DIR/python.txt"
-        "$RESULTS_DIR/npm-install/node_modules/remote-claude/.venv/bin/pip" list 2>&1 >> "$DIAG_DIR/python.txt"
-    fi
 
     log_success "Python 包信息已收集"
 }
@@ -217,20 +211,15 @@ collect_errors() {
     echo "--- 依赖检查 ---" >> "$error_log"
     echo "检查关键依赖..." >> "$error_log"
 
-    local py_cmd="python3"
-    if [ -f "$RESULTS_DIR/npm-install/node_modules/remote-claude/.venv/bin/python" ]; then
-        py_cmd="$RESULTS_DIR/npm-install/node_modules/remote-claude/.venv/bin/python"
-    fi
-
-    if ! $py_cmd -c "import lark_oapi" 2>&1; then
+    if ! uv run python3 -c "import lark_oapi" 2>&1; then
         echo "✗ lark_oapi 未安装" >> "$error_log"
     fi
 
-    if ! $py_cmd -c "import dotenv" 2>&1; then
+    if ! uv run python3 -c "import dotenv" 2>&1; then
         echo "✗ python-dotenv 未安装" >> "$error_log"
     fi
 
-    if ! $py_cmd -c "import pyte" 2>&1; then
+    if ! uv run python3 -c "import pyte" 2>&1; then
         echo "✗ pyte 未安装" >> "$error_log"
     fi
 
