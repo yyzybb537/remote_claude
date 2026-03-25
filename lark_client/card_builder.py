@@ -662,6 +662,13 @@ def _render_block_colored(block_dict: dict) -> Optional[str]:
         content_md = _ansi_to_lark_md(ansi_content) if ansi_content else _escape_md(content)
         return f"{ind_md} {content_md}"
 
+    elif typ == "AutoAnswerBlock":
+        # 自动应答记录
+        content = block_dict.get("content", "")
+        if not content:
+            return None
+        return f"⏱ {_escape_md(content)}"
+
     return None
 
 
@@ -983,8 +990,12 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
             is_current = (name == current_session)
 
             # CLI 类型颜色和标签：Claude=黄色，Codex=绿色
-            cli_color = "yellow" if cli_type == str(CliType.CLAUDE) else "green"
-            cli_label = CLI_NAMES.get(CliType(cli_type), "Claude")
+            try:
+                cli_type_enum = CliType(cli_type)
+            except ValueError:
+                cli_type_enum = CliType.CLAUDE
+            cli_color = "yellow" if cli_type_enum == CliType.CLAUDE else "green"
+            cli_label = CLI_NAMES.get(cli_type_enum, "Claude")
 
             status_icon = "🟢" if is_current else "⚪"
             current_label = "（当前）" if is_current else ""
