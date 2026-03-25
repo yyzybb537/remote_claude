@@ -844,7 +844,10 @@ class ProxyServer:
     def __init__(self, session_name: str, cli_args: list = None,
                  cli_type: CliType = CliType.CLAUDE,
                  cli_command: Optional[str] = None,
-                 debug_screen: bool = False, debug_verbose: bool = False):
+                 debug_screen: bool = False, debug_verbose: bool = False,
+                 enable_remote: bool = False,
+                 remote_host: str = "0.0.0.0",
+                 remote_port: int = 8765):
         self.session_name = session_name
         self.cli_args = cli_args or []
         self.cli_type = cli_type if isinstance(cli_type, CliType) else CliType(cli_type)
@@ -853,6 +856,13 @@ class ProxyServer:
         self.debug_verbose = debug_verbose
         self.socket_path = get_socket_path(session_name)
         self.pid_file = get_pid_file(session_name)
+
+        # WebSocket 远程连接支持
+        self.enable_remote = enable_remote
+        self.remote_host = remote_host
+        self.remote_port = remote_port
+        self.ws_handler: Optional['WebSocketHandler'] = None
+        self._shutdown_event = asyncio.Event()
 
         # PTY 相关
         self.master_fd: Optional[int] = None
@@ -918,6 +928,20 @@ class ProxyServer:
 
         # 启动子进程监控任务
         asyncio.create_task(self._monitor_child_process())
+
+        # 启动 WebSocket Server（如果启用）
+        if self.enable_remote:
+            from server.ws_handler import WebSocketHandler
+
+            self.ws_handler = WebSocketHandler(self, self.session_name)
+
+            # 输出 token
+            token = self.ws_handler.token_manager.get_or_create_token()
+            print(f"\nRemote token: {token}")
+            print(f"WebSocket: ws://{self.remote_host}:{self.remote_port}/ws?session={self.session_name}&token={token}\n")
+
+            # 启动 WebSocket Server（在后台任务中）
+            asyncio.create_task(self._run_websocket_server())
 
         # 切换到运行阶段日志
         self._switch_to_runtime_logging()
@@ -1126,6 +1150,20 @@ class ProxyServer:
 
             await asyncio.sleep(1)  # 每 1 秒检查一次
 
+    async def _run_websocket_server(self):
+        """运行 WebSocket Server"""
+        import websockets
+
+        async with websockets.serve(
+            self.ws_handler.handle_connection,
+            self.remote_host,
+            self.remote_port,
+            ping_interval=30,
+            ping_timeout=60,
+        ):
+            # 等待关闭信号
+            await self._shutdown_event.wait()
+
     async def _read_pty(self):
         """读取 PTY 输出并广播"""
         loop = asyncio.get_event_loop()
@@ -1272,9 +1310,16 @@ class ProxyServer:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+        # 同时广播到 WebSocket 客户端
+        if self.ws_handler:
+            await self.ws_handler.broadcast_to_ws(data)
+
     async def _shutdown(self):
         """关闭服务器"""
         self.running = False
+
+        # 通知 WebSocket Server 关闭
+        self._shutdown_event.set()
 
         # 关闭所有客户端
         for client in list(self.clients.values()):
@@ -1309,12 +1354,18 @@ class ProxyServer:
 def run_server(session_name: str, cli_args: list = None,
                cli_type: CliType = CliType.CLAUDE,
                cli_command: Optional[str] = None,
-               debug_screen: bool = False, debug_verbose: bool = False):
+               debug_screen: bool = False, debug_verbose: bool = False,
+               enable_remote: bool = False,
+               remote_host: str = "0.0.0.0",
+               remote_port: int = 8765):
     """运行服务器"""
     server = ProxyServer(session_name, cli_args,
                          cli_type=cli_type,
                          cli_command=cli_command,
-                         debug_screen=debug_screen, debug_verbose=debug_verbose)
+                         debug_screen=debug_screen, debug_verbose=debug_verbose,
+                         enable_remote=enable_remote,
+                         remote_host=remote_host,
+                         remote_port=remote_port)
 
     # 信号处理
     def signal_handler(signum, frame):
