@@ -58,17 +58,96 @@ print_header() {
     echo ""
 }
 
-# 从项目 .python-version 读取 Python 版本
-PYTHON_VERSION_FILE="/project/.python-version"
-if [ ! -f "$PYTHON_VERSION_FILE" ]; then
-    echo -e "${RED}[ERROR]${NC} 未找到 .python-version 文件: $PYTHON_VERSION_FILE"
-    exit 1
-fi
-PYTHON_VERSION=$(cat "$PYTHON_VERSION_FILE")
-if [ -z "$PYTHON_VERSION" ]; then
-    echo -e "${RED}[ERROR]${NC} .python-version 文件为空"
-    exit 1
-fi
+# ============== 会话测试辅助函数 ==============
+
+# 清理会话和相关资源
+# 参数: $1 = session_name
+cleanup_session() {
+    local session="$1"
+    uv run remote-claude kill "$session" > /dev/null 2>&1 || true
+    tmux kill-session -t "rc-$session" 2>/dev/null || true
+}
+
+# 输出诊断日志
+# 参数: $1 = session_name, $2 = log_file_path (可选)
+print_session_diagnostics() {
+    local session="$1"
+    local log_file="$2"
+
+    if [[ -n "$log_file" && -f "$log_file" ]]; then
+        log_info "=== $(basename "$log_file") ==="
+        cat "$log_file"
+    fi
+
+    local server_log="$HOME/.remote-claude/startup.log"
+    if [[ -f "$server_log" ]]; then
+        log_info "=== startup.log（最后 20 行）==="
+        tail -20 "$server_log"
+    fi
+}
+
+# 验证会话启动成功
+# 参数: $1 = session_name, $2 = timeout_seconds, $3 = cli_type (可选: claude/codex)
+# 返回: 0 成功, 1 失败
+verify_session_startup() {
+    local session="$1"
+    local timeout_sec="${2:-20}"
+    local cli_type="${3:-claude}"
+    local socket_path="/tmp/remote-claude/${session}.sock"
+    local log_file="$RESULTS_DIR/start_${session}.log"
+
+    # 清理残留会话
+    cleanup_session "$session"
+
+    # 构建 start 命令
+    local start_cmd="uv run remote-claude start '$session'"
+    if [[ "$cli_type" == "codex" ]]; then
+        start_cmd="uv run remote-claude start '$session' --cli codex"
+    fi
+
+    log_info "启动 $cli_type 会话 '$session'（限时 ${timeout_sec}s）..."
+
+    # 执行 start 命令（使用 bash -c 确保正确解析引号）
+    timeout "$timeout_sec" bash -c "$start_cmd" > "$log_file" 2>&1
+    local rc=$?
+
+    # 检查返回值
+    if [[ $rc -ne 124 ]]; then
+        # 非 timeout 退出 = 启动失败
+        log_error "$cli_type 会话 '$session' 在 ${timeout_sec}s 内意外退出（rc=$rc）"
+        report "✗ $cli_type start 意外退出（rc=$rc）"
+        print_session_diagnostics "$session" "$log_file"
+        cleanup_session "$session"
+        return 1
+    fi
+
+    log_info "$cli_type 会话 '$session' ${timeout_sec}s 后仍在运行（符合预期），验证 socket..."
+
+    # 验证 socket
+    if [[ ! -S "$socket_path" ]]; then
+        log_error "socket 文件不存在: $socket_path"
+        report "✗ $cli_type start：socket 未创建"
+        print_session_diagnostics "$session" "$log_file"
+        cleanup_session "$session"
+        return 1
+    fi
+    log_success "socket 已创建: $socket_path"
+
+    # 验证会话在 list 中可见
+    local list_out
+    list_out=$(uv run remote-claude list 2>&1)
+    if echo "$list_out" | grep -q "$session"; then
+        log_success "会话 '$session' 在 list 中可见"
+        report "✓ $cli_type start 成功：socket 就绪，会话可见"
+        return 0
+    else
+        log_error "会话 '$session' 在 list 中不可见"
+        log_info "list 输出：$list_out"
+        report "✗ $cli_type start：会话在 list 中不可见"
+        cleanup_session "$session"
+        return 1
+    fi
+}
 
 # 步骤 1：环境检查
 check_environment() {
@@ -83,12 +162,19 @@ check_environment() {
         return 1
     fi
 
-    # Python 版本
-    if uv run --python "$PYTHON_VERSION" python3 --version &> /dev/null; then
-        PYTHON_VER=$(uv run --python "$PYTHON_VERSION" python3 --version)
+    # Python 版本 - 检查系统 Python 或 uv 管理的 Python
+    # 优先检查 uv 是否能找到 Python（可能是系统 Python 或已安装的）
+    PYTHON_VER=""
+    if uv python find &> /dev/null; then
+        PYTHON_VER=$(uv run python3 --version 2>/dev/null || uv python find --system 2>/dev/null | head -1)
+    elif command -v python3 &> /dev/null; then
+        PYTHON_VER=$(python3 --version 2>/dev/null)
+    fi
+
+    if [ -n "$PYTHON_VER" ]; then
         log_success "Python: $PYTHON_VER"
     else
-        log_error "未找到 Python, 输出为：$(uv run --python "$PYTHON_VERSION" python3 --version)"
+        log_error "未找到 Python"
         return 1
     fi
 
@@ -174,8 +260,7 @@ simulate_install() {
 
     log_info "在临时目录安装 npm 包..."
 
-    # 使用 CN 镜像地址，可选
-    if npm install "$pack_file" --registry=https://registry.npmmirror.com  > "$RESULTS_DIR/npm_install.log" 2>&1; then
+    if npm install "$pack_file" > "$RESULTS_DIR/npm_install.log" 2>&1; then
         log_success "npm install 成功"
     else
         log_error "npm install 失败"
@@ -214,24 +299,24 @@ verify_postinstall() {
         return 1
     fi
 
-    # 检查 Python 依赖
+    # 检查 Python 依赖（使用项目已有的 .venv 虚拟环境）
     log_info "检查 Python 依赖安装..."
 
-    if uv run --python "$PYTHON_VERSION" python3 -c "import lark_oapi" 2>/dev/null; then
+    if uv run python3 -c "import lark_oapi" 2>/dev/null; then
         log_success "lark-oapi 已安装"
     else
         log_error "lark-oapi 未安装"
         return 1
     fi
 
-    if uv run --python "$PYTHON_VERSION" python3 -c "import dotenv" 2>/dev/null; then
+    if uv run python3 -c "import dotenv" 2>/dev/null; then
         log_success "python-dotenv 已安装"
     else
         log_error "python-dotenv 未安装"
         return 1
     fi
 
-    if uv run --python "$PYTHON_VERSION" python3 -c "import pyte" 2>/dev/null; then
+    if uv run python3 -c "import pyte" 2>/dev/null; then
         log_success "pyte 已安装"
     else
         log_error "pyte 未安装"
@@ -286,103 +371,61 @@ EOF
         log_success "lark start 在 20s 内退出（rc=$rc），不存在无限卡死"
     fi
 
-    # 5-4：验证 remote-claude start 能成功启动会话
-    # 判断逻辑：
-    #   - start = 启动 server（tmux）+ attach client，正常运行时会阻塞等待 Claude 交互
-    #   - 若 20s 内自然退出 → 说明启动失败，捕获日志报错
-    #   - 若 20s 超时仍在运行 → 再检查 socket 和 remote-claude list，均正常才算成功
-    log_info "验证 remote-claude start 能成功启动会话（预期 20s 内不退出）..."
-
+    # 5-4：验证 remote-claude start 能成功启动 Claude 会话
     local session="docker-test-session"
-    local socket_path="/tmp/remote-claude/${session}.sock"
-    # 清理可能残留的同名会话
-    uv run remote-claude kill "$session" > /dev/null 2>&1 || true
-    tmux kill-session -t "rc-$session" 2>/dev/null || true
-
-    # 启动会话，限时 20s；正常情况下 Claude 运行中，timeout 会触发（rc=124）
-    timeout 20 uv run remote-claude start "$session" \
-        > "$RESULTS_DIR/start_session.log" 2>&1
-    local rc=$?
-
-    if [ $rc -ne 124 ]; then
-        # 20s 内自然退出 → 启动失败，输出日志诊断
-        log_error "start 命令在 20s 内意外退出（rc=$rc），启动失败"
-        report "✗ start 命令意外退出（rc=$rc）"
-        log_info "=== start_session.log ==="
-        cat "$RESULTS_DIR/start_session.log"
-        # 打印 server 日志辅助诊断
-        local server_log="$HOME/.remote-claude/startup.log"
-        if [ -f "$server_log" ]; then
-            log_info "=== startup.log（最后 20 行）==="
-            tail -20 "$server_log"
-        fi
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
+    if ! verify_session_startup "$session" 20 "claude"; then
         return 1
     fi
+    cleanup_session "$session"
 
-    # timeout 触发（rc=124）→ 命令仍在运行，检查 socket 和会话列表
-    log_info "start 命令 20s 后仍在运行（符合预期），检查 socket 和会话列表..."
-
-    if [ ! -S "$socket_path" ]; then
-        log_error "socket 文件不存在: $socket_path"
-        report "✗ start 命令：socket 未创建"
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
-        return 1
-    fi
-    log_success "socket 文件已存在: $socket_path"
-
-    local list_out
-    list_out=$(uv run remote-claude list 2>&1)
-    if echo "$list_out" | grep -q "$session"; then
-        log_success "remote-claude list 中可见会话: $session"
-        report "✓ start 命令成功：socket 就绪，会话可见"
-    else
-        log_error "remote-claude list 中未找到会话: $session"
-        log_info "list 输出：$list_out"
-        report "✗ start 命令：会话在 list 中不可见"
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
-        return 1
-    fi
-
-    # 清理测试会话
-    uv run remote-claude kill "$session" > /dev/null 2>&1 || true
-
-    # 5-5：负面测试——自定义命令配置为不存在的命令，验证测试能检测到启动失败
+    # 5-5：负面测试——自定义命令配置为不存在的命令，验证能检测到启动失败
     log_info "负面测试：配置不存在的命令应导致 start 在 20s 内失败退出..."
 
-    # 在 config.json 中设置无效命令
     local config_file="$HOME/.remote-claude/config.json"
-    if command -v jq &> /dev/null && [[ -f "$config_file" ]]; then
-        local tmp_file=$(mktemp)
-        jq '.ui_settings.custom_commands.enabled = true | .ui_settings.custom_commands.commands[0].command = "claudeyy"' \
-            "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+    local backup_config=""
+
+    # 备份原始配置
+    if [[ -f "$config_file" ]]; then
+        backup_config=$(cat "$config_file")
     fi
 
-    # 使用不同的会话名，避免与正常测试冲突
-    local negative_session="docker-negative-test"
-    # 清理同名残留会话
-    uv run remote-claude kill "$negative_session" > /dev/null 2>&1 || true
-    tmux kill-session -t "rc-$negative_session" 2>/dev/null || true
+    # 配置无效命令：设置一个完全不存在的命令路径
+    # 关键：必须让系统无法找到命令，而不是仅修改 command 字段
+    if ! command -v jq &> /dev/null; then
+        log_error "jq 未安装，无法执行负面测试"
+        report "✗ 负面测试：失败（jq 未安装）"
+        return 1
+    fi
 
-    timeout 20 uv run remote-claude start "$negative_session" \
-        > "$RESULTS_DIR/start_fail.log" 2>&1
+    if [[ ! -f "$config_file" ]]; then
+        log_error "config.json 不存在，无法执行负面测试"
+        report "✗ 负面测试：失败（config.json 不存在）"
+        return 1
+    fi
+
+    local tmp_file=$(mktemp)
+    # 设置 enabled=true，并将命令改为一个不存在的绝对路径
+    jq '.ui_settings.custom_commands.enabled = true | .ui_settings.custom_commands.commands = [{"name": "Invalid", "cli_type": "claude", "command": "/nonexistent/path/to/claude-invalid", "description": "Invalid command for testing"}]' \
+        "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+
+    local negative_session="docker-negative-test"
+    cleanup_session "$negative_session"
+
+    local fail_log="$RESULTS_DIR/start_fail.log"
+    timeout 20 uv run remote-claude start "$negative_session" > "$fail_log" 2>&1
     local fail_rc=$?
 
-    # 还原 config.json（恢复默认命令）
-    if command -v jq &> /dev/null && [[ -f "$config_file" ]]; then
-        local tmp_file=$(mktemp)
-        jq '.ui_settings.custom_commands.enabled = false | .ui_settings.custom_commands.commands[0].command = "claude"' \
-            "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+    # 还原配置
+    if [[ -n "$backup_config" ]]; then
+        echo "$backup_config" > "$config_file"
     fi
 
-    # 清理负面测试会话
-    uv run remote-claude kill "$negative_session" > /dev/null 2>&1 || true
-    tmux kill-session -t "rc-$negative_session" 2>/dev/null || true
+    cleanup_session "$negative_session"
 
+    # 验证负面测试结果
     if [ $fail_rc -eq 124 ]; then
         log_error "负面测试失败：无效命令配置时 start 未在 20s 内退出"
-        log_info "=== start_fail.log ==="
-        cat "$RESULTS_DIR/start_fail.log"
+        print_session_diagnostics "$negative_session" "$fail_log"
         report "✗ 负面测试：无效命令未被检测到"
         return 1
     elif [ $fail_rc -eq 0 ]; then
@@ -395,55 +438,11 @@ EOF
     fi
 
     # 5-6：验证 remote-claude start --cli codex 能成功启动 Codex 会话
-    log_info "验证 remote-claude start --cli codex 能成功启动会话（预期 20s 内不退出）..."
-
     local codex_session="docker-codex-session"
-    local codex_socket="/tmp/remote-claude/${codex_session}.sock"
-    uv run remote-claude kill "$codex_session" > /dev/null 2>&1 || true
-    tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
-
-    timeout 20 uv run remote-claude start "$codex_session" --cli codex \
-        > "$RESULTS_DIR/start_codex.log" 2>&1
-    local codex_rc=$?
-
-    if [ $codex_rc -ne 124 ]; then
-        log_error "Codex start 在 20s 内意外退出（rc=$codex_rc），启动失败"
-        report "✗ Codex start 意外退出（rc=$codex_rc）"
-        log_info "=== start_codex.log ==="
-        cat "$RESULTS_DIR/start_codex.log"
-        local server_log="$HOME/.remote-claude/startup.log"
-        if [ -f "$server_log" ]; then
-            log_info "=== startup.log（最后 20 行）==="
-            tail -20 "$server_log"
-        fi
-        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+    if ! verify_session_startup "$codex_session" 20 "codex"; then
         return 1
     fi
-
-    log_info "Codex start 20s 后仍在运行（符合预期），检查 socket 和会话列表..."
-
-    if [ ! -S "$codex_socket" ]; then
-        log_error "Codex socket 不存在: $codex_socket"
-        report "✗ Codex start：socket 未创建"
-        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
-        return 1
-    fi
-    log_success "Codex socket 已存在: $codex_socket"
-
-    local codex_list_out
-    codex_list_out=$(uv run remote-claude list 2>&1)
-    if echo "$codex_list_out" | grep -q "$codex_session"; then
-        log_success "remote-claude list 中可见 Codex 会话: $codex_session"
-        report "✓ Codex start 成功：socket 就绪，会话可见"
-    else
-        log_error "remote-claude list 中未找到 Codex 会话: $codex_session"
-        log_info "list 输出：$codex_list_out"
-        report "✗ Codex start：会话在 list 中不可见"
-        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
-        return 1
-    fi
-
-    uv run remote-claude kill "$codex_session" > /dev/null 2>&1 || true
+    cleanup_session "$codex_session"
 }
 
 # 步骤 6：测试基本命令
@@ -563,6 +562,7 @@ run_unit_tests() {
         "tests/test_runtime_config.py"
         "tests/test_biz_enum.py"
         "tests/test_custom_commands.py"
+        "tests/test_history_buffer.py"
     )
 
     # 非核心测试列表（失败继续）
@@ -583,24 +583,71 @@ run_unit_tests() {
     local unit_passed=0
     local unit_total=0
 
+    # 检查是否启用并行测试
+    local parallel_jobs=1
+    if [ "${TEST_PARALLEL:-false}" = "true" ] && command -v parallel &> /dev/null; then
+        parallel_jobs=4
+        log_info "启用并行测试（$parallel_jobs 线程）..."
+    elif [ "${TEST_PARALLEL:-false}" = "true" ]; then
+        log_info "未找到 GNU parallel，使用串行执行（安装: apt-get install parallel）"
+    fi
+
+    # 执行单个测试的函数
+    run_single_test() {
+        local test="$1"
+        local test_type="$2"
+        local log_file="$RESULTS_DIR/$(basename "$test" .py).log"
+
+        if uv run python3 "$test" > "$log_file" 2>&1; then
+            echo "PASS:$test:$test_type"
+        else
+            echo "FAIL:$test:$test_type"
+        fi
+    }
+    export -f run_single_test
+    export RESULTS_DIR
+
     # 执行核心测试
     log_info "执行核心测试（失败将终止）..."
-    for test in "${core_tests[@]}"; do
-        if [ -f "$test" ]; then
-            unit_total=$((unit_total + 1))
-            log_info "运行核心测试: $test"
-            if uv run python3 "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
-                log_success "核心测试通过: $test"
-                unit_passed=$((unit_passed + 1))
+
+    if [ "$parallel_jobs" -gt 1 ]; then
+        # 并行执行核心测试
+        local core_results
+        core_results=$(printf "%s\n" "${core_tests[@]}" | parallel -j "$parallel_jobs" run_single_test {} "core")
+        while IFS=: read -r status test test_type; do
+            if [ -f "$test" ]; then
+                unit_total=$((unit_total + 1))
+                if [ "$status" = "PASS" ]; then
+                    log_success "核心测试通过: $test"
+                    unit_passed=$((unit_passed + 1))
+                else
+                    log_error "核心测试失败: $test"
+                    core_failed=$((core_failed + 1))
+                fi
             else
-                log_error "核心测试失败: $test"
+                log_error "核心测试文件不存在: $test"
                 core_failed=$((core_failed + 1))
             fi
-        else
-            log_error "核心测试文件不存在: $test"
-            core_failed=$((core_failed + 1))
-        fi
-    done
+        done <<< "$core_results"
+    else
+        # 串行执行核心测试
+        for test in "${core_tests[@]}"; do
+            if [ -f "$test" ]; then
+                unit_total=$((unit_total + 1))
+                log_info "运行核心测试: $test"
+                if uv run python3 "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
+                    log_success "核心测试通过: $test"
+                    unit_passed=$((unit_passed + 1))
+                else
+                    log_error "核心测试失败: $test"
+                    core_failed=$((core_failed + 1))
+                fi
+            else
+                log_error "核心测试文件不存在: $test"
+                core_failed=$((core_failed + 1))
+            fi
+        done
+    fi
 
     # 核心测试失败则终止
     if [ $core_failed -gt 0 ]; then
@@ -610,22 +657,45 @@ run_unit_tests() {
 
     # 执行非核心测试
     log_info "执行非核心测试（失败继续）..."
-    for test in "${non_core_tests[@]}"; do
-        if [ -f "$test" ]; then
-            unit_total=$((unit_total + 1))
-            log_info "运行非核心测试: $test"
-            if uv run python3 "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
-                log_success "非核心测试通过: $test"
-                unit_passed=$((unit_passed + 1))
+
+    if [ "$parallel_jobs" -gt 1 ]; then
+        # 并行执行非核心测试
+        local non_core_results
+        non_core_results=$(printf "%s\n" "${non_core_tests[@]}" | parallel -j "$parallel_jobs" run_single_test {} "non_core")
+        while IFS=: read -r status test test_type; do
+            if [ -f "$test" ]; then
+                unit_total=$((unit_total + 1))
+                if [ "$status" = "PASS" ]; then
+                    log_success "非核心测试通过: $test"
+                    unit_passed=$((unit_passed + 1))
+                else
+                    log_warning "非核心测试失败: $test（继续执行）"
+                    non_core_failed=$((non_core_failed + 1))
+                fi
             else
-                log_warning "非核心测试失败: $test（继续执行）"
+                log_error "非核心测试文件不存在: $test"
                 non_core_failed=$((non_core_failed + 1))
             fi
-        else
-            log_error "非核心测试文件不存在: $test"
-            non_core_failed=$((non_core_failed + 1))
-        fi
-    done
+        done <<< "$non_core_results"
+    else
+        # 串行执行非核心测试
+        for test in "${non_core_tests[@]}"; do
+            if [ -f "$test" ]; then
+                unit_total=$((unit_total + 1))
+                log_info "运行非核心测试: $test"
+                if uv run python3 "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
+                    log_success "非核心测试通过: $test"
+                    unit_passed=$((unit_passed + 1))
+                else
+                    log_warning "非核心测试失败: $test（继续执行）"
+                    non_core_failed=$((non_core_failed + 1))
+                fi
+            else
+                log_error "非核心测试文件不存在: $test"
+                non_core_failed=$((non_core_failed + 1))
+            fi
+        done
+    fi
 
     # 汇总单元测试结果
     log_info "单元测试汇总: 通过 $unit_passed/$unit_total"
@@ -685,9 +755,12 @@ EOF
 
 # 步骤 10：清理
 cleanup() {
-    print_header "步骤 10：清理"
+    print_header "清理"
 
-    log_info "保持容器运行状态"
+    if [ "${AUTO_CLEANUP:-false}" = "true" ]; then
+        log_info "CI 模式：测试完成，容器将自动销毁"
+        exit 0
+    fi
 
     local cid="$HOSTNAME"
     echo ""
