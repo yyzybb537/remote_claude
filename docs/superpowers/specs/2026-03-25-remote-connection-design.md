@@ -63,20 +63,28 @@
 1. Gateway 首次启动
    ├─ 生成 token (32 字节，base64 编码)
    ├─ 持久化到 ~/.remote-claude/gateway_token.json
+   │  └─ 文件权限: 0600 (仅所有者可读写)
    └─ 输出到终端: "Gateway token: xxx"
 
 2. Token 配置文件格式:
    {
      "token": "dGhpcyBpcyBhIHJhbmRvbSB0b2tlbg==",
      "created_at": "2026-03-25T10:30:00Z",
-     "last_used_at": "2026-03-25T11:00:00Z"
+     "last_used_at": "2026-03-25T11:00:00Z",
+     "file_hash": "sha256:abc123..."  // 用于检测文件篡改
    }
 
-3. 重新生成 token:
-   命令: remote-claude gateway --regenerate-token
-   效果: 生成新 token 并覆盖配置文件
+3. Token 文件安全措施:
+   ├─ 文件权限设置为 0600，防止其他用户读取
+   ├─ 每次加载时验证 file_hash，检测非法篡改
+   ├─ 若检测到篡改，拒绝启动并提示管理员检查
+   └─ Token 泄露时应立即使用 regenerate-token 重新生成
 
-4. Client 连接时验证
+4. 重新生成 token:
+   命令: remote-claude gateway regenerate-token
+   效果: 生成新 token 并覆盖配置文件，旧 token 立即失效
+
+5. Client 连接时验证
    ├─ 读取 URL 参数中的 token
    ├─ 与配置文件中的 token 比较
    └─ 匹配则允许连接
@@ -151,6 +159,26 @@ def generate_token() -> str:
 3. **会话路由**：根据 `session` 参数连接对应 Unix Socket
 4. **双向转发**：WebSocket ↔ Unix Socket 消息转发
 5. **连接管理**：维护活跃连接，支持多 Client 并发
+6. **心跳检测**：维持长连接活跃，检测僵尸连接
+
+### 心跳机制
+
+```
+配置参数:
+  HEARTBEAT_INTERVAL = 30 秒   // 心跳发送间隔
+  HEARTBEAT_TIMEOUT = 90 秒    // 无响应超时判定
+
+实现方式:
+  ├─ 使用 WebSocket ping/pong frame（原生支持，无需自定义消息）
+  ├─ Gateway 每 30 秒向 Client 发送 ping
+  ├─ Client 收到 ping 后自动回复 pong（浏览器内置）
+  └─ 若 90 秒内无 pong 响应，判定连接断开，关闭 WebSocket
+
+NAT 超时处理:
+  ├─ 企业内网 NAT 超时通常为 60-300 秒
+  ├─ 30 秒心跳间隔可有效保持连接活跃
+  └─ 若仍有超时，可配置更短间隔
+```
 
 ### 接口定义
 
@@ -159,6 +187,11 @@ def generate_token() -> str:
 
 class WebSocketGateway:
     """WebSocket 网关"""
+
+    # 心跳配置
+    HEARTBEAT_INTERVAL = 30  # 秒
+    HEARTBEAT_TIMEOUT = 90   # 秒
+    MAX_CONNECTIONS_PER_SESSION = 10  # 单会话最大连接数
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8765):
         self.host = host
@@ -186,6 +219,9 @@ class WebSocketGateway:
 
     async def _forward_to_ws(self, ws_conn, unix_conn):
         """Unix Socket → WebSocket 转发"""
+
+    async def _heartbeat_loop(self, ws_conn):
+        """心跳检测循环"""
 ```
 
 ### Token 管理
@@ -197,10 +233,12 @@ class TokenManager:
     """Token 管理器"""
 
     TOKEN_FILE = "~/.remote-claude/gateway_token.json"
+    TOKEN_FILE_MODE = 0o600  # 仅所有者可读写
 
     def __init__(self):
         self._token: Optional[str] = None
         self._created_at: Optional[str] = None
+        self._file_hash: Optional[str] = None
 
     def get_or_create_token(self) -> str:
         """获取或创建 token"""
@@ -215,7 +253,13 @@ class TokenManager:
         """从文件加载 token"""
 
     def _save_token(self, token: str):
-        """保存 token 到文件"""
+        """保存 token 到文件（权限 0600）"""
+
+    def _compute_file_hash(self, content: str) -> str:
+        """计算文件内容 hash（用于篡改检测）"""
+
+    def _verify_file_integrity(self) -> bool:
+        """验证文件完整性"""
 ```
 
 ## HTTP Client 设计
@@ -226,6 +270,7 @@ class TokenManager:
 2. **终端处理**：raw mode、信号处理、终端大小变化
 3. **输入转发**：将用户输入发送到远端
 4. **输出显示**：接收远端输出并显示到终端
+5. **断线处理**：检测断线，恢复终端状态
 
 ### 接口定义
 
@@ -242,6 +287,7 @@ class HTTPClient:
         self.port = port
         self.ws = None
         self.running = False
+        self.old_settings = None  # 终端原始设置
 
     async def connect(self) -> bool:
         """连接到 Gateway"""
@@ -260,6 +306,15 @@ class HTTPClient:
 
     async def _send_resize(self, rows: int, cols: int):
         """发送终端大小"""
+
+    def _setup_terminal(self):
+        """设置终端 raw mode"""
+
+    def _restore_terminal(self):
+        """恢复终端设置"""
+
+    def _on_disconnect(self, reason: str):
+        """断线回调：显示原因，恢复终端"""
 ```
 
 ## 命令行接口
@@ -303,10 +358,13 @@ remote-claude connect 192.168.1.100:8765/mywork --token abc123
 | 错误场景 | HTTP 状态码 | 错误码 | Client 提示 |
 |---------|------------|--------|-------------|
 | Token 无效 | 401 | INVALID_TOKEN | 认证失败，请检查 token |
+| Token 文件被篡改 | 500 | TOKEN_TAMPERED | Token 文件异常，请联系管理员 |
 | Session 不存在 | 404 | SESSION_NOT_FOUND | 会话不存在，请先启动 |
+| Session 连接数超限 | 429 | TOO_MANY_CONNECTIONS | 会话连接数已达上限 |
 | Gateway 未运行 | - | CONNECTION_REFUSED | 无法连接 Gateway，请确认已启动 |
 | Unix Socket 断开 | - | SESSION_DISCONNECTED | 会话已断开 |
 | 网络超时 | - | TIMEOUT | 连接超时，请检查网络 |
+| 心跳超时 | - | HEARTBEAT_TIMEOUT | 连接已断开（心跳超时） |
 | 端口被占用 | - | PORT_IN_USE | 端口已被占用，请使用 --port 指定其他端口 |
 
 ## 配置文件扩展
@@ -329,6 +387,16 @@ remote-claude connect 192.168.1.100:8765/mywork --token abc123
 }
 ```
 
+### 配置迁移
+
+```
+旧版本 config.json 读取流程:
+1. 检查 version 字段是否存在
+2. 若缺少 remote 字段，自动补全默认值
+3. 保存更新后的配置文件
+4. 不影响现有 ui_settings 等字段
+```
+
 ## 测试策略
 
 ### 单元测试
@@ -346,6 +414,16 @@ remote-claude connect 192.168.1.100:8765/mywork --token abc123
 | Gateway ↔ Unix Socket 转发 | `tests/test_gateway_forward.py` |
 | 认证流程 | `tests/test_gateway_auth.py` |
 | 多 Client 并发 | `tests/test_gateway_concurrent.py` |
+| 心跳检测 | `tests/test_gateway_heartbeat.py` |
+
+### 安全测试
+
+| 测试项 | 说明 |
+|-------|------|
+| Token 爆破攻击 | 连续错误 token 请求应被拒绝 |
+| Token 文件篡改 | 文件被修改后应拒绝启动 |
+| 连接劫持 | 验证 WebSocket 连接来源 |
+| 权限隔离 | 验证文件权限 0600 生效 |
 
 ### 端到端测试
 
@@ -392,11 +470,14 @@ remote_claude/
    - 错误处理完善
    - 日志记录
    - 配置文件支持
+   - 心跳检测（保持长连接活跃）
+   - 断线时的终端状态恢复
+   - 并发连接数限制（默认单会话最多 10 个）
 
 3. **P2 - 优化**
    - 连接池
-   - 心跳检测
-   - 断线重连
+   - 自动断线重连
+   - TLS 支持
 
 ## 风险与缓解
 
@@ -404,8 +485,55 @@ remote_claude/
 |------|------|---------|
 | 网络延迟 | 输入/输出有延迟 | 适合企业内网，公网需谨慎 |
 | Token 泄露 | 未授权访问 | 支持 token 重新生成，定期轮换 |
+| Token 文件篡改 | 安全隐患 | 文件权限 0600 + hash 校验 |
 | 端口冲突 | 启动失败 | 支持 --port 参数配置 |
-| 并发连接数过多 | 性能下降 | 设置最大连接数限制 |
+| 并发连接数过多 | 性能下降 | 单会话最多 10 个连接 |
+| NAT 超时断连 | 连接中断 | 30 秒心跳保持活跃 |
+
+## Gateway 与 Server 生命周期
+
+### 启动顺序
+
+```
+推荐顺序:
+1. 启动 Server (remote-claude start <session>)
+2. 启动 Gateway (remote-claude gateway start)
+
+Gateway 可独立于 Server 运行，连接时会检测目标 session 是否存在。
+```
+
+### Server 重启时
+
+```
+场景: Server 进程重启（如更新、崩溃恢复）
+
+Gateway 处理:
+1. Unix Socket 连接断开
+2. 关闭对应的 WebSocket 连接
+3. 向 Client 发送 SESSION_DISCONNECTED 错误
+4. Client 提示用户"会话已断开，请重新连接"
+```
+
+### Gateway 重启时
+
+```
+场景: Gateway 进程重启
+
+处理流程:
+1. 关闭所有 WebSocket 连接
+2. Client 检测到连接断开
+3. Client 恢复终端设置，提示"Gateway 已断开"
+4. 用户可重新执行 connect 命令连接
+```
+
+### 优雅关闭
+
+```
+Gateway 收到 SIGTERM/SIGINT:
+1. 停止接受新连接
+2. 向所有 Client 发送 GATEWAY_SHUTTING_DOWN 消息
+3. 等待所有连接处理完成（最多 5 秒）
+4. 关闭 Server
 
 ## 后续扩展
 
