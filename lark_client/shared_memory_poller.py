@@ -36,6 +36,7 @@ from utils.runtime_config import (
     get_notify_ready_enabled,
     get_notify_urgent_enabled,
     increment_ready_notify_count,
+    get_session_auto_answer_enabled,
 )
 from utils.stats_helper import safe_track_stats as _safe_track_stats
 from server.biz_enum import CliType
@@ -61,6 +62,8 @@ class CardSlice:
     sequence: int = 0
     start_idx: int = 0       # blocks[start_idx:] 开始渲染
     frozen: bool = False
+    last_activity_time: float = 0.0  # 最后活动时间戳（更新/操作）
+    expired: bool = False             # 是否已过期
 
 
 @dataclass
@@ -75,6 +78,9 @@ class StreamTracker:
     prev_is_ready: bool = True     # 上一帧是否就绪（初始 True 避免首次误触发）
     notify_user_id: Optional[str] = None  # 就绪通知 @ 的用户 open_id
     last_notify_message_id: Optional[str] = None  # 上一条就绪通知的 message_id（用于后续加急复用）
+    # 自动应答相关字段
+    auto_answer_enabled: bool = False      # 从 session 级别状态加载
+    pending_auto_answer: Optional[asyncio.Task] = None  # 待执行的自动应答 Task
 
 
 # ── 轮询器 ────────────────────────────────────────────────────────────────────
@@ -99,8 +105,16 @@ class SharedMemoryPoller:
         """attach 成功后调用：清空旧状态，启动轮询 Task"""
         self.stop(chat_id)
 
-        tracker = StreamTracker(chat_id=chat_id, session_name=session_name, is_group=is_group,
-                                notify_user_id=notify_user_id)
+        # 从持久化状态加载自动应答开关
+        auto_answer_enabled = get_session_auto_answer_enabled(session_name)
+
+        tracker = StreamTracker(
+            chat_id=chat_id,
+            session_name=session_name,
+            is_group=is_group,
+            notify_user_id=notify_user_id,
+            auto_answer_enabled=auto_answer_enabled,
+        )
         self._trackers[chat_id] = tracker
         self._kick_events[chat_id] = asyncio.Event()
 
