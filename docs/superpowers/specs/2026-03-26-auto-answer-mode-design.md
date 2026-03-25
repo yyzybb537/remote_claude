@@ -2,7 +2,9 @@
 
 ## 概述
 
-为 Remote Claude 增加"自动应答模式"功能，当 Claude CLI 提出选项让用户选择时（`OptionBlock(sub_type="option")`），自动选择推荐方案，减少人工干预。
+为 Remote Claude 增加"自动应答模式"功能和"卡片生命周期管理"功能，提升无人值守场景下的自动化程度。
+
+## 功能一：自动应答模式
 
 ## 核心需求
 
@@ -265,7 +267,7 @@ async def handle_option_select(self, user_id: str, chat_id: str, option_value: s
 - 刷新菜单卡片显示最新状态
 - 同一 session 的所有客户端同步显示
 
-## 文件修改清单
+## 文件修改清单（自动应答）
 
 | 文件 | 修改内容 |
 |------|---------|
@@ -288,3 +290,138 @@ async def handle_option_select(self, user_id: str, chat_id: str, option_value: s
 6. **无推荐选项**：选项无 "recommended" 标记 → 选择第一个选项
 7. **无明确语义选项**：选项为「继续/停止」「Yes/No」等 → 发送"继续"而非选择选项
 8. **混合语义选项**：选项为「使用方案A/使用方案B」→ 选择第一项
+
+---
+
+## 功能二：卡片生命周期管理
+
+### 核心需求
+
+| 项目 | 描述 |
+|------|------|
+| **过期判定** | 卡片超过 1 小时无操作/数据变化 → 标记为过期 |
+| **过期提示** | 过期卡片收到回调时 → 返回"卡片已过期，请刷新"提示 |
+| **新建推送** | 状态有变更时 → 新建卡片推送（而非更新过期卡片） |
+| **配置化** | 过期时间可通过 `user_config` 配置，默认 1 小时 |
+
+### 设计方案
+
+#### 1. 数据模型
+
+**CardSlice 扩展字段：**
+```python
+@dataclass
+class CardSlice:
+    card_id: str
+    sequence: int = 0
+    start_idx: int = 0
+    frozen: bool = False
+    last_activity_time: float = 0.0  # 最后活动时间戳（更新/操作）
+    expired: bool = False             # 是否已过期
+```
+
+**config.json 配置：**
+```json
+{
+  "ui_settings": {
+    "card_expiry": {
+      "enabled": true,
+      "expiry_seconds": 3600
+    }
+  }
+}
+```
+
+#### 2. 过期检测机制
+
+**检测时机：**
+- `SharedMemoryPoller._poll_once()` 每次轮询时检查所有活跃卡片的 `last_activity_time`
+- 卡片回调（如选项选择）触发时检查是否过期
+
+**过期流程：**
+```
+_poll_once() 检查 CardSlice.last_activity_time
+        │
+        now - last_activity_time > expiry_seconds
+        │
+        ├─ 未过期 → 正常更新卡片
+        │
+        └─ 已过期 → 标记 CardSlice.expired = True
+                    │
+                    下次有数据变更时 → 创建新卡片（而非更新过期卡片）
+```
+
+#### 3. 回调拦截
+
+**选项选择回调：**
+```python
+async def handle_option_select(self, user_id: str, chat_id: str, option_value: str, ...):
+    tracker = self._poller._trackers.get(chat_id)
+    if tracker and tracker.cards:
+        active_slice = tracker.cards[-1]
+        if active_slice.expired:
+            # 卡片已过期，返回提示
+            await card_service.send_text(chat_id, "⚠️ 卡片已过期，请刷新后重试")
+            return
+
+    # 正常处理...
+```
+
+#### 4. 新建推送逻辑
+
+```python
+async def _update_or_create_card(self, chat_id: str, card_content: dict, tracker: StreamTracker):
+    """更新或创建卡片（处理过期逻辑）"""
+    if tracker.cards and not tracker.cards[-1].expired:
+        # 卡片未过期，就地更新
+        await self._update_card(chat_id, card_content)
+    else:
+        # 卡片已过期或不存在，创建新卡片
+        await self._create_card(chat_id, card_content)
+```
+
+#### 5. 活动时间更新
+
+**触发活动时间更新的场景：**
+- 卡片内容更新（`update_card` 成功）
+- 用户点击卡片按钮（选项选择、菜单操作等）
+- 新卡片创建
+
+**不触发更新的场景：**
+- 卡片更新失败（降级创建新卡片的情况除外）
+- 纯读取操作（如 `read_snapshot`）
+
+#### 6. 过期提示卡片
+
+当用户点击过期卡片的按钮时，显示提示：
+
+```
+┌──────────────────────────────────────────┐
+│ ⚠️ 卡片已过期                            │
+├──────────────────────────────────────────┤
+│ 该卡片已超过 1 小时无活动，可能已失效。   │
+│ 请使用菜单按钮刷新当前状态。              │
+│                                          │
+│ ┌──────────────────────────────────────┐ │
+│ │  🔄 刷新                              │ │
+│ └──────────────────────────────────────┘ │
+└──────────────────────────────────────────┘
+```
+
+### 文件修改清单（卡片生命周期）
+
+| 文件 | 修改内容 |
+|------|---------|
+| `lark_client/shared_memory_poller.py` | CardSlice 新增字段、过期检测逻辑、新建推送逻辑 |
+| `lark_client/card_service.py` | 新增发送过期提示卡片方法 |
+| `lark_client/lark_handler.py` | 回调拦截、过期提示处理 |
+| `utils/runtime_config.py` | 新增 `get_card_expiry_enabled()`、`get_card_expiry_seconds()` 函数 |
+
+### 测试场景（卡片生命周期）
+
+1. **基本过期**：卡片 1 小时无活动 → 标记过期 → 点击按钮返回提示
+2. **活动更新**：卡片持续有数据更新 → 不过期
+3. **新建推送**：过期后有新数据 → 创建新卡片而非更新旧卡片
+4. **配置禁用**：`card_expiry.enabled = false` → 永不过期
+5. **自定义时间**：配置 `expiry_seconds = 1800` → 30 分钟过期
+
