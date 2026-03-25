@@ -33,17 +33,21 @@ docker buildx build --cache-to type=local,dest=.docker-cache --cache-from type=l
 
 ### 运行测试
 
-**本地调试模式（默认，保留容器）：**
+**CI 模式（推荐）：**
+
+```bash
+docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
+```
+
+成功后容器自动删除，失败后容器保持运行便于调试。
+
+**本地调试模式：**
 
 ```bash
 docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
 ```
 
-**CI 模式（自动销毁）：**
-
-```bash
-AUTO_CLEANUP=true docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
-```
+不使用 `--rm`，无论成功失败容器都会保留，便于查看测试产物。
 
 **交互式运行（直接进入 bash）：**
 
@@ -223,7 +227,7 @@ rm -rf test-results
 - name: Run Docker Tests
   run: |
     docker-compose -f docker/docker-compose.test.yml build
-    AUTO_CLEANUP=true docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
+    docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
 
 - name: Upload Test Results
   if: always()
@@ -234,8 +238,8 @@ rm -rf test-results
 ```
 
 关键配置：
-- `AUTO_CLEANUP=true` — 测试完成后自动退出
 - `--rm` — 容器退出后自动删除
+- 测试成功时容器自动退出，失败时保持运行便于调试
 
 ## 性能优化
 
