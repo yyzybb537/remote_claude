@@ -101,7 +101,12 @@ def cmd_start(args):
         if val:
             env_prefix += f"{key}='{val}' "
 
-    server_cmd = f"{env_prefix}uv run --project '{SCRIPT_DIR}' python3 '{server_script}'{debug_flag}{debug_verbose_flag}{cli_type_flag} -- '{session_name}' {cli_args_str}"
+    # 远程模式参数
+    remote_flag = ""
+    if args.remote:
+        remote_flag = f" --remote --remote-port {args.remote_port} --remote-host {args.remote_host}"
+
+    server_cmd = f"{env_prefix}uv run --project '{SCRIPT_DIR}' python3 '{server_script}'{debug_flag}{debug_verbose_flag}{cli_type_flag}{remote_flag} -- '{session_name}' {cli_args_str}"
 
     # 配置启动日志（写文件 + stdout）
     _log_path = USER_DATA_DIR / "startup.log"
@@ -562,6 +567,97 @@ def cmd_update(args):
     return 0
 
 
+def cmd_connect(args):
+    """连接到远程会话"""
+    from client.http_client import run_http_client
+
+    # 解析 host/session/port
+    host = args.host
+    session = args.session
+    port = args.port or 8765
+    token = args.token
+
+    # 支持 host:port/session 格式
+    if '/' in host:
+        parts = host.split('/')
+        host_part = parts[0]
+        session = parts[1] if len(parts) > 1 else session
+        if ':' in host_part:
+            host, port_str = host_part.split(':')
+            port = int(port_str)
+
+    if not session:
+        print("错误: 请指定会话名称")
+        return 1
+
+    return run_http_client(host, session, token, port)
+
+
+def cmd_remote(args):
+    """远程控制命令"""
+    from client.http_client import HTTPClient
+    import asyncio
+
+    host = args.host
+    session = args.session
+    token = args.token
+    port = args.port or 8765
+
+    # 解析 host:port/session 格式
+    if '/' in host:
+        parts = host.split('/')
+        host_part = parts[0]
+        session = parts[1] if len(parts) > 1 else session
+        if ':' in host_part:
+            host, port_str = host_part.split(':')
+            port = int(port_str)
+
+    if not session:
+        print("错误: 请指定会话名称")
+        return 1
+
+    client = HTTPClient(host, session, token, port)
+
+    async def run_action():
+        try:
+            result = await client.send_control(args.action)
+            if result['success']:
+                print(f"✓ {result['message']}")
+                return 0
+            else:
+                print(f"✗ {result['message']}")
+                return 1
+        except Exception as e:
+            print(f"✗ 连接失败: {e}")
+            return 1
+
+    return asyncio.run(run_action())
+
+
+def cmd_token(args):
+    """显示会话 token"""
+    from server.token_manager import TokenManager
+
+    manager = TokenManager(args.session, USER_DATA_DIR)
+    token = manager.get_or_create_token()
+    print(f"Session: {args.session}")
+    print(f"Token: {token}")
+    return 0
+
+
+def cmd_regenerate_token(args):
+    """重新生成 token"""
+    from server.token_manager import TokenManager
+
+    manager = TokenManager(args.session, USER_DATA_DIR)
+    old_token = manager._token
+    new_token = manager.regenerate_token()
+    print(f"Session: {args.session}")
+    print(f"旧 Token 已失效")
+    print(f"新 Token: {new_token}")
+    return 0
+
+
 def cmd_lark(args):
     """飞书客户端管理（兼容旧命令）"""
     # 如果没有子命令，默认显示状态或启动
@@ -721,6 +817,12 @@ def main():
 
 更新:
   %(prog)s update                    更新到最新版本
+
+远程连接:
+  %(prog)s start mywork --remote     启动会话并开启远程连接
+  %(prog)s token mywork              显示会话 token
+  %(prog)s connect myserver mywork --token <TOKEN>  连接远程会话
+  %(prog)s remote shutdown myserver mywork --token <TOKEN>  远程关闭会话
 """
     )
 
@@ -755,6 +857,22 @@ def main():
         default=CliType.CLAUDE,
         choices=[CliType.CLAUDE, CliType.CODEX],
         help="后端 CLI 类型（默认 claude）"
+    )
+    start_parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="启用远程连接模式"
+    )
+    start_parser.add_argument(
+        "--remote-port",
+        type=int,
+        default=8765,
+        help="远程连接端口（默认: 8765）"
+    )
+    start_parser.add_argument(
+        "--remote-host",
+        default="0.0.0.0",
+        help="远程连接监听地址（默认: 0.0.0.0）"
     )
     start_parser.set_defaults(func=cmd_start)
 
@@ -847,6 +965,34 @@ def main():
     # update 命令
     update_parser = subparsers.add_parser("update", help="更新 remote-claude 到最新版本")
     update_parser.set_defaults(func=cmd_update)
+
+    # connect 命令
+    connect_parser = subparsers.add_parser("connect", help="连接到远程会话")
+    connect_parser.add_argument("host", help="服务器地址（或 host:port/session）")
+    connect_parser.add_argument("session", nargs="?", help="会话名称")
+    connect_parser.add_argument("--token", required=True, help="认证 token")
+    connect_parser.add_argument("--port", type=int, help="端口（默认: 8765）")
+    connect_parser.set_defaults(func=cmd_connect)
+
+    # remote 命令
+    remote_parser = subparsers.add_parser("remote", help="远程控制")
+    remote_parser.add_argument("action", choices=["shutdown", "restart", "update"],
+                               help="控制命令")
+    remote_parser.add_argument("host", help="服务器地址（或 host:port/session）")
+    remote_parser.add_argument("session", nargs="?", help="会话名称")
+    remote_parser.add_argument("--token", required=True, help="认证 token")
+    remote_parser.add_argument("--port", type=int, help="端口")
+    remote_parser.set_defaults(func=cmd_remote)
+
+    # token 命令
+    token_parser = subparsers.add_parser("token", help="显示会话 token")
+    token_parser.add_argument("session", help="会话名称")
+    token_parser.set_defaults(func=cmd_token)
+
+    # regenerate-token 命令
+    regen_parser = subparsers.add_parser("regenerate-token", help="重新生成 token")
+    regen_parser.add_argument("session", help="会话名称")
+    regen_parser.set_defaults(func=cmd_regenerate_token)
 
     args, remaining = parser.parse_known_args()
 
