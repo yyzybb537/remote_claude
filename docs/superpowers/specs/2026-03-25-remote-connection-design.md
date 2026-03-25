@@ -2,12 +2,12 @@
 
 ## 概述
 
-为 Remote Claude 添加远程连接能力，支持从本地电脑启动 client，连接到远端运行 server 的会话。采用 Server 内置 WebSocket 支持方案，在现有 Server 进程中直接添加 HTTP/WebSocket 监听能力。
+为 Remote Claude 添加远程连接能力，支持从本地电脑启动 client，连接到远端运行 server 的会话。采用 Server 内置 WebSocket 支持方案，在现有 Server 进程中直接添加 WebSocket 监听能力。
 
 ## 需求背景
 
 - **场景**：企业内网协作，Server 运行在远程开发机上，本地 client 通过内网连接
-- **通信协议**：HTTP/WebSocket
+- **通信协议**：WebSocket
 - **认证方式**：静态 Token（持久化，长期有效，可重新生成）
 - **兼容性**：保持现有 Unix Socket 方式，双模式共存
 
@@ -26,7 +26,7 @@
 │  │                    Server (PTY 代理)                     │   │
 │  │  ┌─────────────┐     ┌─────────────────────────────┐    │   │
 │  │  │ Unix Socket │     │  WebSocket Server (内置)    │    │   │
-│  │  │   (本地)    │     │  HTTP Server (认证/转发)    │    │   │
+│  │  │   (本地)    │     │  websockets 库 (认证/转发)   │    │   │
 │  │  └──────┬──────┘     └──────────────┬──────────────┘    │   │
 │  └─────────┼───────────────────────────┼───────────────────┘   │
 │            │                           │                        │
@@ -45,25 +45,16 @@
 
 | 组件 | 职责 | 文件位置 |
 |------|------|---------|
-| HTTP Client | 远程终端客户端，WebSocket 连接，身份认证 | `client/http_client.py` |
+| HTTP Client | 远程终端客户端，WebSocket 连接，身份认证，Server 控制 | `client/http_client.py` |
 | Server (PTY) | PTY 代理 + 内置 WebSocket Server | `server/server.py` (扩展) |
-| WebSocket Handler | 认证、协议转换、连接管理 | `server/ws_handler.py` (新增) |
+| WebSocket Handler | 认证、协议转换、连接管理、控制命令处理 | `server/ws_handler.py` (新增) |
 
 ### 设计原则
 
 1. **单进程部署**：Server 内置 WebSocket 支持，无需额外 Gateway 进程
 2. **协议复用**：复用现有 `utils/protocol.py` 消息格式
 3. **双模式共存**：本地 Unix Socket 和远程 WebSocket 同时支持
-
-### 与 Gateway 方案对比
-
-| 对比项 | Server 内置方案 | Gateway 方案 |
-|--------|----------------|--------------|
-| 进程数 | 1 个（Server） | 2 个（Server + Gateway） |
-| 转发层数 | 0 层（直连） | 1 层（Gateway 转发） |
-| 部署复杂度 | 低 | 中（需管理两个进程） |
-| 代码侵入性 | 高（需修改 Server） | 低（独立模块） |
-| 扩展性 | 中 | 高（可独立扩缩容） |
+4. **按需启用**：默认不启动 HTTP 服务，传参 `--remote` 时才启动
 
 ## 认证机制
 
@@ -145,7 +136,21 @@ def generate_token() -> str:
 
 // ERROR 消息 (Server → Client)
 {"type": "error", "message": "错误描述", "code": "INVALID_TOKEN"}
+
+// CONTROL 消息 (Client → Server，控制命令)
+{"type": "control", "action": "shutdown|restart|update", "client_id": "<id>"}
+
+// CONTROL_RESPONSE 消息 (Server → Client)
+{"type": "control_response", "success": true, "message": "操作结果"}
 ```
+
+### 控制命令
+
+| action | 说明 | 权限要求 |
+|--------|------|---------|
+| shutdown | 关闭 Server 和 Claude 进程 | Token 认证 |
+| restart | 重启 Claude 进程（保持会话） | Token 认证 |
+| update | 更新 remote-claude 到最新版本 | Token 认证 |
 
 ### 数据流
 
@@ -163,35 +168,55 @@ def generate_token() -> str:
      │                          │     │         │ PTY read       │
      │  OUTPUT (WebSocket)      │     │ <───────┼──────│<─────────│
      │<─────────────────────────│     │         │      │          │
+     │                          │     │         │      │          │
+     │  CONTROL (shutdown)      │     │         │      │          │
+     │─────────────────────────>│     │ 关闭 PTY      │          │
+     │                          │     │ 退出进程      │          │
 ```
 
 ## Server 扩展设计
+
+### 技术选型
+
+使用 `websockets` 库实现 WebSocket Server：
+
+```
+依赖:
+  websockets>=12.0  # 支持 async/await，ping/pong 心跳
+
+特点:
+  ├─ 纯 Python 实现，轻量级
+  ├─ 原生支持 asyncio
+  ├─ 内置 ping/pong 心跳机制
+  └─ 无需额外 HTTP 框架
+```
 
 ### 核心功能扩展
 
 在现有 `server/server.py` 中新增：
 
-1. **HTTP Server 线程**：监听指定端口，处理 WebSocket 升级请求
+1. **WebSocket Server**：使用 `websockets` 库监听指定端口
 2. **认证中间件**：验证 URL 参数中的 token
 3. **WebSocket Handler**：处理远程客户端连接、消息转发
-4. **心跳检测**：维持长连接活跃，检测僵尸连接
+4. **心跳检测**：使用 websockets 内置 ping/pong
+5. **控制命令处理**：响应 Client 端的 shutdown/restart/update 请求
 
 ### 心跳机制
 
 ```
 配置参数:
-  HEARTBEAT_INTERVAL = 30 秒   // 心跳发送间隔
-  HEARTBEAT_TIMEOUT = 90 秒    // 无响应超时判定
+  HEARTBEAT_INTERVAL = 30 秒   // ping 发送间隔
+  HEARTBEAT_TIMEOUT = 60 秒    // 无响应超时判定
 
-实现方式:
-  ├─ 使用 WebSocket ping/pong frame（原生支持）
-  ├─ Server 每 30 秒向 Client 发送 ping
-  ├─ Client 收到 ping 后自动回复 pong
-  └─ 若 90 秒内无 pong 响应，判定连接断开
+实现方式 (websockets 库):
+  ├─ 使用 websockets.serve() 的 ping_interval, ping_timeout 参数
+  ├─ ping_interval=30: 每 30 秒发送 ping
+  ├─ ping_timeout=60: 60 秒无 pong 响应则关闭连接
+  └─ 自动处理，无需手动实现心跳循环
 
 心跳超时后处理:
-  ├─ 关闭 WebSocket 连接
-  ├─ 记录日志
+  ├─ websockets 自动关闭连接
+  ├─ 触发 handler 退出
   └─ 不影响其他客户端和 Unix Socket 连接
 ```
 
@@ -200,22 +225,28 @@ def generate_token() -> str:
 ```python
 # server/ws_handler.py
 
+import websockets
+from websockets.server import WebSocketServerProtocol
+
 class WebSocketHandler:
     """WebSocket 连接处理器"""
 
-    # 心跳配置
-    HEARTBEAT_INTERVAL = 30  # 秒
-    HEARTBEAT_TIMEOUT = 90   # 秒
     MAX_WS_CONNECTIONS = 10  # 最大 WebSocket 连接数
 
     def __init__(self, server: "ProxyServer", session_name: str):
         self.server = server
         self.session_name = session_name
         self.token_manager = TokenManager(session_name)
-        self.ws_connections: Set[WebSocket] = set()
+        self.ws_connections: Set[WebSocketServerProtocol] = set()
 
-    async def handle_connection(self, websocket, path):
+    async def handle_connection(self, websocket: WebSocketServerProtocol, path: str):
         """处理 WebSocket 连接"""
+        # 1. 解析 URL 参数，获取 session 和 token
+        # 2. 验证 token
+        # 3. 加入连接集合
+        # 4. 循环处理消息（INPUT/RESIZE/CONTROL）
+        # 5. 广播 OUTPUT 到所有连接
+        # 6. 处理控制命令
 
     def _parse_url_params(self, path: str) -> Tuple[str, str]:
         """解析 URL 参数 (session, token)"""
@@ -223,11 +254,11 @@ class WebSocketHandler:
     def _authenticate(self, token: str) -> bool:
         """验证 token"""
 
-    def broadcast_to_ws(self, message: bytes):
+    async def broadcast_to_ws(self, message: bytes):
         """广播输出到所有 WebSocket 客户端"""
 
-    async def _heartbeat_loop(self, websocket):
-        """心跳检测循环"""
+    async def handle_control(self, action: str) -> dict:
+        """处理控制命令（shutdown/restart/update）"""
 
 
 # server/server.py (扩展)
@@ -243,13 +274,29 @@ class ProxyServer:
         self.remote_host = remote_host
         self.remote_port = remote_port
         self.ws_handler: Optional[WebSocketHandler] = None
-        self._http_server = None
 
-    async def start_remote_server(self):
+    async def start(self):
+        """启动服务"""
+        # ... 现有逻辑 ...
+
+        # 新增：启动 WebSocket Server
+        if self.enable_remote:
+            await self._start_websocket_server()
+
+    async def _start_websocket_server(self):
         """启动 WebSocket Server"""
+        import websockets
+        self.ws_handler = WebSocketHandler(self, self.session_name)
 
-    async def stop_remote_server(self):
-        """停止 WebSocket Server"""
+        async with websockets.serve(
+            self.ws_handler.handle_connection,
+            self.remote_host,
+            self.remote_port,
+            ping_interval=30,
+            ping_timeout=60,
+        ):
+            # 保持运行直到 server 关闭
+            await self._shutdown_event.wait()
 
     # 修改 _broadcast() 方法，同时广播到 Unix Socket 和 WebSocket
     async def _broadcast(self, data: bytes):
@@ -261,7 +308,7 @@ class ProxyServer:
 
         # 新增：广播到 WebSocket 客户端
         if self.ws_handler:
-            self.ws_handler.broadcast_to_ws(data)
+            await self.ws_handler.broadcast_to_ws(data)
 ```
 
 ### Token 管理
@@ -274,7 +321,7 @@ class TokenManager:
 
     def __init__(self, session_name: str):
         self.session_name = session_name
-        self.token_file = Path(f"~/.remote-claude/{session_name}_token.json")
+        self.token_file = USER_DATA_DIR / f"{session_name}_token.json"
         self._token: Optional[str] = None
         self._file_hash: Optional[str] = None
 
@@ -311,11 +358,14 @@ class TokenManager:
 3. **输入转发**：将用户输入发送到远端
 4. **输出显示**：接收远端输出并显示到终端
 5. **断线处理**：检测断线，恢复终端状态
+6. **Server 控制**：发送控制命令（关闭/更新/重启）
 
 ### 接口定义
 
 ```python
 # client/http_client.py
+
+import websockets
 
 class HTTPClient:
     """HTTP/WebSocket 客户端"""
@@ -325,7 +375,7 @@ class HTTPClient:
         self.session = session
         self.token = token
         self.port = port
-        self.ws = None
+        self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.running = False
         self.old_settings = None  # 终端原始设置
 
@@ -347,6 +397,9 @@ class HTTPClient:
     async def _send_resize(self, rows: int, cols: int):
         """发送终端大小"""
 
+    async def send_control(self, action: str) -> dict:
+        """发送控制命令（shutdown/restart/update）"""
+
     def _setup_terminal(self):
         """设置终端 raw mode"""
 
@@ -355,6 +408,26 @@ class HTTPClient:
 
     def _on_disconnect(self, reason: str):
         """断线回调：显示原因，恢复终端"""
+
+
+# 便捷函数
+async def remote_shutdown(host: str, session: str, token: str, port: int = 8765) -> bool:
+    """远程关闭 Server"""
+    client = HTTPClient(host, session, token, port)
+    result = await client.send_control("shutdown")
+    return result.get("success", False)
+
+async def remote_restart(host: str, session: str, token: str, port: int = 8765) -> bool:
+    """远程重启 Claude 进程"""
+    client = HTTPClient(host, session, token, port)
+    result = await client.send_control("restart")
+    return result.get("success", False)
+
+async def remote_update(host: str, session: str, token: str, port: int = 8765) -> bool:
+    """远程更新 remote-claude"""
+    client = HTTPClient(host, session, token, port)
+    result = await client.send_control("update")
+    return result.get("success", False)
 ```
 
 ## 命令行接口
@@ -362,12 +435,16 @@ class HTTPClient:
 ### Server 启动（扩展）
 
 ```bash
+# 默认启动（不启用远程模式，行为与现在一致）
+remote-claude start <session>
+
 # 启动会话并启用远程模式
 remote-claude start <session> --remote [--remote-port 8765] [--remote-host 0.0.0.0]
 
 # 示例
-remote-claude start mywork --remote                    # 启用远程，默认端口 8765
-remote-claude start mywork --remote --remote-port 9000 # 指定端口
+remote-claude start mywork                        # 仅本地
+remote-claude start mywork --remote               # 启用远程，默认端口 8765
+remote-claude start mywork --remote --remote-port 9000  # 指定端口
 ```
 
 ### Token 管理
@@ -395,19 +472,38 @@ remote-claude connect 192.168.1.100 mywork --token abc123
 remote-claude connect 192.168.1.100:8765/mywork --token abc123
 ```
 
+### Server 控制（远程）
+
+```bash
+# 远程关闭 Server
+remote-claude remote shutdown <host> <session> --token <token> [--port 8765]
+
+# 远程重启 Claude 进程
+remote-claude remote restart <host> <session> --token <token> [--port 8765]
+
+# 远程更新 remote-claude
+remote-claude remote update <host> <session> --token <token> [--port 8765]
+
+# 示例
+remote-claude remote shutdown 192.168.1.100 mywork --token abc123
+remote-claude remote restart 192.168.1.100 mywork --token abc123
+remote-claude remote update 192.168.1.100 mywork --token abc123
+```
+
 ## 错误处理
 
 | 错误场景 | HTTP 状态码 | 错误码 | Client 提示 |
 |---------|------------|--------|-------------|
-| Token 无效 | 401 | INVALID_TOKEN | 认证失败，请检查 token |
-| Token 文件被篡改 | 500 | TOKEN_TAMPERED | Token 文件异常，请联系管理员 |
-| Session 不存在 | 404 | SESSION_NOT_FOUND | 会话不存在，请先启动 |
-| 远程模式未启用 | 403 | REMOTE_DISABLED | 该会话未启用远程模式 |
-| 连接数超限 | 429 | TOO_MANY_CONNECTIONS | 连接数已达上限 |
+| Token 无效 | - | INVALID_TOKEN | 认证失败，请检查 token |
+| Token 文件被篡改 | - | TOKEN_TAMPERED | Token 文件异常，请联系管理员 |
+| Session 不存在 | - | SESSION_NOT_FOUND | 会话不存在，请先启动 |
+| 远程模式未启用 | - | REMOTE_DISABLED | 该会话未启用远程模式 |
+| 连接数超限 | - | TOO_MANY_CONNECTIONS | 连接数已达上限 |
 | Server 未运行 | - | CONNECTION_REFUSED | 无法连接 Server，请确认已启动 |
 | 网络超时 | - | TIMEOUT | 连接超时，请检查网络 |
 | 心跳超时 | - | HEARTBEAT_TIMEOUT | 连接已断开（心跳超时） |
 | 端口被占用 | - | PORT_IN_USE | 端口已被占用，请使用 --remote-port 指定其他端口 |
+| 控制命令失败 | - | CONTROL_FAILED | 控制命令执行失败 |
 
 ## 配置文件扩展
 
@@ -458,6 +554,7 @@ remote-claude connect 192.168.1.100:8765/mywork --token abc123
 | 多 Client 并发 | `tests/test_ws_concurrent.py` |
 | 心跳检测 | `tests/test_ws_heartbeat.py` |
 | Unix Socket + WebSocket 共存 | `tests/test_dual_mode.py` |
+| 控制命令 | `tests/test_remote_control.py` |
 
 ### 安全测试
 
@@ -475,6 +572,7 @@ remote-claude connect 192.168.1.100:8765/mywork --token abc123
 2. 本地 Unix Socket 和远程 WebSocket 同时连接
 3. 网络断开后重连
 4. Server 重启后 Client 恢复
+5. 远程控制命令（shutdown/restart/update）
 
 ## 文件结构
 
@@ -490,7 +588,7 @@ remote_claude/
 │   └── token_manager.py   # 新增：Token 管理
 │
 ├── utils/
-│   ├── protocol.py        # 现有消息协议（复用）
+│   ├── protocol.py        # 现有消息协议（复用 + 新增 CONTROL 类型）
 │   └── session.py         # 现有会话管理
 │
 ├── tests/
@@ -500,7 +598,8 @@ remote_claude/
 │   ├── test_ws_auth.py
 │   ├── test_ws_concurrent.py
 │   ├── test_ws_heartbeat.py
-│   └── test_dual_mode.py
+│   ├── test_dual_mode.py
+│   └── test_remote_control.py
 │
 └── remote_claude.py       # CLI 入口（扩展 --remote/connect 子命令）
 ```
@@ -513,14 +612,16 @@ remote_claude/
    - Server 扩展 (`server/server.py` 修改)
    - HTTP Client (`client/http_client.py`)
    - CLI 子命令 (`remote_claude.py`)
+   - 协议扩展：新增 CONTROL 消息类型 (`utils/protocol.py`)
 
 2. **P1 - 增强**
    - 错误处理完善
    - 日志记录
    - 配置文件支持
-   - 心跳检测（保持长连接活跃）
+   - 心跳检测（使用 websockets 内置）
    - 断线时的终端状态恢复
    - 连接数限制（默认最多 10 个 WebSocket 连接）
+   - 控制命令实现（shutdown/restart/update）
 
 3. **P2 - 优化**
    - 连接池
@@ -538,6 +639,7 @@ remote_claude/
 | 并发连接数过多 | 性能下降 | 最多 10 个 WebSocket 连接 |
 | NAT 超时断连 | 连接中断 | 30 秒心跳保持活跃 |
 | Server 代码复杂度增加 | 维护成本 | WebSocket 逻辑封装在独立模块 |
+| 控制命令滥用 | 安全风险 | Token 认证 + 操作日志 |
 
 ## Server 生命周期
 
@@ -549,16 +651,16 @@ remote-claude start <session> --remote:
 2. 启动 Server 进程
    ├─ 初始化 PTY
    ├─ 启动 Unix Socket 监听
-   ├─ 加载/创建 Token
-   └─ 启动 WebSocket Server（在独立线程/协程）
-3. 输出 Token 到终端
+   ├─ [仅 --remote] 加载/创建 Token
+   └─ [仅 --remote] 启动 WebSocket Server
+3. [仅 --remote] 输出 Token 到终端
 4. 等待客户端连接
 ```
 
 ### 关闭流程
 
 ```
-Server 收到 SIGTERM/SIGINT:
+Server 收到 SIGTERM/SIGINT 或 CONTROL(shutdown):
 1. 停止接受新连接（Unix Socket + WebSocket）
 2. 向所有 WebSocket 客户端发送 SERVER_SHUTTING_DOWN 消息
 3. 等待所有连接处理完成（最多 5 秒）
@@ -566,9 +668,19 @@ Server 收到 SIGTERM/SIGINT:
 5. 退出进程
 ```
 
+### 重启流程
+
+```
+Server 收到 CONTROL(restart):
+1. 向所有客户端发送 RESTARTING 消息
+2. 关闭当前 Claude PTY 进程
+3. 重新启动 Claude PTY
+4. 向所有客户端发送 RESTARTED 消息
+5. 保持连接，继续服务
+```
+
 ## 后续扩展
 
 1. **TLS 支持**：生产环境安全传输
 2. **会话列表 API**：远程查看可用会话
 3. **飞书远程连接**：支持从飞书连接远程 Server
-4. **独立 Gateway**：需要负载均衡时可拆分为独立 Gateway 服务
