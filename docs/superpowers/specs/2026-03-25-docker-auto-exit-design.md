@@ -83,6 +83,26 @@ docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/sc
 
 不使用 `--rm`，无论成功失败容器都会保留，便于查看测试产物。
 
+## 边界情况
+
+### 脚本异常退出
+
+如果测试脚本在 `cleanup()` 之前异常退出（如 `set -e` 触发或核心测试失败 `exit 1`），容器会随脚本退出而停止。这是预期行为：
+- 核心测试失败 → `exit 1` → 容器退出（退出码非零）
+- 配合 `--rm` 时容器会被删除，但可通过 CI 日志查看失败原因
+
+### 用户中断
+
+用户按 `Ctrl+C` 中断测试时，脚本收到 SIGINT 信号直接终止，容器退出。这也是预期行为。
+
+### 与旧设计文档的关系
+
+项目中存在旧设计文档 `docs/superpowers/specs/2026-03-25-docker-auto-cleanup-design.md`，提出通过 `AUTO_CLEANUP` 环境变量控制。本文档替代该方案：
+- 更简洁：无需手动指定环境变量
+- 更智能：根据测试结果自动决定
+
+实现后应删除旧的 `docker-auto-cleanup-design.md` 文档。
+
 ## 影响范围
 
 - **CI/CD**：成功测试后不再占用资源
