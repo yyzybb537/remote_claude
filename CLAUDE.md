@@ -25,15 +25,18 @@ client.py  SessionBridge (lark_client/)
 ```
 
 **核心模块：**
-- `remote_claude.py` — CLI 入口，子命令：start / attach / list / kill / lark
-- `server/server.py` — PTY 代理服务器，`pty.fork()` 启动 Claude/Codex，asyncio Unix Socket 广播输出
+- `remote_claude.py` — CLI 入口，子命令：start / attach / list / kill / lark / connect / remote / token
+- `server/server.py` — PTY 代理服务器，`pty.fork()` 启动 Claude/Codex，asyncio Unix Socket 广播输出，支持 WebSocket 远程连接
 - `server/parsers/claude_parser.py` — Claude CLI 终端输出解析（区域切分、Block 分类、执行状态判断）
 - `server/parsers/codex_parser.py` — Codex CLI 终端输出解析（无分割线、`›` 提示符、背景色区域检测）
 - `server/component_parser.py` — 向后兼容 shim（实际实现在 `server/parsers/`）
 - `server/shared_state.py` — 共享内存写入（`.mq` 文件）
 - `server/biz_enum.py` — 业务枚举定义（CliType：CLI 类型枚举）
+- `server/token_manager.py` — Token 管理器，生成/验证/重新生成会话 Token，文件权限 0600，hash 完整性校验
+- `server/ws_handler.py` — WebSocket 连接处理器，URL 参数解析、Token 认证、消息转发、连接数限制、控制命令处理
 - `client/client.py` — 终端客户端，raw mode 输入转发
-- `utils/protocol.py` — 消息协议（JSON + `\n` 分隔，二进制数据 base64 编码）。7 种消息类型：INPUT / OUTPUT / CONTROL / STATUS / HISTORY / ERROR / RESIZE
+- `client/http_client.py` — HTTP/WebSocket 客户端，远程连接支持
+- `utils/protocol.py` — 消息协议（JSON + `\n` 分隔，二进制数据 base64 编码）。9 种消息类型：INPUT / OUTPUT / CONTROL / CONTROL_RESPONSE / STATUS / HISTORY / ERROR / RESIZE
 - `utils/session.py` — socket 路径管理、会话生命周期、会话名称截断
 - `utils/runtime_config.py` — 运行时配置管理（session 映射、lark_group_mappings、UI 设置）
 - `utils/components.py` — 控制权状态机，SHARED（默认，所有人可输入）和 EXCLUSIVE（独占）两种模式
@@ -785,7 +788,35 @@ uv run python3 remote_claude.py lark restart   # 重启
 uv run python3 remote_claude.py lark status    # 查看状态和日志
 ```
 
+```
+## 远程连接
+
+### 启动远程会话
+```bash
+remote-claude start <session> --remote [--remote-port 8765] [--remote-host 0.0.0.0]
+```
+
+### 连接远程会话
+```bash
+remote-claude connect <host> <session> --token <token>
+remote-claude connect <host>:<port>/<session> --token <token>
+```
+
+### 远程控制
+```bash
+remote-claude remote shutdown <host> <session> --token <token>
+remote-claude remote restart <host> <session> --token <token>
+remote-claude remote update <host> <session> --token <token>
+```
+
+### Token 管理
+```bash
+remote-claude token <session>
+remote-claude regenerate-token <session>
+```
+
 ## 测试
+
 
 > **详细测试计划见 [`tests/TEST_PLAN.md`](./tests/TEST_PLAN.md)**，包含测试分层、执行流程、特殊场景说明和回归防护清单。
 
