@@ -19,12 +19,13 @@
 | 操作 | 原路径 | 新路径 | 说明 |
 |------|--------|--------|------|
 | 移动+重命名 | `init.sh` | `scripts/setup.sh` | 初始化脚本 |
-| 重命名 | `scripts/install.sh` | `scripts/bootstrap.sh` | 安装引导脚本 |
-| 删除 | `scripts/postinstall.sh` | - | 功能合并到 bootstrap.sh |
+| 删除 | `scripts/postinstall.sh` | - | 功能合并到 install.sh |
+
+**注意**：`scripts/install.sh` 保持原名不变，减少用户改动成本。
 
 ## 职责划分
 
-### scripts/bootstrap.sh
+### scripts/install.sh
 
 **职责**：完整安装流程
 
@@ -35,8 +36,8 @@
 5. 调用 `setup.sh` 完成初始化
 
 **触发方式**：
-- 用户手动运行：`./scripts/bootstrap.sh`
-- npm postinstall：`sh scripts/bootstrap.sh --npm`
+- 用户手动运行：`./scripts/install.sh`
+- npm postinstall：`sh scripts/install.sh --npm`
 
 **参数**：
 - `--npm`：跳过交互式配置（飞书配置询问）
@@ -57,7 +58,7 @@
 9. 安装快捷命令符号链接
 10. 配置 shell 自动补全
 
-**触发方式**：被 `bootstrap.sh` 调用
+**触发方式**：被 `install.sh` 调用
 
 **参数**：
 - `--npm`：跳过交互式配置
@@ -67,14 +68,14 @@
 
 ```
 用户手动安装:
-  curl ... | sh scripts/bootstrap.sh
-       └── scripts/bootstrap.sh
+  curl ... | sh scripts/install.sh
+       └── scripts/install.sh
               └── scripts/setup.sh
 
 npm 安装:
   npm install -g remote-claude
        └── package.json: postinstall
-              └── sh scripts/bootstrap.sh --npm
+              └── sh scripts/install.sh --npm
                      └── scripts/setup.sh --npm
 
 延迟初始化 (_common.sh):
@@ -88,7 +89,7 @@ npm 安装:
 {
   "scripts": {
     "preinstall": "sh scripts/preinstall.sh",
-    "postinstall": "sh scripts/bootstrap.sh --npm",
+    "postinstall": "sh scripts/install.sh --npm",
     "preuninstall": "sh scripts/uninstall.sh"
   },
   "files": [
@@ -113,10 +114,10 @@ npm 安装:
 ```
 
 **变更说明**：
-- `postinstall` 从 `scripts/postinstall.sh` 改为 `scripts/bootstrap.sh --npm`
+- `postinstall` 从 `scripts/postinstall.sh` 改为 `scripts/install.sh --npm`
 - `files` 移除 `init.sh`（已包含在 `scripts/*.sh` 中）
 
-## bootstrap.sh 修改
+## install.sh 修改
 
 ### 新增 --npm 参数处理
 
@@ -149,7 +150,7 @@ main() {
 
 ### 合并 postinstall.sh 的缓存检测
 
-原 `postinstall.sh` 的缓存检测逻辑移到 `bootstrap.sh`：
+原 `postinstall.sh` 的缓存检测逻辑移到 `install.sh`：
 
 ```sh
 # 检测是否在包管理器缓存目录中
@@ -245,7 +246,7 @@ pnpm add -g remote-claude
 
 **安装过程：**
 1. npm/pnpm 下载并解压包文件
-2. `postinstall` 钩子自动执行 `scripts/bootstrap.sh --npm`：
+2. `postinstall` 钩子自动执行 `scripts/install.sh --npm`：
    - 检查/安装 uv 包管理器
    - 创建 Python 虚拟环境
    - 安装依赖
@@ -256,7 +257,7 @@ pnpm add -g remote-claude
 ```bash
 git clone https://github.com/yyzybb537/remote_claude.git
 cd remote_claude
-./scripts/bootstrap.sh
+./scripts/install.sh
 ```
 ```
 
@@ -269,25 +270,22 @@ cd remote_claude
 1. **移动 init.sh**
    - `git mv init.sh scripts/setup.sh`
 
-2. **重命名 install.sh**
-   - `git mv scripts/install.sh scripts/bootstrap.sh`
-
-3. **删除 postinstall.sh**
+2. **删除 postinstall.sh**
    - `git rm scripts/postinstall.sh`
 
-4. **更新 scripts/setup.sh**
+3. **更新 scripts/setup.sh**
    - 调整 SCRIPT_DIR 计算
    - 更新引用路径
 
-5. **更新 scripts/bootstrap.sh**
+4. **更新 scripts/install.sh**
    - 添加 --npm 参数处理
-   - 合并缓存检测逻辑
+   - 合并缓存检测逻辑（已存在于 _common.sh）
    - 更新 setup.sh 调用路径
 
-6. **更新 scripts/_common.sh**
+5. **更新 scripts/_common.sh**
    - 更新延迟初始化调用路径
 
-7. **更新 package.json**
+6. **更新 package.json**
    - 修改 postinstall 脚本
    - 更新 files 字段
 
@@ -306,8 +304,8 @@ cd remote_claude
 ## 测试计划
 
 1. **本地克隆安装**
-   - `./scripts/bootstrap.sh` 完整流程
-   - `./scripts/bootstrap.sh --npm` 跳过交互
+   - `./scripts/install.sh` 完整流程
+   - `./scripts/install.sh --npm` 跳过交互
 
 2. **npm 全局安装**
    - `npm install -g .` 本地包安装

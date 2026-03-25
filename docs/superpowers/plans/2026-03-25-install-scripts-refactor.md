@@ -4,7 +4,7 @@
 
 **Goal:** 重构安装脚本，统一安装入口，确保 npm 安装执行完整初始化
 
-**Architecture:** 将 init.sh 移动到 scripts/setup.sh，重命名 install.sh 为 bootstrap.sh，删除 postinstall.sh，bootstrap.sh 成为唯一安装入口
+**Architecture:** 将 init.sh 移动到 scripts/setup.sh，删除 postinstall.sh，install.sh 成为唯一安装入口
 
 **Tech Stack:** POSIX shell scripts, npm lifecycle hooks
 
@@ -17,8 +17,8 @@
 | 操作 | 原路径 | 新路径 |
 |------|--------|--------|
 | 移动+重命名 | `init.sh` | `scripts/setup.sh` |
-| 重命名 | `scripts/install.sh` | `scripts/bootstrap.sh` |
 | 删除 | `scripts/postinstall.sh` | - |
+| 修改 | `scripts/install.sh` | - |
 | 修改 | `scripts/_common.sh` | - |
 | 修改 | `package.json` | - |
 | 修改 | `CLAUDE.md` | - |
@@ -84,9 +84,9 @@ grep -n '\$SCRIPT_DIR' scripts/setup.sh | head -20
 - `$SCRIPT_DIR/server/` → `$PROJECT_ROOT/server/`
 - `$SCRIPT_DIR/client/` → `$PROJECT_ROOT/client/`
 - `$SCRIPT_DIR/bin/` → `$PROJECT_ROOT/bin/`
-- `$SCRIPT_DIR/scripts/completion.sh` → `$SCRIPT_DIR/completion.sh`
 
-**注意**: `SCRIPT_DIR` 在移动后指向 `scripts/` 目录，所以 `$SCRIPT_DIR/_common.sh` 和 `$SCRIPT_DIR/completion.sh` 保持不变。
+**注意**：
+- `$SCRIPT_DIR/scripts/completion.sh` → `$SCRIPT_DIR/completion.sh`（保持 $SCRIPT_DIR）
 
 - [ ] **Step 5: 验证修改**
 
@@ -97,22 +97,16 @@ sh -n scripts/setup.sh
 
 ---
 
-### Task 2: 重命名 install.sh 为 bootstrap.sh
+### Task 2: 更新 scripts/install.sh
 
 **Files:**
-- Move: `scripts/install.sh` → `scripts/bootstrap.sh`
+- Modify: `scripts/install.sh`
 
-- [ ] **Step 1: 使用 git mv 重命名文件**
+- [ ] **Step 1: （无需操作）缓存检测函数已存在于 `_common.sh`**
 
-```bash
-git mv scripts/install.sh scripts/bootstrap.sh
-```
+`_is_in_package_manager_cache` 函数已在 `_common.sh`（第 181-193 行）定义，`install.sh` 通过 `. "$SCRIPT_DIR/_common.sh"` 自动引入。
 
-- [ ] **Step 2: （无需操作）缓存检测函数已存在于 `_common.sh`**
-
-`_is_in_package_manager_cache` 函数已在 `_common.sh`（第 181-193 行）定义，`bootstrap.sh` 通过 `. "$SCRIPT_DIR/_common.sh"` 自动引入。
-
-- [ ] **Step 3: 更新 main() 函数**
+- [ ] **Step 2: 更新 main() 函数**
 
 找到 `main()` 函数（第 148 行开始），替换整个函数为：
 
@@ -156,7 +150,7 @@ main() {
 }
 ```
 
-- [ ] **Step 4: 更新 run_init_script 函数**
+- [ ] **Step 3: 更新 run_init_script 函数**
 
 找到 `run_init_script` 函数（第 97-116 行），替换为：
 
@@ -193,10 +187,10 @@ run_init_script() {
 }
 ```
 
-- [ ] **Step 5: 验证语法**
+- [ ] **Step 4: 验证语法**
 
 ```bash
-sh -n scripts/bootstrap.sh
+sh -n scripts/install.sh
 ```
 
 ---
@@ -286,7 +280,7 @@ sh -n scripts/_common.sh
 修改为：
 
 ```json
-"postinstall": "sh scripts/bootstrap.sh --npm",
+"postinstall": "sh scripts/install.sh --npm",
 ```
 
 - [ ] **Step 2: 移除 files 字段中的 init.sh**
@@ -347,7 +341,7 @@ pnpm add -g remote-claude
 
 **安装过程：**
 1. npm/pnpm 下载并解压包文件
-2. `postinstall` 钩子自动执行 `scripts/bootstrap.sh --npm`：
+2. `postinstall` 钩子自动执行 `scripts/install.sh --npm`：
    - 检查/安装 uv 包管理器
    - 创建 Python 虚拟环境（`.venv/`）
    - 使用 `uv sync --frozen` 安装依赖
@@ -363,7 +357,7 @@ pnpm add -g remote-claude
 ```bash
 git clone https://github.com/yyzybb537/remote_claude.git
 cd remote_claude
-./scripts/bootstrap.sh
+./scripts/install.sh
 ```
 
 **安装过程：**
@@ -395,35 +389,7 @@ npm uninstall -g remote-claude
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: 更新第 55 行的 curl 安装命令**
-
-找到：
-
-```markdown
-curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/scripts/install.sh | bash
-```
-
-修改为：
-
-```markdown
-curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/scripts/bootstrap.sh | bash
-```
-
-- [ ] **Step 2: 更新第 60 行的克隆后安装命令**
-
-找到：
-
-```markdown
-./scripts/install.sh
-```
-
-修改为：
-
-```markdown
-./scripts/bootstrap.sh
-```
-
-- [ ] **Step 3: 更新第 73 行的传统安装命令**
+- [ ] **Step 1: 更新第 73 行的传统安装命令**
 
 找到：
 
@@ -437,7 +403,7 @@ curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/script
 ./scripts/setup.sh
 ```
 
-- [ ] **Step 4: 更新第 76 行的描述**
+- [ ] **Step 2: 更新第 76 行的描述**
 
 找到：
 
@@ -451,19 +417,7 @@ curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/script
 `scripts/setup.sh` 会自动安装 uv、tmux 等依赖，配置飞书环境（可选），并写入 `cla` / `cl` / `cx` / `cdx` 快捷命令。执行完成后重启终端生效。
 ```
 
-- [ ] **Step 5: 更新标题说明（第 51-52 行附近）**
-
-找到：
-
-```markdown
-项目自带便携式 Python 环境，无需预装 Python：
-```
-
-修改为：
-
-```markdown
-项目自带便携式 Python 环境，无需预装 Python。
-```
+**注意**：README.md 中第 55 行和第 60 行已经引用 `scripts/install.sh`，无需修改。
 
 ---
 
@@ -486,8 +440,7 @@ git commit -m "$(cat <<'EOF'
 refactor: 重构安装脚本
 
 - init.sh 移动到 scripts/setup.sh
-- install.sh 重命名为 scripts/bootstrap.sh
-- 删除 postinstall.sh，功能合并到 bootstrap.sh
+- 删除 postinstall.sh，功能合并到 install.sh
 - 统一 npm 安装和用户安装入口
 - 更新 package.json postinstall 钩子
 - 更新 CLAUDE.md 和 README.md 文档
@@ -507,7 +460,7 @@ EOF
 - [ ] **Step 1: 测试语法检查**
 
 ```bash
-sh -n scripts/bootstrap.sh
+sh -n scripts/install.sh
 sh -n scripts/setup.sh
 sh -n scripts/_common.sh
 ```
@@ -516,7 +469,7 @@ sh -n scripts/_common.sh
 
 ```bash
 # 模拟延迟初始化
-sh scripts/bootstrap.sh --npm --lazy
+sh scripts/install.sh --npm --lazy
 ```
 
 预期输出：
@@ -543,7 +496,7 @@ node -e "console.log(JSON.parse(require('fs').readFileSync('package.json')))"
 git revert HEAD
 
 # 或手动恢复
-git checkout HEAD~1 -- init.sh scripts/install.sh scripts/postinstall.sh scripts/_common.sh package.json CLAUDE.md README.md
+git checkout HEAD~1 -- init.sh scripts/postinstall.sh scripts/_common.sh package.json CLAUDE.md README.md
 # 删除新创建的文件
-rm -f scripts/setup.sh scripts/bootstrap.sh
+rm -f scripts/setup.sh
 ```
