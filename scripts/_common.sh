@@ -303,8 +303,8 @@ _lazy_init() {
         1) return 0 ;;
     esac
 
-    # 如果在包管理器缓存中，跳过初始化
-    if _is_in_package_manager_cache; then
+    # 如果在包管理器缓存中，跳过初始化（但 pnpm 全局安装需要初始化）
+    if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
         return 0
     fi
 
