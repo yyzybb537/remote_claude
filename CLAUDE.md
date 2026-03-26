@@ -20,8 +20,8 @@ Claude/Codex CLI (PTY)
       │
   ┌───┴────┐
   │        │
-client.py  SessionBridge (lark_client/)
-(终端)     (飞书机器人)
+local_client.py  SessionBridge (lark_client/)
+(终端)           (飞书机器人)
 ```
 
 **核心模块：**
@@ -34,8 +34,9 @@ client.py  SessionBridge (lark_client/)
 - `server/biz_enum.py` — 业务枚举定义（CliType：CLI 类型枚举）
 - `server/token_manager.py` — Token 管理器，生成/验证/重新生成会话 Token，文件权限 0600，hash 完整性校验
 - `server/ws_handler.py` — WebSocket 连接处理器，URL 参数解析、Token 认证、消息转发、连接数限制、控制命令处理
-- `client/client.py` — 终端客户端，raw mode 输入转发
-- `client/http_client.py` — HTTP/WebSocket 客户端，远程连接支持
+- `client/base_client.py` — 终端客户端抽象基类，封装共享的终端处理逻辑（raw mode、信号处理、输入输出循环）
+- `client/local_client.py` — 本地客户端，Unix Socket 实现，raw mode 输入转发
+- `client/remote_client.py` — 远程客户端，WebSocket 实现，支持远程连接和控制命令
 - `utils/protocol.py` — 消息协议（JSON + `\n` 分隔，二进制数据 base64 编码）。9 种消息类型：INPUT / OUTPUT / CONTROL / CONTROL_RESPONSE / STATUS / HISTORY / ERROR / RESIZE
 - `utils/session.py` — socket 路径管理、会话生命周期、会话名称截断
 - `utils/runtime_config.py` — 运行时配置管理（session 映射、lark_group_mappings、UI 设置）
@@ -603,7 +604,10 @@ remote_claude/
 │   └── rich_text_renderer.py   # 历史文件（暂保留）
 │
 ├── client/                     # 终端客户端
-│   └── client.py               # raw mode 输入转发
+│   ├── __init__.py             # 模块导出
+│   ├── base_client.py          # 抽象基类（终端处理、输入输出循环）
+│   ├── local_client.py         # 本地客户端（Unix Socket）
+│   └── remote_client.py        # 远程客户端（WebSocket）
 │
 ├── utils/                      # 公共工具
 │   ├── protocol.py             # 消息协议（JSON + \n，7 种消息类型）
@@ -634,6 +638,8 @@ remote_claude/
 │   ├── test_session_truncate.py # 会话名称截断测试
 │   ├── test_runtime_config.py  # 运行时配置测试
 │   ├── test_renderer.py        # 终端渲染器测试
+│   ├── test_base_client.py     # 客户端基类测试
+│   ├── test_local_client.py    # 本地客户端测试
 │   │
 │   │── # Codex 解析测试
 │   ├── test_codex_parser_utils.py
@@ -659,6 +665,7 @@ remote_claude/
 │   ├── test_mock_conversation.py
 │   ├── test_real.py
 │   ├── test_session.py
+│   ├── test_client_integration.py # 客户端集成测试
 │   │
 │   └── lark_client/            # lark_client 内部测试
 │       ├── test_mock_output.py
@@ -701,18 +708,7 @@ npm install -g remote-claude
 pnpm add -g remote-claude
 ```
 
-**安装过程：**
-1. npm/pnpm 下载并解压包文件
-2. `postinstall` 钩子自动执行 `scripts/install.sh --npm`：
-   - 检查/安装 uv 包管理器
-   - 创建 Python 虚拟环境（`.venv/`）
-   - 使用 `uv sync --frozen` 安装依赖
-   - 执行 `scripts/setup.sh` 完成初始化
-
-**特点：**
-- 安装后即可使用，无需额外初始化
-- Python 环境完全隔离，不影响系统
-- 使用 uv 管理的 Python 版本
+安装过程：下载包 → 执行 `scripts/install.sh --npm` → 安装 uv → 创建虚拟环境 → 安装依赖
 
 ### 本地克隆安装
 
@@ -722,32 +718,15 @@ cd remote_claude
 ./scripts/install.sh
 ```
 
-**安装过程：**
-1. 检查操作系统（macOS/Linux）
-2. 检查/安装 uv
-3. 创建虚拟环境并安装依赖
-4. 执行完整初始化（创建目录、符号链接、配置补全）
-
 ### 依赖变更检测
 
-首次运行命令时，`_lazy_init` 会检查：
-- `.venv` 是否存在
-- `pyproject.toml` 是否比 `.venv` 新
-- `uv.lock` 是否比 `.venv` 新
+首次运行命令时，`_lazy_init` 会检查 `.venv`、`pyproject.toml`、`uv.lock` 的时间戳，自动同步依赖变更。
 
-如果检测到变更，会自动重新同步依赖。
-
-### 卸载流程
+### 卸载
 
 ```bash
 npm uninstall -g remote-claude
 ```
-
-卸载时会：
-- 删除快捷命令符号链接
-- 停止飞书客户端
-- 清理虚拟环境
-- 询问是否保留配置文件
 
 ---
 
@@ -798,21 +777,61 @@ remote-claude start <session> --remote [--remote-port 8765] [--remote-host 0.0.0
 
 ### 连接远程会话
 ```bash
-remote-claude connect <host> <session> --token <token>
-remote-claude connect <host>:<port>/<session> --token <token>
+remote-claude attach <session> --remote --host <host> --token <token>
+remote-claude attach <session> --remote --host <host>:<port> --token <token>
 ```
 
-### 远程控制
+### Server 端命令（支持远程模式）
+
+以下命令支持 `--remote` 参数，执行远程操作：
+
 ```bash
+# 列出会话（远程）
+remote-claude list --remote --host <host> --token <token>
+
+# 终止会话（远程）
+remote-claude kill <session> --remote --host <host> --token <token>
+
+# 查看状态（远程）
+remote-claude status <session> --remote --host <host> --token <token>
+
+# 获取 token（远程）
+remote-claude token <session> --remote --host <host> --token <token>
+
+# 重新生成 token（远程）
+remote-claude regenerate-token <session> --remote --host <host> --token <token>
+```
+
+### 飞书客户端命令（支持远程模式）
+
+以下命令支持 `--remote` 参数，执行远程控制：
+
+```bash
+# 启动飞书客户端（远程）
+remote-claude lark start --remote --host <host> --token <token>
+
+# 停止飞书客户端（远程）
+remote-claude lark stop --remote --host <host> --token <token>
+
+# 重启飞书客户端（远程）
+remote-claude lark restart --remote --host <host> --token <token>
+
+# 查看状态（远程）
+remote-claude lark status --remote --host <host> --token <token>
+```
+
+### 兼容旧版远程命令
+
+以下命令保持向后兼容：
+
+```bash
+# 连接远程会话（旧格式）
+remote-claude connect <host> <session> --token <token>
+
+# 远程控制（旧格式）
 remote-claude remote shutdown <host> <session> --token <token>
 remote-claude remote restart <host> <session> --token <token>
 remote-claude remote update <host> <session> --token <token>
-```
-
-### Token 管理
-```bash
-remote-claude token <session>
-remote-claude regenerate-token <session>
 ```
 
 ## 测试
@@ -966,6 +985,26 @@ Remote Claude 使用两个配置文件，职责分离：
 **Bypass 配置说明**：
 - `bypass_enabled`: 新会话跳过权限确认（默认 `false`），启动时自动添加 `--dangerously-skip-permissions`
 
+**自动应答配置说明**：
+- `auto_answer.default_delay_seconds`: 自动应答延迟秒数（默认 `10`），检测到选项后延迟指定时间自动选择
+- 运行时状态存储在 `runtime.json` → `session_auto_answer`，记录每个 session 的开关状态
+
+**自动应答选择策略**：
+1. **推荐选项优先**：选择标记为 `(recommended)` 或 `推荐` 的选项
+2. **无明确语义时回复"继续"**：选项为确认类文本（如 Yes/No、确认/取消）时发送"继续"
+3. **兜底选择第一项**：其他情况选择第一个选项
+
+**操作方式**：在菜单卡片中点击"自动应答"按钮切换开关状态。
+
+**卡片过期配置说明**：
+- `card_expiry.enabled`: 是否启用卡片过期管理（默认 `true`）
+- `card_expiry.expiry_seconds`: 卡片过期时间秒数（默认 `3600`，即 1 小时）
+
+**卡片过期行为**：
+- 过期卡片点击按钮返回"卡片已过期，请发送消息创建新卡片"提示
+- 过期后有新数据时创建新卡片（而非更新旧卡片）
+- 过期判断基于卡片最后活动时间（创建或最后一次更新）
+
 #### runtime.json（运行时状态）
 
 存储程序自动管理的状态：
@@ -979,12 +1018,17 @@ Remote Claude 使用两个配置文件，职责分离：
   "lark_group_mappings": {
     "oc_xxx": "my-session"
   },
+  "session_auto_answer": {
+    "my-session": true,
+    "another-session": false
+  },
   "ready_notify_count": 0
 }
 ```
 
 - **session_mappings**：截断名称 ↔ 原始路径映射（解决超长路径问题），最多 500 条（软限制）
 - **lark_group_mappings**：飞书群组 ID ↔ 会话名映射
+- **session_auto_answer**：每个 session 的自动应答开关状态（session 名称 → 是否启用）
 - **ready_notify_count**：就绪通知累计次数（用于显示"这是第 N 次通知"）
 
 **文件锁机制**：
