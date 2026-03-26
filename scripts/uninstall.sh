@@ -240,6 +240,13 @@ cleanup_config_files() {
         return
     fi
 
+    # npm 环境：静默完全删除
+    if _is_npm_context; then
+        rm -rf "$DATA_DIR"
+        print_success "已删除配置目录: $DATA_DIR"
+        return
+    fi
+
     # 列出所有相关文件
     local all_files=""
     for file in config.json runtime.json .env lark_chat_bindings.json; do
