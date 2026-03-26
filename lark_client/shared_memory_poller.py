@@ -339,6 +339,78 @@ class SharedMemoryPoller:
         if should_notify:
             await self._send_ready_notification(tracker, cli_type)
 
+    # ── 卡片过期管理 ────────────────────────────────────────────────────────────
+
+    def _check_card_expiry(self, tracker: StreamTracker) -> None:
+        """检查并标记过期卡片
+
+        Args:
+            tracker: 流式跟踪器
+        """
+        from utils.runtime_config import get_card_expiry_enabled, get_card_expiry_seconds
+
+        if not get_card_expiry_enabled():
+            return
+
+        expiry_seconds = get_card_expiry_seconds()
+        now = time.time()
+
+        for card_slice in tracker.cards:
+            if card_slice.expired or card_slice.frozen:
+                continue
+
+            if card_slice.last_activity_time > 0:
+                elapsed = now - card_slice.last_activity_time
+                if elapsed > expiry_seconds:
+                    card_slice.expired = True
+                    logger.info(
+                        f"卡片已过期: card_id={card_slice.card_id}, "
+                        f"elapsed={elapsed:.0f}s, expiry={expiry_seconds}s"
+                    )
+
+    async def _update_card_content(self, chat_id: str, tracker: StreamTracker,
+                                    card_content: dict) -> bool:
+        """更新卡片内容，处理过期逻辑
+
+        Args:
+            chat_id: 飞书 chat_id
+            tracker: 流式跟踪器
+            card_content: 卡片内容字典
+
+        Returns:
+            True 如果更新成功，False 如果需要创建新卡片
+        """
+        if not tracker.cards:
+            return False
+
+        active_slice = tracker.cards[-1]
+
+        # 检查是否过期
+        if active_slice.expired:
+            logger.info(f"卡片已过期，需要创建新卡片: chat_id={chat_id[:8]}...")
+            return False
+
+        # 检查是否已冻结
+        if active_slice.frozen:
+            logger.info(f"卡片已冻结，需要创建新卡片: chat_id={chat_id[:8]}...")
+            return False
+
+        # 正常更新
+        try:
+            success = await self._card_service.update_card(
+                card_id=active_slice.card_id,
+                sequence=active_slice.sequence + 1,
+                card_content=card_content,
+            )
+            if success:
+                active_slice.sequence += 1
+                active_slice.last_activity_time = time.time()
+                return True
+        except Exception as e:
+            logger.warning(f"卡片更新失败: {e}")
+
+        return False
+
     async def _do_card_update(
         self, tracker: StreamTracker, blocks: List[dict],
         status_line: Optional[dict], bottom_bar: Optional[dict],
@@ -346,10 +418,15 @@ class SharedMemoryPoller:
         cli_type: str,
     ) -> None:
         """卡片操作主体：获取活跃卡片 → 创建/更新/拆分"""
-        # 获取活跃卡片（最后一张且未冻结）
+        # 检查卡片过期
+        self._check_card_expiry(tracker)
+
+        # 获取活跃卡片（最后一张且未冻结且未过期）
         active = None
-        if tracker.cards and not tracker.cards[-1].frozen:
-            active = tracker.cards[-1]
+        if tracker.cards:
+            last_card = tracker.cards[-1]
+            if not last_card.frozen and not last_card.expired:
+                active = last_card
 
         if not blocks and not status_line and not bottom_bar and not agent_panel and not option_block and active is None:
             return  # 完全无内容且无活跃卡片时不创建卡片
