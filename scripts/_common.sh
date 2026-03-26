@@ -228,7 +228,7 @@ _is_in_package_manager_cache() {
     # pnpm 缓存路径、npm 缓存路径、yarn 缓存路径、通用 node_modules 缓存标识
     case "$SCRIPT_DIR" in
         */.pnpm/*/node_modules/*|*/.pnpm-store/*|*/.store/*/node_modules/*|*/node_modules/.pnpm/*|\
-        *pnpm*node_modules*|*pnpm-global*|\
+        */.pnpm-global/*|\
         */_cacache/*|*/.npm/*|*/.npm-cache/*|\
         */.yarn/cache/*|*/.yarn/cache|\
         */node_modules/.cache/*|*/.cache/node_modules/*)
