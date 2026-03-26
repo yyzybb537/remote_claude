@@ -9,10 +9,11 @@
 配置文件位置: ~/.remote-claude/runtime.json
 """
 
-import json
-import logging
 import fcntl
 import glob
+import json
+import logging
+import os
 import platform
 import subprocess
 from dataclasses import dataclass, field
@@ -814,8 +815,6 @@ def validate_uv_path(path: str) -> tuple[bool, str]:
     Returns:
         (是否有效, 错误信息)
     """
-    import os
-
     if not path:
         return False, "uv 路径为空"
 
