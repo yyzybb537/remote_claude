@@ -1486,7 +1486,7 @@ def build_expired_card(session_name: Optional[str] = None) -> Dict[str, Any]:
 def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     session_groups: Optional[Dict[str, str]] = None, page: int = 0,
                     notify_enabled: bool = True, urgent_enabled: bool = False,
-                    bypass_enabled: bool = False,
+                    bypass_enabled: bool = False, auto_answer_enabled: bool = False,
                     user_config: Optional["UserConfig"] = None) -> Dict[str, Any]:
     """构建快捷操作菜单卡片（/menu 和 /list 共用）：内嵌会话列表 + 快捷操作"""
     elements = []
@@ -1592,6 +1592,22 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
         "text": {"tag": "plain_text", "content": bypass_label},
         "type": "default",
         "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_bypass"}}]
+    })
+
+    # 自动应答按钮（延迟导入避免循环依赖）
+    from utils.runtime_config import get_auto_answer_delay
+    delay_seconds = get_auto_answer_delay()
+    if auto_answer_enabled:
+        auto_answer_label = f"🤖 自动应答: 开 ({delay_seconds}秒延迟)"
+        auto_answer_type = "primary"
+    else:
+        auto_answer_label = f"🤖 自动应答: 关 ({delay_seconds}秒延迟)"
+        auto_answer_type = "default"
+    elements.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": auto_answer_label},
+        "type": auto_answer_type,
+        "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_auto_answer"}}]
     })
 
     # 自定义命令配置显示
