@@ -329,6 +329,10 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             asyncio.create_task(handler._cmd_toggle_bypass(user_id, chat_id, message_id=message_id))
             return None
 
+        if action_type == "menu_toggle_auto_answer":
+            asyncio.create_task(handler._cmd_toggle_auto_answer(user_id, chat_id, message_id=message_id))
+            return None
+
         # 各卡片底部菜单按钮：辅助卡片就地→菜单，流式卡片降级新卡
         if action_type == "menu_open":
             asyncio.create_task(handler._cmd_menu(user_id, chat_id, message_id=message_id))
