@@ -177,7 +177,15 @@ class TestOptionSelectLoading(unittest.TestCase):
         handler._chat_sessions = {"test_chat": "test-session"}
         handler._runtime_config = None
         handler._user_config = None
+
+        # Mock tracker with non-expired card
+        mock_tracker = MagicMock()
+        mock_card_slice = MagicMock()
+        mock_card_slice.expired = False  # 卡片未过期
+        mock_tracker.cards = [mock_card_slice]
+
         handler._poller = MagicMock()
+        handler._poller._trackers = {"test_chat": mock_tracker}
         handler._poller.get_active_card_id = MagicMock(return_value="card_123")
         handler._poller.read_snapshot = MagicMock(return_value={
             "blocks"      : [],
@@ -194,6 +202,7 @@ class TestOptionSelectLoading(unittest.TestCase):
             "cli_type"    : "claude",
         })
         handler._poller.kick = MagicMock()
+        handler._poller.cancel_auto_answer = MagicMock()
 
         mock_bridge = handler._bridges["test_chat"]
         mock_bridge.send_raw = AsyncMock(return_value=True)
@@ -202,6 +211,7 @@ class TestOptionSelectLoading(unittest.TestCase):
                 patch('lark_client.lark_handler.card_service') as mock_card_service:
             mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
             mock_card_service.update_card = AsyncMock(return_value=True)
+            mock_card_service.send_text = AsyncMock()  # 添加 send_text 的 AsyncMock
 
             # 运行测试
             asyncio.run(handler.handle_option_select("user_123", "test_chat", "2", option_total=2))

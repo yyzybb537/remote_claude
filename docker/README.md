@@ -160,8 +160,13 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 **核心测试**（失败终止整个测试流程）：
 - `test_session_truncate.py` - 会话名称截断测试
 - `test_runtime_config.py` - 运行时配置管理测试
-
-> 注：`test_format_unit.py` 已从核心测试中移除，因为测试的方法 `_format_plain_output` 从未实现。
+- `test_biz_enum.py` - CLI 类型枚举测试
+- `test_custom_commands.py` - 自定义命令配置测试
+- `test_history_buffer.py` - 历史缓冲区测试
+- `test_auto_answer_analyzer.py` - 自动应答选项分析器测试
+- `test_auto_answer_integration.py` - 自动应答集成测试
+- `test_base_client.py` - 客户端基类测试
+- `test_local_client.py` - 本地客户端测试
 
 **非核心测试**（失败继续执行，记录警告）：
 - `test_stream_poller.py` - 流式卡片模型测试
@@ -170,11 +175,10 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 - `test_log_level.py` - 日志级别处理测试
 - `test_disconnected_state.py` - 断开状态提示测试
 - `test_renderer.py` - 终端渲染器测试
+- `test_auto_answer_block.py` - 自动应答块渲染测试
 - `lark_client/test_mock_output.py` - 飞书客户端输出模拟测试
 - `lark_client/test_cjk_width.py` - CJK 字符宽度测试
 - `lark_client/test_full_simulation.py` - 完整模拟测试
-
-> 注：`test_output_clean.py` 已移除（废弃代码）。
 
 ## 调试失败
 
@@ -242,6 +246,32 @@ rm -rf test-results
 - 测试成功时容器自动退出，失败时保持运行便于调试
 
 ## 性能优化
+
+### 镜像源配置
+
+为加速国内网络环境下的依赖下载，默认配置了以下镜像源：
+
+- **npm**：使用 npmmirror 镜像源 (`https://registry.npmmirror.com`)
+- **PyPI**：使用清华大学镜像源 (`https://pypi.tuna.tsinghua.edu.cn/simple`)
+
+**切换镜像源：**
+
+```bash
+# 使用其他 PyPI 镜像源
+UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
+
+# CI 环境使用官方源
+UV_INDEX_URL=https://pypi.org/simple docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
+```
+
+**可选 PyPI 镜像源：**
+
+| 镜像源 | URL |
+|--------|-----|
+| 清华（默认） | `https://pypi.tuna.tsinghua.edu.cn/simple` |
+| 阿里云 | `https://mirrors.aliyun.com/pypi/simple` |
+| 腾讯云 | `https://mirrors.cloud.tencent.com/pypi/simple` |
+| 官方源 | `https://pypi.org/simple` |
 
 ### BuildKit 缓存挂载
 

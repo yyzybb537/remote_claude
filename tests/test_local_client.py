@@ -105,12 +105,21 @@ class TestLocalClientConnect:
 
         try:
             # 模拟 wait_for 抛出 ConnectionRefusedError
+            # open_unix_connection 返回一个协程，wait_for 会捕获异常
+            async def mock_open_unix_connection(*args, **kwargs):
+                # 返回一个立即挂起的协程
+                await asyncio.sleep(0)
+                return (AsyncMock(), MagicMock())
+
             async def mock_wait_for(coro, timeout):
+                # 模拟调用 coro 并抛出 ConnectionRefusedError
+                await coro  # 这会执行 mock_open_unix_connection
                 raise ConnectionRefusedError()
 
-            with patch('asyncio.wait_for', side_effect=mock_wait_for):
-                with patch('utils.session.list_active_sessions', return_value=[]):
-                    result = await client.connect()
+            with patch('asyncio.open_unix_connection', side_effect=mock_open_unix_connection):
+                with patch('asyncio.wait_for', side_effect=mock_wait_for):
+                    with patch('utils.session.list_active_sessions', return_value=[]):
+                        result = await client.connect()
 
             assert result is False
 
@@ -179,13 +188,14 @@ class TestLocalClientSendMessage:
 
     @pytest.mark.anyio
     async def test_send_message_no_writer(self):
-        """测试没有 writer 时发送消息"""
+        """测试没有 writer 时发送消息应抛出 ConnectionError"""
         client = LocalClient("test_session")
         client.writer = None
 
-        # 不应该抛出异常
+        # 应该抛出 ConnectionError
         msg = InputMessage(b"test input", client.client_id)
-        await client.send_message(msg)
+        with pytest.raises(ConnectionError, match="连接未建立"):
+            await client.send_message(msg)
 
 
 class TestLocalClientReadMessage:

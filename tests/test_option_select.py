@@ -294,6 +294,12 @@ class TestHandleOptionSelect(unittest.IsolatedAsyncioTestCase):
         handler._bridges = {}
         handler._chat_sessions = {}
         handler._poller = MagicMock()
+        # 确保 _trackers 返回空字典，避免卡片过期检查被意外触发
+        handler._poller._trackers = {}
+        # get_active_card_id 返回 None，跳过 update_card 调用
+        handler._poller.get_active_card_id = MagicMock(return_value=None)
+        # 添加 _user_config 属性
+        handler._user_config = {}
         return handler
 
     def _make_bridge(self, running=True):
@@ -390,11 +396,18 @@ class TestHandleOptionSelect(unittest.IsolatedAsyncioTestCase):
         handler._bridges['chat1'] = bridge
 
         # 第一次 selected_value 空，发 ↓；第二次到位
-        # 注意：新增了初始读取（记录 initial_block_id），比循环多消耗一次 snapshot
+        # 闪烁帧重试会消耗额外 snapshot，需要提供足够的空值 snapshot
         snapshots = [
             {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test', 'options': []}},  # 初始读取
-            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test', 'options': []}},  # step 0
-            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},  # 轮询等待，未变化
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test', 'options': []}},  # step 0 外层
+            # 闪烁帧重试 5 次（全空，所以会发 ↓）
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            # 等待变化轮询（发 ↓ 后等待 selected_value 变化）
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
             {'blocks': [], 'option_block': {'selected_value': '1', 'block_id': 'Q:test'}},  # 变化
             self._make_snapshot('1', block_id='Q:test'),  # step 1：到位，发 Enter
         ]

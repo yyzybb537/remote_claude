@@ -21,12 +21,14 @@ import tty
 import termios
 import signal
 import select
+import websockets
 from abc import ABC, abstractmethod
 from typing import Optional
+from urllib.parse import urlencode
 
 from utils.protocol import (
     Message, MessageType, InputMessage, ResizeMessage,
-    encode_message, decode_message
+    ControlMessage, encode_message, decode_message
 )
 from utils.session import generate_client_id
 
@@ -38,6 +40,23 @@ except Exception:
 
 # 特殊按键
 CTRL_D = b'\x04'  # Ctrl+D - 退出
+
+
+def build_ws_url(host: str, port: Optional[int], session: str, token: str) -> str:
+    """构建 WebSocket URL
+
+    Args:
+        host: 服务器主机地址
+        port: 服务器端口（None 时使用默认端口 8765）
+        session: 会话名称
+        token: 认证令牌
+
+    Returns:
+        完整的 WebSocket URL
+    """
+    port = port or 8765
+    params = urlencode({"session": session, "token": token})
+    return f"ws://{host}:{port}/ws?{params}"
 
 
 class BaseClient(ABC):
@@ -226,7 +245,12 @@ class BaseClient(ABC):
                      value=len(data))
 
         msg = InputMessage(data, self.client_id)
-        await self.send_message(msg)
+        try:
+            await self.send_message(msg)
+        except ConnectionError:
+            # 连接已断开，停止运行
+            self.running = False
+            self._connected = False
 
     async def _read_connection_loop(self):
         """读取连接消息循环"""
@@ -263,6 +287,9 @@ class BaseClient(ABC):
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
 
+        elif msg.type == MessageType.ERROR:
+            print(f"\n错误: {msg.message} ({msg.code})")
+
     async def _on_disconnect(self, reason: str):
         """断线回调
 
@@ -281,3 +308,60 @@ class BaseClient(ABC):
 
         # 关闭连接
         await self.close_connection()
+
+
+class BaseWSClient(BaseClient):
+    """WebSocket 客户端抽象基类
+
+    扩展 BaseClient，提供 WebSocket 特有的功能：
+    - WebSocket 连接管理
+    - 控制命令发送
+    """
+
+    def __init__(self, session_name: str, host: str = "", port: int = 8765, token: str = ""):
+        """初始化 WebSocket 客户端
+
+        Args:
+            session_name: 会话名称
+            host: 服务器主机地址
+            port: 服务器端口
+            token: 认证令牌
+        """
+        super().__init__(session_name)
+        self.host = host
+        self.port = port
+        self.token = token
+
+    def _get_ws_url(self) -> str:
+        """获取 WebSocket URL"""
+        return build_ws_url(self.host, self.port, self.session_name, self.token)
+
+    async def send_control(self, action: str, timeout: float = 30.0) -> dict:
+        """发送控制命令
+
+        Args:
+            action: 控制动作（shutdown/restart/update）
+            timeout: 响应超时时间（秒），默认 30 秒
+
+        Returns:
+            响应字典，包含 success 和 message 字段
+        """
+        async with websockets.connect(self._get_ws_url()) as ws:
+            msg = ControlMessage(action, self.client_id)
+            await ws.send(encode_message(msg))
+
+            # 等待响应（带超时）
+            try:
+                response = await asyncio.wait_for(ws.recv(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return {
+                    "success": False,
+                    "message": f"控制命令响应超时（{timeout}秒）"
+                }
+            result = decode_message(
+                response.encode() if isinstance(response, str) else response
+            )
+            return {
+                "success": getattr(result, 'success', False),
+                "message": getattr(result, 'message', "")
+            }

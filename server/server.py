@@ -1152,9 +1152,9 @@ class ProxyServer:
 
     async def _run_websocket_server(self):
         """运行 WebSocket Server"""
-        import websockets
+        from websockets.asyncio.server import serve
 
-        async with websockets.serve(
+        async with serve(
             self.ws_handler.handle_connection,
             self.remote_host,
             self.remote_port,

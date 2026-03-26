@@ -20,6 +20,7 @@ import sys
 import subprocess
 import time
 import json
+import shlex
 import signal
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +51,138 @@ try:
     _VERSION = _json.loads((SCRIPT_DIR / "package.json").read_text())["version"]
 except (OSError, json.JSONDecodeError, KeyError):
     _VERSION = "unknown"
+
+
+def add_remote_args(parser):
+    """添加远程连接公共参数
+
+    Args:
+        parser: ArgumentParser 或 subparser
+    """
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="远程连接模式"
+    )
+    parser.add_argument(
+        "--host",
+        default="",
+        help="远程服务器地址（支持 host:port 格式）"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="远程服务器端口（默认: 8765）"
+    )
+    parser.add_argument(
+        "--token",
+        default="",
+        help="认证令牌（远程模式必需）"
+    )
+
+
+def parse_host_session(args):
+    """解析 host 和 session 参数
+
+    支持格式：
+    - --host server.com --port 8765 --token xxx session_name
+    - --host server.com:8765 --token xxx session_name
+    - --host server.com:8765/session_name --token xxx
+
+    Args:
+        args: 解析后的参数对象
+
+    Returns:
+        (host, port, session, token) 元组，解析失败返回 (None, None, None, None)
+    """
+    host = getattr(args, 'host', '') or ''
+    port = getattr(args, 'port', 8765)
+    token = getattr(args, 'token', '') or ''
+    session = getattr(args, 'name', '') or ''
+
+    # 支持 host:port/session 格式
+    if '/' in host:
+        parts = host.split('/')
+        host_part = parts[0]
+        session = parts[1] if len(parts) > 1 else session
+        if ':' in host_part:
+            host, port_str = host_part.split(':')
+            try:
+                port = int(port_str)
+            except ValueError:
+                print(f"错误: 端口格式无效: {port_str}")
+                return None, None, None, None
+    elif ':' in host:
+        host, port_str = host.split(':')
+        try:
+            port = int(port_str)
+        except ValueError:
+            print(f"错误: 端口格式无效: {port_str}")
+            return None, None, None, None
+
+    return host, port, session, token
+
+
+def run_remote_control(host: str, port: int, session: str, token: str, action: str) -> int:
+    """执行远程控制命令
+
+    Args:
+        host: 服务器地址
+        port: 服务器端口
+        session: 会话名称
+        token: 认证令牌
+        action: 控制命令
+
+    Returns:
+        退出码
+    """
+    from client.remote_client import RemoteClient
+    import asyncio
+
+    async def do_control():
+        client = RemoteClient(host, session, token, port)
+        result = await client.send_control(action)
+        if result['success']:
+            print(f"✓ {result['message']}")
+            return 0
+        else:
+            print(f"✗ {result['message']}")
+            return 1
+
+    try:
+        return asyncio.run(do_control())
+    except Exception as e:
+        print(f"✗ 连接失败: {e}")
+        return 1
+
+
+def validate_remote_args(args, session_fallback: str = None) -> tuple:
+    """验证远程模式参数
+
+    统一验证远程模式的必要参数，返回验证结果。
+
+    Args:
+        args: 解析后的参数对象
+        session_fallback: 会话名称的后备值（如 args.name）
+
+    Returns:
+        (host, port, session, token) 元组，验证失败返回 None
+    """
+    host, port, session, token = parse_host_session(args)
+
+    if not host:
+        print("错误: 远程模式需要 --host 参数")
+        return None
+    if not token:
+        print("错误: 远程模式需要 --token 参数")
+        return None
+
+    # 会话名称优先使用 parse_host_session 解析结果，其次使用后备值
+    if not session and session_fallback:
+        session = session_fallback
+
+    return host, port, session, token
 
 
 def cmd_start(args):
@@ -89,24 +222,32 @@ def cmd_start(args):
     # 构建 server 命令
     server_script = SCRIPT_DIR / "server" / "server.py"
     cli_args = args.cli_args if args.cli_args else []
-    cli_args_str = " ".join(f"'{arg}'" for arg in cli_args)
+    # 使用 shlex.quote 安全转义参数，防止命令注入
+    cli_args_str = " ".join(shlex.quote(arg) for arg in cli_args)
     debug_flag = " --debug-screen" if args.debug_screen else ""
     debug_verbose_flag = " --debug-verbose" if args.debug_verbose else ""
     cli_type_flag = f" --cli-type {args.cli}"
 
     # 捕获用户终端环境变量（tmux 会覆盖这些值，导致 Claude CLI 无法启用 kitty keyboard protocol）
-    env_prefix = ""
+    # 使用 shlex.quote 安全转义环境变量值
+    env_prefix_parts = []
     for key in ('TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'COLORTERM'):
         val = os.environ.get(key)
         if val:
-            env_prefix += f"{key}='{val}' "
+            env_prefix_parts.append(f"{key}={shlex.quote(val)}")
+    env_prefix = " ".join(env_prefix_parts) + " " if env_prefix_parts else ""
 
     # 远程模式参数
     remote_flag = ""
     if args.remote:
-        remote_flag = f" --remote --remote-port {args.remote_port} --remote-host {args.remote_host}"
+        remote_flag = f" --remote --remote-port {args.remote_port} --remote-host {shlex.quote(args.remote_host)}"
 
-    server_cmd = f"{env_prefix}uv run --project '{SCRIPT_DIR}' python3 '{server_script}'{debug_flag}{debug_verbose_flag}{cli_type_flag}{remote_flag} -- '{session_name}' {cli_args_str}"
+    # 使用 shlex.quote 安全转义所有路径和参数
+    server_cmd = (
+        f"{env_prefix}uv run --project {shlex.quote(str(SCRIPT_DIR))} "
+        f"python3 {shlex.quote(str(server_script))}{debug_flag}{debug_verbose_flag}"
+        f"{cli_type_flag}{remote_flag} -- {shlex.quote(session_name)} {cli_args_str}"
+    )
 
     # 配置启动日志（写文件 + stdout）
     _log_path = USER_DATA_DIR / "startup.log"
@@ -123,7 +264,8 @@ def cmd_start(args):
 
     start_time = datetime.now()
     _start_logger.info(f"启动会话: {session_name}")
-    _start_logger.info(f"server_cmd: {server_cmd}")
+    # 日志脱敏：不记录完整命令，仅记录关键参数
+    _start_logger.info(f"server启动: cli_type={args.cli}, remote={args.remote}, cli_args_count={len(cli_args)}")
 
     # 创建 tmux 会话，运行 server（detached，仅后台）
     if not tmux_create_session(session_name, server_cmd, detached=True):
@@ -203,9 +345,77 @@ def cmd_start(args):
 
 
 def cmd_attach(args):
-    """连接到已有会话"""
-    session_name = args.name
+    """连接到已有会话（支持本地/远程模式）"""
+    from client import run_client, run_remote_client
+    from client.connection_config import get_connection, get_default_connection, save_connection
 
+    session_name = args.name
+    config_name = getattr(args, 'config_name', '') or 'default'
+    should_save = getattr(args, 'save', False)
+
+    # 远程模式
+    if getattr(args, 'remote', False):
+        host = args.host
+        token = args.token
+        port = getattr(args, 'port', 8765)
+
+        # 支持 host:port/session 格式
+        if '/' in host:
+            parts = host.split('/')
+            host_part = parts[0]
+            session_name = parts[1] if len(parts) > 1 else session_name
+            if ':' in host_part:
+                host, port_str = host_part.split(':')
+                try:
+                    port = int(port_str)
+                except ValueError:
+                    print(f"错误: 端口格式无效: {port_str}")
+                    return 1
+
+        # 如果没有提供必要参数，尝试从保存的配置加载
+        if not host or not token:
+            conn = get_connection(config_name)
+            if not conn:
+                conn = get_default_connection()
+            if conn:
+                if not host:
+                    host = conn.host
+                if not token:
+                    token = conn.token
+                if not session_name:
+                    session_name = conn.session
+                if port == 8765 and conn.port != 8765:
+                    port = conn.port
+                print(f"使用保存的配置: {conn.name}")
+
+        if not session_name:
+            print("错误: 请指定会话名称")
+            return 1
+
+        if not token:
+            print("错误: 远程模式需要 --token 参数")
+            return 1
+
+        if not host:
+            print("错误: 远程模式需要 --host 参数")
+            return 1
+
+        # 保存配置
+        if should_save:
+            save_connection(
+                name=config_name,
+                host=host,
+                port=port,
+                token=token,
+                session=session_name,
+                is_default=(config_name == 'default')
+            )
+            print(f"已保存连接配置: {config_name}")
+
+        # 运行远程客户端
+        return run_remote_client(host, session_name, token, port)
+
+    # 本地模式
     # 检查会话是否存在
     if not is_session_active(session_name):
         print(f"错误: 会话 '{session_name}' 不存在")
@@ -215,12 +425,20 @@ def cmd_attach(args):
     print(f"连接到会话: {session_name}")
 
     # 直接运行 client（不通过 tmux）
-    from client import run_client
     return run_client(session_name)
 
 
 def cmd_list(args):
-    """列出所有会话"""
+    """列出所有会话（支持远程模式）"""
+    # 远程模式
+    if getattr(args, 'remote', False):
+        result = validate_remote_args(args)
+        if result is None:
+            return 1
+        host, port, session, token = result
+        return run_remote_control(host, port, session or 'list', token, 'list')
+
+    # 本地模式
     sessions = list_active_sessions()
 
     if not sessions:
@@ -249,7 +467,7 @@ def cmd_list(args):
         original_path = config.get_session_mapping(session_name) or "-"
 
         # 根据类型选择颜色
-        if cli_type == 'codex':
+        if cli_type == CliType.CODEX:
             cli_colored = f"{GREEN}{cli_type}{RESET}"
         else:
             cli_colored = f"{YELLOW}{cli_type}{RESET}"
@@ -266,9 +484,21 @@ def cmd_list(args):
 
 
 def cmd_kill(args):
-    """终止会话"""
+    """终止会话（支持远程模式）"""
     session_name = args.name
 
+    # 远程模式
+    if getattr(args, 'remote', False):
+        result = validate_remote_args(args, session_name)
+        if result is None:
+            return 1
+        host, port, session, token = result
+        if not session:
+            print("错误: 请指定会话名称")
+            return 1
+        return run_remote_control(host, port, session, token, 'kill')
+
+    # 本地模式
     # 检查会话是否存在
     if not is_session_active(session_name) and not tmux_session_exists(session_name):
         print(f"错误: 会话 '{session_name}' 不存在")
@@ -294,9 +524,21 @@ def cmd_kill(args):
 
 
 def cmd_status(args):
-    """显示会话状态（连接到会话并获取状态）"""
+    """显示会话状态（支持远程模式）"""
     session_name = args.name
 
+    # 远程模式
+    if getattr(args, 'remote', False):
+        result = validate_remote_args(args, session_name)
+        if result is None:
+            return 1
+        host, port, session, token = result
+        if not session:
+            print("错误: 请指定会话名称")
+            return 1
+        return run_remote_control(host, port, session, token, 'status')
+
+    # 本地模式
     if not is_session_active(session_name):
         print(f"错误: 会话 '{session_name}' 不存在")
         return 1
@@ -569,7 +811,7 @@ def cmd_update(args):
 
 def cmd_connect(args):
     """连接到远程会话"""
-    from client.http_client import run_http_client
+    from client import run_remote_client
 
     # 解析 host/session/port
     host = args.host
@@ -590,12 +832,12 @@ def cmd_connect(args):
         print("错误: 请指定会话名称")
         return 1
 
-    return run_http_client(host, session, token, port)
+    return run_remote_client(host, session, token, port)
 
 
 def cmd_remote(args):
     """远程控制命令"""
-    from client.http_client import HTTPClient
+    from client import RemoteClient
     import asyncio
 
     host = args.host
@@ -616,7 +858,7 @@ def cmd_remote(args):
         print("错误: 请指定会话名称")
         return 1
 
-    client = HTTPClient(host, session, token, port)
+    client = RemoteClient(host, session, token, port)
 
     async def run_action():
         try:
@@ -635,24 +877,52 @@ def cmd_remote(args):
 
 
 def cmd_token(args):
-    """显示会话 token"""
+    """显示会话 token（支持远程模式）"""
+    session_name = args.session
+
+    # 远程模式
+    if getattr(args, 'remote', False):
+        result = validate_remote_args(args, session_name)
+        if result is None:
+            return 1
+        host, port, session, token = result
+        if not session:
+            print("错误: 请指定会话名称")
+            return 1
+        return run_remote_control(host, port, session, token, 'token')
+
+    # 本地模式
     from server.token_manager import TokenManager
 
-    manager = TokenManager(args.session, USER_DATA_DIR)
+    manager = TokenManager(session_name, USER_DATA_DIR)
     token = manager.get_or_create_token()
-    print(f"Session: {args.session}")
+    print(f"Session: {session_name}")
     print(f"Token: {token}")
     return 0
 
 
 def cmd_regenerate_token(args):
-    """重新生成 token"""
+    """重新生成 token（支持远程模式）"""
+    session_name = args.session
+
+    # 远程模式
+    if getattr(args, 'remote', False):
+        result = validate_remote_args(args, session_name)
+        if result is None:
+            return 1
+        host, port, session, token = result
+        if not session:
+            print("错误: 请指定会话名称")
+            return 1
+        return run_remote_control(host, port, session, token, 'regenerate-token')
+
+    # 本地模式
     from server.token_manager import TokenManager
 
-    manager = TokenManager(args.session, USER_DATA_DIR)
+    manager = TokenManager(session_name, USER_DATA_DIR)
     old_token = manager._token
     new_token = manager.regenerate_token()
-    print(f"Session: {args.session}")
+    print(f"Session: {session_name}")
     print(f"旧 Token 已失效")
     print(f"新 Token: {new_token}")
     return 0
@@ -780,6 +1050,81 @@ def cmd_config_reset(args):
         return 1
 
 
+def cmd_connection(args):
+    """管理保存的远程连接配置"""
+    from client.connection_config import (
+        list_connections, get_connection, save_connection, delete_connection
+    )
+
+    action = args.connection_action
+
+    if action == 'list':
+        connections = list_connections()
+        if not connections:
+            print("没有保存的连接配置")
+            return 0
+
+        print("保存的连接配置:")
+        print("-" * 70)
+        print(f"{'名称':<15} {'主机':<25} {'端口':<8} {'会话':<15} {'默认'}")
+        print("-" * 70)
+        for conn in connections:
+            default_mark = "✓" if conn.is_default else ""
+            session_display = conn.session[:13] + ".." if len(conn.session) > 15 else conn.session
+            host_display = conn.host[:23] + ".." if len(conn.host) > 25 else conn.host
+            print(f"{conn.name:<15} {host_display:<25} {conn.port:<8} {session_display:<15} {default_mark}")
+        return 0
+
+    elif action == 'show':
+        name = args.name
+        conn = get_connection(name)
+        if not conn:
+            print(f"错误: 配置 '{name}' 不存在")
+            return 1
+
+        print(f"配置名称: {conn.name}")
+        print(f"主机地址: {conn.host}")
+        print(f"端口: {conn.port}")
+        print(f"会话: {conn.session or '(未设置)'}")
+        print(f"Token: {'*' * 8} (已保存)")
+        print(f"描述: {conn.description or '(无)'}")
+        print(f"创建时间: {conn.created_at or '(未知)'}")
+        print(f"最后使用: {conn.last_used or '(从未使用)'}")
+        print(f"默认配置: {'是' if conn.is_default else '否'}")
+        return 0
+
+    elif action == 'delete':
+        name = args.name
+        if delete_connection(name):
+            print(f"✓ 已删除配置: {name}")
+            return 0
+        else:
+            print(f"错误: 配置 '{name}' 不存在")
+            return 1
+
+    elif action == 'set-default':
+        name = args.name
+        conn = get_connection(name)
+        if not conn:
+            print(f"错误: 配置 '{name}' 不存在")
+            return 1
+
+        # 重新保存为默认配置
+        save_connection(
+            name=name,
+            host=conn.host,
+            port=conn.port,
+            token=conn.token,
+            session=conn.session,
+            description=conn.description,
+            is_default=True
+        )
+        print(f"✓ 已将 '{name}' 设为默认配置")
+        return 0
+
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Remote Claude - 双端共享 Claude CLI 工具",
@@ -878,21 +1223,55 @@ def main():
 
     # attach 命令
     attach_parser = subparsers.add_parser("attach", help="连接到已有会话")
-    attach_parser.add_argument("name", help="会话名称")
+    attach_parser.add_argument("name", nargs="?", default="", help="会话名称（可选，使用保存的配置时可省略）")
+    attach_parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="远程连接模式"
+    )
+    attach_parser.add_argument(
+        "--host",
+        default="",
+        help="远程服务器地址（支持 host:port/session 格式)"
+    )
+    attach_parser.add_argument(
+        "--token",
+        default="",
+        help="认证令牌(远程模式必需)"
+    )
+    attach_parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="远程服务器端口(默认: 8765)"
+    )
+    attach_parser.add_argument(
+        "--save",
+        action="store_true",
+        help="保存当前连接配置到本地"
+    )
+    attach_parser.add_argument(
+        "--config-name",
+        default="",
+        help="使用/保存的配置名称（默认: default）"
+    )
     attach_parser.set_defaults(func=cmd_attach)
 
     # list 命令
     list_parser = subparsers.add_parser("list", help="列出所有会话")
+    add_remote_args(list_parser)
     list_parser.set_defaults(func=cmd_list)
 
     # kill 命令
     kill_parser = subparsers.add_parser("kill", help="终止会话")
     kill_parser.add_argument("name", help="会话名称")
+    add_remote_args(kill_parser)
     kill_parser.set_defaults(func=cmd_kill)
 
     # status 命令
     status_parser = subparsers.add_parser("status", help="显示会话状态")
     status_parser.add_argument("name", help="会话名称")
+    add_remote_args(status_parser)
     status_parser.set_defaults(func=cmd_status)
 
     # lark 命令（带子命令）
@@ -937,6 +1316,33 @@ def main():
 
     # 如果只输入 config 没有子命令
     config_parser.set_defaults(func=cmd_config)
+
+    # connection 命令 - 管理远程连接配置
+    connection_parser = subparsers.add_parser("connection", help="管理远程连接配置",
+                                               aliases=["conn"])
+    connection_subparsers = connection_parser.add_subparsers(dest="connection_action", help="连接操作")
+
+    # connection list
+    conn_list_parser = connection_subparsers.add_parser("list", help="列出所有保存的连接配置")
+    conn_list_parser.set_defaults(func=cmd_connection, connection_action='list')
+
+    # connection show
+    conn_show_parser = connection_subparsers.add_parser("show", help="显示连接配置详情")
+    conn_show_parser.add_argument("name", help="配置名称")
+    conn_show_parser.set_defaults(func=cmd_connection, connection_action='show')
+
+    # connection delete
+    conn_delete_parser = connection_subparsers.add_parser("delete", help="删除连接配置")
+    conn_delete_parser.add_argument("name", help="配置名称")
+    conn_delete_parser.set_defaults(func=cmd_connection, connection_action='delete')
+
+    # connection set-default
+    conn_default_parser = connection_subparsers.add_parser("set-default", help="设置默认连接配置")
+    conn_default_parser.add_argument("name", help="配置名称")
+    conn_default_parser.set_defaults(func=cmd_connection, connection_action='set-default')
+
+    # 如果只输入 connection 没有子命令，默认显示列表
+    connection_parser.set_defaults(func=cmd_connection, connection_action='list')
 
     # stats 命令
     stats_parser = subparsers.add_parser("stats", help="查看使用统计")
@@ -987,11 +1393,13 @@ def main():
     # token 命令
     token_parser = subparsers.add_parser("token", help="显示会话 token")
     token_parser.add_argument("session", help="会话名称")
+    add_remote_args(token_parser)
     token_parser.set_defaults(func=cmd_token)
 
     # regenerate-token 命令
     regen_parser = subparsers.add_parser("regenerate-token", help="重新生成 token")
     regen_parser.add_argument("session", help="会话名称")
+    add_remote_args(regen_parser)
     regen_parser.set_defaults(func=cmd_regenerate_token)
 
     args, remaining = parser.parse_known_args()
@@ -999,6 +1407,11 @@ def main():
     if args.command is None:
         parser.print_help()
         return 0
+
+    # 执行旧配置迁移（在执行命令前）
+    from utils.runtime_config import migrate_legacy_config, migrate_legacy_notify_settings
+    migrate_legacy_config()
+    migrate_legacy_notify_settings()
 
     # 将剩余参数合并到 cli_args（支持 cx/cdx 脚本中使用 -- 分隔符）
     if args.command == "start" and hasattr(args, 'cli_args'):

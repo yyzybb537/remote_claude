@@ -18,7 +18,7 @@ from pathlib import Path
 # 设置 sys.path 以导入 utils 模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.session import USER_DATA_DIR
-from utils.runtime_config import migrate_legacy_config
+from utils.runtime_config import migrate_legacy_config, migrate_legacy_notify_settings
 
 
 def _setup_logging():
@@ -359,6 +359,7 @@ class LarkBot:
         """启动机器人"""
         # 执行旧配置迁移
         migrate_legacy_config()
+        migrate_legacy_notify_settings()
 
         # 检查配置
         if not config.FEISHU_APP_ID or not config.FEISHU_APP_SECRET:

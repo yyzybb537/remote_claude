@@ -520,7 +520,8 @@ check_file_integrity() {
     local critical_files=(
         "remote_claude.py"
         "server/server.py"
-        "client/client.py"
+        "client/base_client.py"
+        "client/local_client.py"
         "utils/protocol.py"
         "lark_client/main.py"
         "scripts/install.sh"
@@ -566,6 +567,10 @@ run_unit_tests() {
         "tests/test_biz_enum.py"
         "tests/test_custom_commands.py"
         "tests/test_history_buffer.py"
+        "tests/test_auto_answer_analyzer.py"
+        "tests/test_auto_answer_integration.py"
+        "tests/test_base_client.py"
+        "tests/test_local_client.py"
     )
 
     # 非核心测试列表（失败继续）
@@ -576,6 +581,7 @@ run_unit_tests() {
         "tests/test_log_level.py"
         "tests/test_disconnected_state.py"
         "tests/test_renderer.py"
+        "tests/test_auto_answer_block.py"
         "tests/lark_client/test_mock_output.py"
         "tests/lark_client/test_cjk_width.py"
         "tests/lark_client/test_full_simulation.py"

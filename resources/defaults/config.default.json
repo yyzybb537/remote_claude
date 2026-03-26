@@ -21,6 +21,13 @@
         {"name": "Claude", "cli_type": "claude", "command": "claude", "description": "Claude Code CLI"},
         {"name": "Codex", "cli_type": "codex", "command": "codex", "description": "OpenAI Codex CLI"}
       ]
+    },
+    "auto_answer": {
+      "default_delay_seconds": 10
+    },
+    "card_expiry": {
+      "enabled": true,
+      "expiry_seconds": 3600
     }
   }
 }

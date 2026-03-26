@@ -15,7 +15,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_PYTHON=python3.12 \
     NPM_CONFIG_CACHE=/tmp/npm-cache \
-    UV_CACHE_DIR=/tmp/uv-cache
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone

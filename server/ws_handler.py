@@ -1,8 +1,12 @@
 # server/ws_handler.py
 
 import asyncio
+import json
 import logging
-from typing import Set, Tuple, Optional, TYPE_CHECKING
+import os
+import signal
+import subprocess
+from typing import Set, Tuple, Optional, Dict, Any, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
@@ -19,6 +23,7 @@ from utils.protocol import (
     encode_message, decode_message
 )
 from server.token_manager import TokenManager
+from utils.session import is_session_active, cleanup_session, tmux_kill_session, tmux_session_exists, get_lark_pid, get_lark_status
 
 logger = logging.getLogger('WSHandler')
 
@@ -161,8 +166,18 @@ class WebSocketHandler:
     async def _handle_control(self, action: str) -> ControlResponseMessage:
         """处理控制命令
 
+        支持的命令：
+        - shutdown: 关闭服务器
+        - restart: 重启服务器（未实现）
+        - update: 更新（未实现）
+        - status: 获取会话状态
+        - kill: 终止会话
+        - token: 获取当前 token
+        - regenerate-token: 重新生成 token
+        - list: 列出所有会话（需要管理员权限，暂不支持）
+
         Args:
-            action: 控制命令（shutdown/restart/update）
+            action: 控制命令
 
         Returns:
             控制命令响应
@@ -184,8 +199,174 @@ class WebSocketHandler:
             # TODO: 实现更新逻辑
             return ControlResponseMessage(False, "更新功能尚未实现")
 
+        elif action == "status":
+            # 获取会话状态
+            return self._do_status()
+
+        elif action == "kill":
+            # 终止会话
+            return await self._do_kill()
+
+        elif action == "token":
+            # 获取当前 token
+            return self._do_token()
+
+        elif action == "regenerate-token":
+            # 重新生成 token
+            return self._do_regenerate_token()
+
+        elif action == "lark-start":
+            # 远程启动飞书客户端
+            return await self._do_lark_start()
+
+        elif action == "lark-stop":
+            # 远程停止飞书客户端
+            return await self._do_lark_stop()
+
+        elif action == "lark-restart":
+            # 远程重启飞书客户端
+            return await self._do_lark_restart()
+
+        elif action == "lark-status":
+            # 远程查看飞书客户端状态
+            return self._do_lark_status()
+
         else:
             return ControlResponseMessage(False, f"未知命令: {action}")
+
+    def _do_status(self) -> ControlResponseMessage:
+        """获取会话状态"""
+        try:
+            status_info = {
+                "session": self.session_name,
+                "active": is_session_active(self.session_name),
+                "tmux": tmux_session_exists(self.session_name),
+            }
+            return ControlResponseMessage(True, json.dumps(status_info))
+        except Exception as e:
+            logger.error(f"获取状态失败: {e}")
+            return ControlResponseMessage(False, f"获取状态失败: {e}")
+
+    async def _do_kill(self) -> ControlResponseMessage:
+        """终止会话"""
+        try:
+            logger.info(f"远程终止会话: {self.session_name}")
+
+            # 终止 tmux 会话
+            if tmux_session_exists(self.session_name):
+                tmux_kill_session(self.session_name)
+
+            # 清理文件
+            cleanup_session(self.session_name)
+
+            # 设置关闭标志
+            if hasattr(self.server, '_shutdown_event'):
+                self.server._shutdown_event.set()
+
+            return ControlResponseMessage(True, f"会话 {self.session_name} 已终止")
+        except Exception as e:
+            logger.error(f"终止会话失败: {e}")
+            return ControlResponseMessage(False, f"终止会话失败: {e}")
+
+    def _do_token(self) -> ControlResponseMessage:
+        """获取当前 token（仅返回前 8 位用于确认）"""
+        try:
+            token = self.token_manager.get_or_create_token()
+            # 安全考虑：只返回 token 的前 8 位用于确认
+            token_preview = token[:8] + "..." if len(token) > 8 else token
+            return ControlResponseMessage(True, f"Token: {token_preview}")
+        except Exception as e:
+            logger.error(f"获取 token 失败: {e}")
+            return ControlResponseMessage(False, f"获取 token 失败: {e}")
+
+    def _do_regenerate_token(self) -> ControlResponseMessage:
+        """重新生成 token"""
+        try:
+            new_token = self.token_manager.regenerate_token()
+            # 安全考虑：只返回新 token 的前 8 位用于确认
+            token_preview = new_token[:8] + "..." if len(new_token) > 8 else new_token
+            return ControlResponseMessage(True, f"新 Token: {token_preview}")
+        except Exception as e:
+            logger.error(f"重新生成 token 失败: {e}")
+            return ControlResponseMessage(False, f"重新生成 token 失败: {e}")
+
+    async def _do_lark_start(self) -> ControlResponseMessage:
+        """远程启动飞书客户端"""
+        try:
+            result = subprocess.run(
+                ["uv", "run", "python3", "remote_claude.py", "lark", "start"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                return ControlResponseMessage(True, "飞书客户端启动成功")
+            else:
+                return ControlResponseMessage(False, f"启动失败: {result.stderr}")
+        except FileNotFoundError:
+            return ControlResponseMessage(False, "启动失败: uv 命令未找到")
+        except subprocess.TimeoutExpired:
+            return ControlResponseMessage(False, "启动超时")
+        except Exception as e:
+            logger.error(f"远程启动飞书客户端失败: {e}")
+            return ControlResponseMessage(False, f"启动失败: {e}")
+
+    async def _do_lark_stop(self) -> ControlResponseMessage:
+        """远程停止飞书客户端"""
+        try:
+            result = subprocess.run(
+                ["uv", "run", "python3", "remote_claude.py", "lark", "stop"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                return ControlResponseMessage(True, "飞书客户端已停止")
+            else:
+                return ControlResponseMessage(False, f"停止失败: {result.stderr}")
+        except FileNotFoundError:
+            return ControlResponseMessage(False, "停止失败: uv 命令未找到")
+        except subprocess.TimeoutExpired:
+            return ControlResponseMessage(False, "停止超时")
+        except Exception as e:
+            logger.error(f"远程停止飞书客户端失败: {e}")
+            return ControlResponseMessage(False, f"停止失败: {e}")
+
+    async def _do_lark_restart(self) -> ControlResponseMessage:
+        """远程重启飞书客户端"""
+        try:
+            result = subprocess.run(
+                ["uv", "run", "python3", "remote_claude.py", "lark", "restart"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if result.returncode == 0:
+                return ControlResponseMessage(True, "飞书客户端重启成功")
+            else:
+                return ControlResponseMessage(False, f"重启失败: {result.stderr}")
+        except FileNotFoundError:
+            return ControlResponseMessage(False, "重启失败: uv 命令未找到")
+        except subprocess.TimeoutExpired:
+            return ControlResponseMessage(False, "重启超时")
+        except Exception as e:
+            logger.error(f"远程重启飞书客户端失败: {e}")
+            return ControlResponseMessage(False, f"重启失败: {e}")
+
+    def _do_lark_status(self) -> ControlResponseMessage:
+        """远程查看飞书客户端状态"""
+        try:
+            pid = get_lark_pid()
+            status = get_lark_status()
+            status_info = {
+                "running": pid is not None,
+                "pid": pid,
+                "status": status,
+            }
+            return ControlResponseMessage(True, json.dumps(status_info))
+        except Exception as e:
+            logger.error(f"获取飞书客户端状态失败: {e}")
+            return ControlResponseMessage(False, f"获取状态失败: {e}")
 
     async def broadcast_to_ws(self, data: bytes):
         """广播输出到所有 WebSocket 客户端

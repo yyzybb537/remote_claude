@@ -4,10 +4,14 @@ import secrets
 import base64
 import json
 import hashlib
+import logging
 import os
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
+
+
+logger = logging.getLogger('TokenManager')
 
 
 def generate_token() -> str:
@@ -112,7 +116,14 @@ class TokenManager:
                 return None
 
             return data
-        except Exception:
+        except json.JSONDecodeError as e:
+            logger.warning(f"Token 文件格式错误: {e}")
+            return None
+        except OSError as e:
+            logger.warning(f"读取 Token 文件失败: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"加载 Token 发生意外错误: {e}", exc_info=True)
             return None
 
     def _save_token(self, token: str):
