@@ -12,6 +12,15 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # 引入共享脚本（提供颜色定义、打印函数）
 . "$SCRIPT_DIR/_common.sh"
 
+# 检测是否在 npm 上下文中
+# npm_lifecycle_event: npm 钩子事件名（如 preuninstall）
+# npm_package_json: package.json 路径
+# npm_config_loglevel: npm 日志级别
+# 返回: 0 在 npm 上下文, 1 不在
+_is_npm_context() {
+    [ -n "$npm_lifecycle_event" ] || [ -n "$npm_package_json" ] || [ -n "$npm_config_loglevel" ]
+}
+
 # 1. 清理符号链接
 cleanup_symlinks() {
     print_info "清理快捷命令符号链接..."
