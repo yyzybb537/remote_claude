@@ -666,11 +666,19 @@ class LarkHandler:
             for cid in self._group_chat_ids
             if cid in self._chat_bindings
         }
-        card = build_menu_card(sessions, current_session=current, session_groups=session_groups, page=page,
-                               notify_enabled=get_notify_ready_enabled(),
-                               urgent_enabled=get_notify_urgent_enabled(),
-                               bypass_enabled=get_bypass_enabled(),
-                               user_config=self._user_config)
+
+        # 获取自动应答状态
+        from utils.runtime_config import get_session_auto_answer_enabled
+        auto_answer_enabled = get_session_auto_answer_enabled(current) if current else False
+
+        card = build_menu_card(
+            sessions, current_session=current, session_groups=session_groups, page=page,
+            notify_enabled=get_notify_ready_enabled(),
+            urgent_enabled=get_notify_urgent_enabled(),
+            bypass_enabled=get_bypass_enabled(),
+            auto_answer_enabled=auto_answer_enabled,
+            user_config=self._user_config
+        )
         await self._send_or_update_card(chat_id, card, message_id)
 
     async def _cmd_toggle_notify(self, user_id: str, chat_id: str,
@@ -692,6 +700,33 @@ class LarkHandler:
         """切换新会话 bypass 开关并刷新菜单卡片"""
         new_value = not get_bypass_enabled()
         set_bypass_enabled(new_value)
+        await self._cmd_menu(user_id, chat_id, message_id=message_id)
+
+    async def _cmd_toggle_auto_answer(self, user_id: str, chat_id: str,
+                                       message_id: Optional[str] = None):
+        """切换自动应答开关并刷新菜单卡片"""
+        session_name = self._chat_sessions.get(chat_id)
+        if not session_name:
+            await card_service.send_text(chat_id, "当前未连接到任何会话")
+            return
+
+        # 切换状态
+        from utils.runtime_config import get_session_auto_answer_enabled, set_session_auto_answer_enabled
+        new_value = not get_session_auto_answer_enabled(session_name)
+        set_session_auto_answer_enabled(session_name, new_value, user_id)
+
+        # 更新 tracker 状态
+        tracker = self._poller._trackers.get(chat_id)
+        if tracker:
+            tracker.auto_answer_enabled = new_value
+            # 取消待执行的自动应答
+            if not new_value and tracker.pending_auto_answer:
+                tracker.pending_auto_answer.cancel()
+                tracker.pending_auto_answer = None
+
+        logger.info(f"自动应答开关切换: session={session_name}, enabled={new_value}")
+
+        # 刷新菜单卡片
         await self._cmd_menu(user_id, chat_id, message_id=message_id)
 
     async def _cmd_ls(self, user_id: str, chat_id: str, args: str,
@@ -957,6 +992,19 @@ class LarkHandler:
         _safe_track_stats('lark', 'option_select',
                      session_name=self._chat_sessions.get(chat_id, ''),
                      chat_id=chat_id, detail=option_value)
+
+        # 检查卡片是否过期
+        tracker = self._poller._trackers.get(chat_id)
+        if tracker and tracker.cards:
+            active_slice = tracker.cards[-1]
+            if active_slice.expired:
+                await card_service.send_text(chat_id, "⚠️ 卡片已过期，请刷新后重试")
+                return
+
+        # 用户手动选择时取消自动应答
+        session_name = self._chat_sessions.get(chat_id)
+        if session_name:
+            self._poller.cancel_auto_answer(session_name)
 
         bridge = self._bridges.get(chat_id)
         if not bridge or not bridge.running:
