@@ -9,7 +9,9 @@
 - 消息收发
 """
 
+import argparse
 import asyncio
+import sys
 from typing import Optional
 
 from client.base_client import BaseClient
@@ -116,14 +118,21 @@ class LocalClient(BaseClient):
 
         Args:
             msg: 要发送的消息
+
+        Raises:
+            ConnectionError: 连接已断开或发送失败
         """
-        if self.writer:
-            try:
-                data = encode_message(msg)
-                self.writer.write(data)
-                await self.writer.drain()
-            except Exception:
-                pass
+        if not self.writer:
+            raise ConnectionError("连接未建立")
+
+        try:
+            data = encode_message(msg)
+            self.writer.write(data)
+            await self.writer.drain()
+        except Exception as e:
+            # 连接可能已断开，标记状态
+            self._connected = False
+            raise ConnectionError(f"发送失败: {e}") from e
 
     async def read_message(self) -> Optional[Message]:
         """读取消息
@@ -180,10 +189,7 @@ def run_client(session_name: str) -> int:
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser(description="Remote Claude Local Client")
     parser.add_argument("session_name", help="会话名称")
     args = parser.parse_args()
-
-    import sys
     sys.exit(run_client(args.session_name))
