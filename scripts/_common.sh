@@ -238,6 +238,18 @@ _is_in_package_manager_cache() {
     return 1
 }
 
+# 检测是否为 pnpm 全局安装
+# pnpm 全局安装需要正常初始化（不同于缓存）
+# 返回: 0 是 pnpm 全局安装, 1 不是
+_is_pnpm_global_install() {
+    case "$SCRIPT_DIR" in
+        "$HOME"/Library/pnpm/global/*|"$HOME"/.local/share/pnpm/global/*|"$HOME"/AppData/Local/pnpm/global/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # 检测是否为全局安装
 # 全局安装时 .venv 应该在安装目录中创建，且不应重复初始化
 _is_global_install() {
