@@ -195,9 +195,9 @@ cleanup_uv_path() {
 cleanup_uv_cache() {
     print_info "检查 uv 缓存..."
 
-    # CI 环境自动跳过
-    if [ -n "$CI" ] || [ -n "$npm_config_loglevel" ]; then
-        print_detail "CI 环境跳过缓存清理"
+    # npm 环境或 CI 环境跳过交互式询问
+    if _is_npm_context || [ -n "$CI" ]; then
+        print_detail "npm/CI 环境跳过 uv 缓存清理（保留用户工具）"
         return
     fi
 
