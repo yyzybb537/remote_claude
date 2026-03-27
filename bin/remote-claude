@@ -11,10 +11,10 @@ while [ -L "$SOURCE" ]; do
         *) SOURCE="$DIR/$SOURCE" ;;
     esac
 done
-SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
+PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
 # _common.sh 末尾会自动调用 _lazy_init 进行初始化检查
-. "$SCRIPT_DIR/scripts/_common.sh"
+. "${PROJECT_DIR}/scripts/_common.sh"
 
 # log 子命令：查看最后启动的 session 日志
 if [ "$1" = "log" ]; then
@@ -54,9 +54,9 @@ fi
 
 # lark 子命令：检查 .env 配置
 if [ "$1" = "lark" ]; then
-    . "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
+    . "${PROJECT_DIR}/scripts/check-env.sh" "${PROJECT_DIR}"
 fi
 
 # 切换到项目目录，使用 uv run 调用入口点
-cd "$SCRIPT_DIR"
+cd "${PROJECT_DIR}"
 exec uv run remote-claude "$@"
