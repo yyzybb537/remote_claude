@@ -174,6 +174,32 @@ uv run python3 tests/test_runtime_config.py && \
 echo "快速回归测试通过"
 ```
 
+### 安装与首次运行回归
+
+| 场景 | 验证点 | 测试方法 |
+|------|-------|---------|
+| pnpm 全局安装且 lifecycle script 未执行 | 通过入口命令首次触发运行期初始化，并成功进入主流程 | 手动测试 / Docker 脚本 |
+| 已初始化环境重复运行 | 首次创建运行时环境后，再次执行入口命令不重复输出初始化提示，也不重复执行 `sh <安装目录>/scripts/setup.sh --npm --lazy` 对应流程 | 手动测试 |
+| 初始化失败 | 返回非 0，stderr 输出 `sh <安装目录>/scripts/setup.sh --npm --lazy` 恢复命令 | 手动测试 |
+| shell 未重载或别名未生效 | 重新打开 shell 或使用已生效的入口命令后，可恢复进入首次运行初始化主流程 | 手动测试 |
+| npm/pnpm 卸载 hook 执行 | 不依赖交互输入，仍可完成清理，并删除当前用户的 `~/.remote-claude` 配置目录 | 手动测试 / Docker 脚本 |
+
+**建议手动验证步骤**：
+```bash
+# 1. 使用 npm 或 pnpm 全局安装
+npm install -g remote-claude
+# 或
+pnpm add -g remote-claude
+
+# 2. 如果需要模拟 lifecycle script 未执行，可清理初始化产物后直接首次运行入口命令
+cla --version
+# 或
+remote-claude --help
+
+# 3. 如首次运行初始化失败，验证 stderr 是否给出恢复命令
+sh <安装目录>/scripts/setup.sh --npm --lazy
+```
+
 ---
 
 ## 特殊场景说明

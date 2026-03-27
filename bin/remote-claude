@@ -16,6 +16,12 @@ PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
 # _common.sh 末尾会自动调用 _lazy_init 进行初始化检查
 . "${PROJECT_DIR}/scripts/_common.sh"
 
+lazy_init_if_needed
+lazy_init_rc=$?
+if [ "$lazy_init_rc" -ne 0 ]; then
+    handle_lazy_init_failure "$lazy_init_rc"
+fi
+
 # log 子命令：查看最后启动的 session 日志
 if [ "$1" = "log" ]; then
     LOG_DIR="/tmp/remote-claude"

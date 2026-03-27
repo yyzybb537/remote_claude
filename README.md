@@ -36,9 +36,10 @@ pnpm add -g remote-claude
 curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/scripts/install.sh | bash
 ```
 
-安装后首次运行命令时会自动完成：uv 包管理器安装、Python 虚拟环境创建、依赖安装。
+> 说明：pnpm 可能因 lifecycle script 安全策略而不执行 `postinstall`。Remote Claude 不依赖安装阶段 hook 成功；通过已安装到 PATH 的入口命令（如 `cla`、`cl`、`cx`、`cdx`、`remote-claude`）首次运行时，会自动准备 Python 环境。
 
-如果 pnpm 因安全策略未执行 lifecycle scripts，Remote Claude 会在首次运行时自动补齐初始化；若自动初始化失败，可按提示执行 `sh <安装目录>/scripts/setup.sh --npm --lazy` 手动恢复。
+首次运行时会自动完成：uv 包管理器安装、Python 虚拟环境创建、依赖安装。
+如自动初始化失败，先重新打开 shell 后重试；若仍失败，再按安装输出或全局包路径定位安装目录并手动执行：`sh <安装目录>/scripts/setup.sh --npm --lazy`
 
 ### 启动
 
@@ -69,13 +70,22 @@ remote-claude attach <会话名>   # 连接现有会话
 
 5. 在飞书中搜索机器人，发送 `/menu` 开始使用
 
+### 故障恢复
+
+如果首次运行自动初始化失败，先重新打开 shell 后重试；若仍失败，再按安装输出或全局包路径定位安装目录，并执行：
+```bash
+sh <安装目录>/scripts/setup.sh --npm --lazy
+```
+
 ### 卸载
 
 ```bash
 npm uninstall -g remote-claude
 ```
 
-如需完全清理配置：
+通过 npm/pnpm 的卸载 hook 卸载时，会自动清理当前用户的 `~/.remote-claude` 配置目录；手动执行卸载脚本时仍会保留交互确认。
+
+如仅需手动清理配置，可执行：
 ```bash
 remote-claude config reset --all
 ```

@@ -455,7 +455,7 @@ wheels = [
 
 [[package]]
 name = "remote-claude"
-version = "1.0.4rc0"
+version = "1.0.5b1"
 source = { editable = "." }
 dependencies = [
     { name = "lark-oapi" },

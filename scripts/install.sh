@@ -87,9 +87,7 @@ verify_installation() {
 }
 
 # 运行 setup.sh 完成初始化
-run_init_script() {
-    print_header "运行初始化脚本"
-
+run_setup_script() {
     setup_script="$SCRIPT_DIR/setup.sh"
 
     if [ ! -f "$setup_script" ]; then
@@ -99,7 +97,6 @@ run_init_script() {
 
     print_info "执行 setup.sh 进行完整初始化..."
 
-    # 根据参数调用 setup.sh
     if $NPM_MODE && $LAZY_MODE; then
         sh "$setup_script" --npm --lazy
     elif $NPM_MODE; then
@@ -109,13 +106,29 @@ run_init_script() {
     else
         sh "$setup_script"
     fi
+}
 
-    if [ $? -eq 0 ]; then
-        print_success "setup.sh 执行完成"
-    else
-        print_error "setup.sh 执行失败"
-        exit 1
+# 在 npm postinstall 场景下收敛可忽略失败范围
+run_npm_postinstall() {
+    if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
+        echo "检测到缓存安装，跳过初始化"
+        return 0
     fi
+
+    run_setup_script
+}
+
+# 运行 setup.sh 完成初始化
+run_init_script() {
+    print_header "运行初始化脚本"
+
+    if $NPM_MODE; then
+        run_npm_postinstall
+    else
+        run_setup_script
+    fi
+
+    print_success "setup.sh 执行完成"
 }
 
 # 显示完成信息
@@ -144,8 +157,8 @@ main() {
         [ "$arg" = "--lazy" ] && LAZY_MODE=true
     done
 
-    # 如果在包管理器缓存中，跳过初始化
-    if _is_in_package_manager_cache; then
+    # npm postinstall 场景的缓存跳过逻辑由 run_npm_postinstall() 收敛处理
+    if _is_in_package_manager_cache && ! $NPM_MODE; then
         echo "检测到缓存安装，跳过初始化"
         exit 0
     fi
