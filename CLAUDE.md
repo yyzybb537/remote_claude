@@ -164,11 +164,12 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 
 ## 开发须知
 
-- **系统要求：** macOS/Linux，需已安装 `uv`、`tmux` 和 `claude` CLI
+- **系统要求：** macOS/Linux，需已安装 `tmux` 和 `claude` CLI；`uv` 与 Python 依赖允许在首次运行命令时自动初始化
 - **飞书配置：** 复制 `resources/defaults/.env.example` 为 `~/.remote-claude/.env`
 - **Socket 路径：** `/tmp/remote-claude/<name>.sock`
 - **tmux 会话前缀：** `rc-`
 - **语言：** 代码注释和用户交互均使用中文
+- **运行期初始化：** 所有 bin 入口通过 `. scripts/_common.sh` 引入共享函数；`_common.sh` 末尾自动执行 `_lazy_init()` 检查并同步依赖
 
 ### 循环依赖处理
 
