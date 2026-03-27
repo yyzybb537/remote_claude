@@ -151,10 +151,19 @@ install_uv_multi_source() {
 # 返回: 0 成功, 1 失败
 check_and_install_uv() {
     local UV_PATH RUNTIME_FILE TMP_FILE
+
+    _set_lazy_init_result_if_unset "pending"
+
+    if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
+        _set_lazy_init_result "skipped-cache"
+        return 0
+    fi
+
     # 1. 从 runtime.json 读取 uv_path
     UV_PATH=$(_read_uv_path_from_runtime)
     if [ -n "$UV_PATH" ] && [ -x "$UV_PATH" ]; then
         export PATH="$(dirname "$UV_PATH"):$PATH"
+        _set_lazy_init_result "ready"
         return 0
     elif [ -n "$UV_PATH" ]; then
         print_warning "配置的 uv 路径失效（$UV_PATH），尝试系统 uv..."
@@ -169,17 +178,19 @@ check_and_install_uv() {
     # 2. 检测系统 uv
     if command -v uv >/dev/null 2>&1; then
         _save_uv_path_to_runtime "$(command -v uv)"
+        _set_lazy_init_result "ready"
         return 0
     fi
 
     # 3. 多来源安装
-    print_warning "未找到 uv，正在安装..."
     if install_uv_multi_source; then
         print_success "uv 安装成功"
         _save_uv_path_to_runtime "$(command -v uv)"
+        _set_lazy_init_result "installed"
         return 0
     fi
 
+    _set_lazy_init_result "uv-install-failed"
     return 1
 }
 
@@ -238,6 +249,19 @@ _is_in_package_manager_cache() {
     return 1
 }
 
+# 记录惰性初始化结果，供入口脚本和测试读取
+_set_lazy_init_result() {
+    LAZY_INIT_RESULT="$1"
+    export LAZY_INIT_RESULT
+}
+
+# 仅在结果尚未设置时写入默认惰性初始化结果
+_set_lazy_init_result_if_unset() {
+    if [ -z "${LAZY_INIT_RESULT:-}" ]; then
+        _set_lazy_init_result "$1"
+    fi
+}
+
 # 检测是否为 pnpm 全局安装
 # pnpm 全局安装需要正常初始化（不同于缓存）
 # 返回: 0 是 pnpm 全局安装, 1 不是
@@ -271,6 +295,10 @@ _is_global_install() {
 _needs_sync() {
     local venv_dir project_dir
 
+    if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
+        return 1
+    fi
+
     # 使用 PROJECT_DIR（如果已设置）或从 SCRIPT_DIR 推导
     project_dir="${PROJECT_DIR:-$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)}"
     [ -z "$project_dir" ] && return 1
@@ -295,16 +323,48 @@ _needs_sync() {
     return 1
 }
 
-# 延迟初始化：检测是否需要运行 init.sh
+# 延迟初始化失败时输出统一恢复命令并保持非 0 退出
+handle_lazy_init_failure() {
+    local exit_code project_dir setup_script
+    exit_code=${1:-$?}
+    [ -z "$exit_code" ] && exit_code=1
+    [ "$exit_code" -eq 0 ] && exit_code=1
+
+    project_dir="${PROJECT_DIR:-}"
+    if [ -z "$project_dir" ]; then
+        case "$SCRIPT_DIR" in
+            */scripts)
+                project_dir=$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)
+                ;;
+            *)
+                project_dir="$SCRIPT_DIR"
+                ;;
+        esac
+    fi
+
+    setup_script="$project_dir/scripts/setup.sh"
+
+    print_error "Python 环境初始化失败，请执行以下命令恢复："
+    printf 'sh %s --npm --lazy\n' "$setup_script" >&2
+    exit "$exit_code"
+}
+
+# 延迟初始化：检测是否需要运行 setup.sh
 # 条件：.venv 不存在 或依赖文件更新 且不在缓存目录中
-_lazy_init() {
-    # 防止重入：如果已经在 init.sh 流程中，跳过
+lazy_init_if_needed() {
+    _set_lazy_init_result_if_unset "pending"
+
+    # 防止重入：如果已经在 setup.sh 流程中，跳过
     case "${_LAZY_INIT_RUNNING:-}" in
-        1) return 0 ;;
+        1)
+            _set_lazy_init_result "skipped-reentrant"
+            return 0
+            ;;
     esac
 
     # 如果在包管理器缓存中，跳过初始化（但 pnpm 全局安装需要初始化）
     if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
+        _set_lazy_init_result "skipped-cache"
         return 0
     fi
 
@@ -317,12 +377,27 @@ _lazy_init() {
         echo "检测到依赖变更，正在更新 Python 环境..."
         cd "$project_dir"
         if command -v bash >/dev/null 2>&1; then
+            local setup_rc
             # 设置标记防止重入
             _LAZY_INIT_RUNNING=1
             export _LAZY_INIT_RUNNING
-            bash "$SCRIPT_DIR/setup.sh" --npm --lazy 2>/dev/null || true
+            _set_lazy_init_result "sync-triggered"
+            bash "$SCRIPT_DIR/setup.sh" --npm --lazy 2>/dev/null
+            setup_rc=$?
             _LAZY_INIT_RUNNING=0
+            export _LAZY_INIT_RUNNING
+            if [ "$setup_rc" -ne 0 ]; then
+                _set_lazy_init_result "sync-failed"
+                return "$setup_rc"
+            fi
+            _set_lazy_init_result "sync-completed"
+            return 0
         fi
+
+        _set_lazy_init_result "sync-shell-missing"
+        return 1
     fi
+
+    _set_lazy_init_result "no-sync-needed"
+    return 0
 }
-_lazy_init

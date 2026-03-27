@@ -11,6 +11,12 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
 . "$SCRIPT_DIR/scripts/_common.sh"
 
+lazy_init_if_needed
+lazy_init_rc=$?
+if [ "$lazy_init_rc" -ne 0 ]; then
+    handle_lazy_init_failure "$lazy_init_rc"
+fi
+
 # 检查飞书配置
 . "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
 

@@ -12,13 +12,18 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # 引入共享脚本（提供颜色定义、打印函数）
 . "$SCRIPT_DIR/_common.sh"
 
-# 检测是否在 npm 上下文中
-# npm_lifecycle_event: npm 钩子事件名（如 preuninstall）
-# npm_package_json: package.json 路径
-# npm_config_loglevel: npm 日志级别
-# 返回: 0 在 npm 上下文, 1 不在
+# 检测是否在 npm/pnpm 的 uninstall hook 上下文中
+# 仅在存在 lifecycle event 且事件名包含 uninstall 时判定为真
+# 返回: 0 在 uninstall hook 上下文, 1 不在
 _is_npm_context() {
-    [ -n "$npm_lifecycle_event" ] || [ -n "$npm_package_json" ] || [ -n "$npm_config_loglevel" ]
+    case "$npm_lifecycle_event" in
+        *uninstall*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # 1. 清理符号链接
@@ -240,7 +245,7 @@ cleanup_config_files() {
         return
     fi
 
-    # npm 环境：静默完全删除
+    # npm/pnpm hook 环境：静默完全删除
     if _is_npm_context; then
         rm -rf "$DATA_DIR"
         print_success "已删除配置目录: $DATA_DIR"

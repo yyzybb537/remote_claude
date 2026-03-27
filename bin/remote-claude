@@ -12,9 +12,14 @@ while [ -L "$SOURCE" ]; do
     esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
-# 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
-# _common.sh 末尾会自动调用 _lazy_init 进行初始化检查
+# 引入共享脚本（提供颜色定义、打印函数、uv 管理函数、lazy init 辅助函数）
 . "$SCRIPT_DIR/scripts/_common.sh"
+
+lazy_init_if_needed
+lazy_init_rc=$?
+if [ "$lazy_init_rc" -ne 0 ]; then
+    handle_lazy_init_failure "$lazy_init_rc"
+fi
 
 # log 子命令：查看最后启动的 session 日志
 if [ "$1" = "log" ]; then
