@@ -18,16 +18,16 @@ add_warning() {
 }
 print_warnings() {
     if [ "$WARNINGS_COUNT" -gt 0 ]; then
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${YELLOW}⚠ 注意事项${NC}"
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        printf '%b\n' "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        printf '%b\n' "${YELLOW}⚠ 注意事项${NC}"
+        printf '%b\n' "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         i=1
         while [ "$i" -le "$WARNINGS_COUNT" ]; do
             eval "w=\"\$WARNING_$i\""
-            echo -e "${YELLOW}⚠${NC} $w"
+            printf '%b\n' "${YELLOW}⚠${NC} $w"
             i=$((i + 1))
         done
-        echo ""
+        printf '\n'
     fi
 }
 
@@ -792,12 +792,12 @@ main() {
         export CI_MODE=true
     fi
 
-    echo ""
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}   Remote Claude 初始化脚本${NC}"
-    echo -e "${GREEN}   双端共享 Claude CLI 工具${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
+    printf '\n'
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '%b\n' "${GREEN}   Remote Claude 初始化脚本${NC}"
+    printf '%b\n' "${GREEN}   双端共享 Claude CLI 工具${NC}"
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '\n'
 
     # 延迟初始化模式：只运行必要步骤
     if $LAZY_MODE; then

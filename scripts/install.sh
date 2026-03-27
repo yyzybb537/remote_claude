@@ -150,12 +150,12 @@ main() {
         exit 0
     fi
 
-    echo ""
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}   Remote Claude 一键安装${NC}"
-    echo -e "${GREEN}   零依赖安装 - 自动配置 Python 环境${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
+    printf '\n'
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '%b\n' "${GREEN}   Remote Claude 一键安装${NC}"
+    printf '%b\n' "${GREEN}   零依赖安装 - 自动配置 Python 环境${NC}"
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '\n'
 
     # 延迟模式：只运行必要步骤
     if $LAZY_MODE; then

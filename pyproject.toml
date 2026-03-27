@@ -1,6 +1,6 @@
 [project]
 name = "remote-claude"
-version = "1.0.4"
+version = "1.0.5-beta.1"
 description = "双端共享 Claude CLI 工具"
 requires-python = ">=3.11"
 dependencies = [

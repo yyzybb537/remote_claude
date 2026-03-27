@@ -36,7 +36,9 @@ pnpm add -g remote-claude
 curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/scripts/install.sh | bash
 ```
 
-安装时自动完成：uv 包管理器安装、Python 虚拟环境创建、依赖安装。
+安装后首次运行命令时会自动完成：uv 包管理器安装、Python 虚拟环境创建、依赖安装。
+
+如果 pnpm 因安全策略未执行 lifecycle scripts，Remote Claude 会在首次运行时自动补齐初始化；若自动初始化失败，可按提示执行 `sh <安装目录>/scripts/setup.sh --npm --lazy` 手动恢复。
 
 ### 启动
 

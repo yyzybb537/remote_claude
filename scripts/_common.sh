@@ -90,13 +90,7 @@ install_uv_multi_source() {
         PIP_CMD="pip"
     fi
 
-    # 方式一：官方安装脚本（推荐，无需 Python）
-    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh 2>/dev/null | sh; then
-        export PATH="$HOME/.local/bin:$PATH"
-        return 0
-    fi
-
-    # 方式二：pip + PyPI
+    # 方式一：pip + PyPI
     if ! command -v uv >/dev/null 2>&1 && [ -n "$PIP_CMD" ]; then
         print_warning "尝试 pip 安装 uv（官方 PyPI）..."
         if ($PIP_CMD install uv --quiet 2>/dev/null || \
@@ -106,7 +100,7 @@ install_uv_multi_source() {
         fi
     fi
 
-    # 方式三：pip + 清华镜像
+    # 方式二：pip + 清华镜像
     if ! command -v uv >/dev/null 2>&1 && [ -n "$PIP_CMD" ]; then
         print_warning "尝试 pip 安装 uv（清华镜像）..."
         if ($PIP_CMD install uv --quiet \
@@ -119,6 +113,13 @@ install_uv_multi_source() {
             export PATH="$HOME/.local/bin:$PATH"
             return 0
         fi
+    fi
+
+    # 方式三：官方安装脚本（推荐，无需 Python）
+    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh 2>/dev/null | sh; then
+      print_warning "尝试官方脚本安装"
+        export PATH="$HOME/.local/bin:$PATH"
+        return 0
     fi
 
     # 方式四：conda/mamba
@@ -173,7 +174,6 @@ check_and_install_uv() {
     fi
 
     # 3. 多来源安装
-    print_warning "未找到 uv，正在安装..."
     if install_uv_multi_source; then
         print_success "uv 安装成功"
         _save_uv_path_to_runtime "$(command -v uv)"
@@ -215,11 +215,11 @@ _path_contains() {
 
 # 打印带颜色的标题头
 print_header() {
-    echo ""
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}$1${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
+    printf '\n'
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '%b\n' "${GREEN}$1${NC}"
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '\n'
 }
 
 # 检测是否在包管理器缓存目录中
@@ -306,6 +306,18 @@ _lazy_init() {
     # 如果在包管理器缓存中，跳过初始化（但 pnpm 全局安装需要初始化）
     if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
         return 0
+    fi
+
+    # 首先确保 uv 可用（设计文档要求：uv 不可用但可恢复 → 先安装/定位 uv）
+    if ! command -v uv >/dev/null 2>&1; then
+        print_warning "未找到 uv，正在安装..."
+        if ! check_and_install_uv; then
+            print_error "uv 安装失败，请手动安装后重试"
+            print_info "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+            print_info "  或访问 https://docs.astral.sh/uv/getting-started/installation/"
+            return 1
+        fi
+        print_success "uv 安装成功"
     fi
 
     # 如果需要同步（venv 不存在或依赖变更），执行初始化
