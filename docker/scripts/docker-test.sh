@@ -507,6 +507,32 @@ test_basic_commands() {
         log_error "cla 脚本缺少 lark start"
         return 1
     fi
+
+    # 测试所有 bin 入口脚本语法
+    log_info "测试所有 bin 入口脚本语法..."
+    local bin_has_error=0
+    for bin_file in bin/*; do
+        if [ -f "$bin_file" ]; then
+            if bash -n "$bin_file" 2>/dev/null; then
+                log_success "$bin_file 语法正确"
+            else
+                log_error "$bin_file 语法错误"
+                bin_has_error=1
+            fi
+        fi
+    done
+
+    if [ $bin_has_error -eq 1 ]; then
+        return 1
+    fi
+
+    # 验证 _common.sh 不暴露 lazy_init_if_needed
+    log_info "验证 _common.sh 不暴露 lazy_init_if_needed..."
+    if grep -q "^lazy_init_if_needed" "scripts/_common.sh"; then
+        log_error "_common.sh 不应暴露 lazy_init_if_needed 函数"
+        return 1
+    fi
+    log_success "_common.sh 不暴露 lazy_init_if_needed（符合预期）"
 }
 
 # 步骤 7：文件完整性检查
