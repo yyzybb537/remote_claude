@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # 飞书客户端管理功能测试脚本
 # 用法: 从项目根目录运行 scripts/test_lark_management.sh
@@ -6,7 +6,7 @@
 set -e
 
 # 获取项目根目录（脚本位于 scripts/ 目录）
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）

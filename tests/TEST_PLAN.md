@@ -174,31 +174,27 @@ uv run python3 tests/test_runtime_config.py && \
 echo "快速回归测试通过"
 ```
 
-### 安装与首次运行回归
+### shell 自适应与 POSIX sh 回归
 
-| 场景 | 验证点 | 测试方法 |
-|------|-------|---------|
-| pnpm 全局安装且 lifecycle script 未执行 | 通过入口命令首次触发运行期初始化，并成功进入主流程 | 手动测试 / Docker 脚本 |
-| 已初始化环境重复运行 | 首次创建运行时环境后，再次执行入口命令不重复输出初始化提示，也不重复执行 `sh <安装目录>/scripts/setup.sh --npm --lazy` 对应流程 | 手动测试 |
-| 初始化失败 | 返回非 0，stderr 输出 `sh <安装目录>/scripts/setup.sh --npm --lazy` 恢复命令 | 手动测试 |
-| shell 未重载或别名未生效 | 重新打开 shell 或使用已生效的入口命令后，可恢复进入首次运行初始化主流程 | 手动测试 |
-| npm/pnpm 卸载 hook 执行 | 不依赖交互输入，仍可完成清理，并删除当前用户的 `~/.remote-claude` 配置目录 | 手动测试 / Docker 脚本 |
+| 场景 | 验证点 | 命令 |
+|------|--------|------|
+| rc 自适应选择 | zsh/bash/unknown shell 选择正确 rc | `uv run pytest tests/test_entry_lazy_init.py::test_get_shell_rc_prefers_zsh_when_shell_is_zsh -q` |
+| init 幂等 | 重复执行不重复写块 | `uv run pytest tests/test_entry_lazy_init.py::test_upsert_rc_block_is_idempotent -q` |
+| 脚本 shebang 统一 | 目标脚本均为 `#!/bin/sh` | `uv run pytest tests/test_entry_lazy_init.py::test_scripts_use_sh_shebang_for_all_shell_scripts -q` |
+| 无 bash-only 语法残留 | `[[` 与 `#!/bin/bash` 被清理 | `uv run pytest tests/test_entry_lazy_init.py::test_shell_scripts_do_not_contain_bash_only_constructs -q` |
+| 无显式 bash 内部调用 | 脚本互调不依赖 `bash` | `uv run pytest tests/test_entry_lazy_init.py::test_scripts_no_explicit_bash_invocation_for_internal_calls -q` |
 
-**建议手动验证步骤**：
-```bash
-# 1. 使用 npm 或 pnpm 全局安装
-npm install -g remote-claude
-# 或
-pnpm add -g remote-claude
+### 安装可靠性回归
 
-# 2. 如果需要模拟 lifecycle script 未执行，可清理初始化产物后直接首次运行入口命令
-cla --version
-# 或
-remote-claude --help
-
-# 3. 如首次运行初始化失败，验证 stderr 是否给出恢复命令
-sh <安装目录>/scripts/setup.sh --npm --lazy
-```
+| 场景 | 验证点 | 命令 |
+|------|--------|------|
+| 安装失败日志落盘 | 失败后提示并可在 `/tmp/remote-claude-install.log` 定位阶段 | `uv run pytest tests/test_entry_lazy_init.py::test_install_sh_initializes_install_log_helpers -q` |
+| pip 升级前置 | 安装 uv 前会先对最终选中的 pip 执行 `install --upgrade pip --user` | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_upgrades_pip_before_uv_install -q` |
+| 镜像与 trusted-host 一致性 | pip 升级与 uv/pip 安装共用内置镜像回退并附带 `--trusted-host` | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_trusted_host_for_all_pip_attempts -q` |
+| 失败日志字段粒度（install-fail） | 安装步骤失败日志含 `stage/source/cmd/exit_code` 摘要 | `uv run pytest tests/test_entry_lazy_init.py::test_common_install_fail_summary_contains_required_fields -q` |
+| 失败日志字段粒度（script-fail） | 脚本步骤失败日志含 `stage/source/cmd/exit_code` 摘要（含新加 script-fail 字段用例） | `uv run pytest tests/test_entry_lazy_init.py::test_common_script_fail_summary_contains_required_fields -q` |
+| 补全路径一致 | setup 写入补全路径为 `scripts/completion.sh` | `uv run pytest tests/test_entry_lazy_init.py::test_setup_completion_uses_scripts_path -q` |
+| runtime 成功时创建 | runtime 初始化逻辑位于成功主流程 | `uv run pytest tests/test_entry_lazy_init.py::test_setup_runtime_creation_stays_in_success_flow -q` |
 
 ---
 

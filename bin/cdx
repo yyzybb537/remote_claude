@@ -4,23 +4,18 @@
 # 解析符号链接，兼容 macOS（不支持 readlink -f）
 SOURCE="$0"
 while [ -L "$SOURCE" ]; do
-    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
     SOURCE="$(readlink "$SOURCE")"
-    case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+    case "$SOURCE" in /*) ;; *) SOURCE="$SELF_DIR/$SOURCE" ;; esac
 done
-SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
-. "$SCRIPT_DIR/scripts/_common.sh"
-
-lazy_init_if_needed
-lazy_init_rc=$?
-if [ "$lazy_init_rc" -ne 0 ]; then
-    handle_lazy_init_failure "$lazy_init_rc"
-fi
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+. "$PROJECT_DIR/scripts/_common.sh"
 
 # 检查飞书配置
-. "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
+. "$PROJECT_DIR/scripts/check-env.sh" "$PROJECT_DIR"
 
 # 切换到项目目录，使用 uv run 调用入口点
-cd "$SCRIPT_DIR"
+cd "$PROJECT_DIR"
 uv run remote-claude lark start
 uv run remote-claude start "${PWD}_$(date +%m%d_%H%M%S)" --cli codex -- "$@"

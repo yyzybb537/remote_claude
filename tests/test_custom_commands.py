@@ -297,7 +297,10 @@ class TestGetMatchingCommands:
 
         user_config = None
         result = _get_matching_commands(user_config)
-        assert result == [{"name": "Claude", "command": "claude"}]
+        assert result == [
+            {"name": "Claude", "command": "claude"},
+            {"name": "Codex", "command": "codex"},
+        ]
 
     def test_enabled_but_empty_list(self):
         """启用但空列表"""
@@ -339,7 +342,10 @@ class TestGetMatchingCommands:
             CustomCommand(name="Claude", cli_type="claude", command="claude")
         ]
         result = _get_matching_commands(user_config)
-        assert result == [{"name": "Claude", "command": "claude"}]
+        assert result == [
+            {"name": "Claude", "command": "claude"},
+            {"name": "Codex", "command": "codex"},
+        ]
 
 
 if __name__ == "__main__":

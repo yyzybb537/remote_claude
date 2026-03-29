@@ -1,10 +1,9 @@
 #!/bin/sh
 # _common.sh - 共享的脚本初始化逻辑
-# 用法: . "$SCRIPT_DIR/scripts/_common.sh"
+# 用法: . "$PROJECT_DIR/scripts/_common.sh"
 
 # 解析符号链接，兼容 macOS（不支持 readlink -f）
-# 设置 SCRIPT_DIR 变量（项目根目录）
-# 调用方式：在脚本开头定义 SOURCE 并调用此文件
+# 入口脚本可设置 PROJECT_DIR（推荐）或 SCRIPT_DIR，_common.sh 会统一补全两者
 #
 # 示例:
 #   SOURCE="$0"
@@ -13,8 +12,8 @@
 #       SOURCE="$(readlink "$SOURCE")"
 #       case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 #   done
-#   SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
-#   . "$SCRIPT_DIR/scripts/_common.sh"
+#   PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
+#   . "$PROJECT_DIR/scripts/_common.sh"
 
 # 颜色定义（供 sourced 脚本使用）
 if [ -z "$RED" ]; then
@@ -48,9 +47,112 @@ print_detail() {
     printf "${BLUE}  %s${NC}\n" "$1"
 }
 
+INSTALL_LOG_FILE="/tmp/remote-claude-install.log"
+
+_init_install_log() {
+    : > "$INSTALL_LOG_FILE"
+    printf '[install] script=%s cwd=%s shell=%s\n' "${0##*/}" "$(pwd)" "${SHELL:-unknown}" >> "$INSTALL_LOG_FILE"
+}
+
+_install_log() {
+    printf '[install] %s\n' "$1" >> "$INSTALL_LOG_FILE"
+}
+
+_install_stage() {
+    INSTALL_STAGE="$1"
+    export INSTALL_STAGE
+    _install_log "stage=$INSTALL_STAGE"
+}
+
+_install_fail_hint() {
+    print_error "安装失败，请查看日志: $INSTALL_LOG_FILE"
+    _install_log "failed stage=${INSTALL_STAGE:-unknown} rc=${1:-1}"
+}
+
+# 统一 PROJECT_DIR / SCRIPT_DIR（兼容历史入口）
+# 约定：PROJECT_DIR 为项目根目录；SCRIPT_DIR 为 $PROJECT_DIR/scripts
+_normalize_project_and_script_dir() {
+    if [ -n "${PROJECT_DIR:-}" ] && [ -d "$PROJECT_DIR" ]; then
+        SCRIPT_DIR="$PROJECT_DIR/scripts"
+        export PROJECT_DIR SCRIPT_DIR
+        return 0
+    fi
+
+    if [ -n "${SCRIPT_DIR:-}" ] && [ -d "$SCRIPT_DIR" ]; then
+        case "$SCRIPT_DIR" in
+            */scripts)
+                PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
+                ;;
+            *)
+                PROJECT_DIR="$SCRIPT_DIR"
+                SCRIPT_DIR="$PROJECT_DIR/scripts"
+                ;;
+        esac
+        export PROJECT_DIR SCRIPT_DIR
+        return 0
+    fi
+
+    return 1
+}
+
+_normalize_project_and_script_dir || :
+
+# 将目录加入 PATH（若目录存在且未包含）
+_prepend_path_if_dir() {
+    local DIR
+    DIR="$1"
+    [ -n "$DIR" ] || return 1
+    [ -d "$DIR" ] || return 1
+
+    case ":$PATH:" in
+        *":$DIR:"*) ;;
+        *) export PATH="$DIR:$PATH" ;;
+    esac
+
+    return 0
+}
+
+# 获取 Python user base 的 bin 路径
+_get_python_user_base_bin() {
+    local USER_BASE
+    USER_BASE=""
+
+    if command -v python3 >/dev/null 2>&1; then
+        USER_BASE=$(python3 -m site --user-base 2>/dev/null)
+    elif command -v python >/dev/null 2>&1; then
+        USER_BASE=$(python -m site --user-base 2>/dev/null)
+    fi
+
+    if [ -n "$USER_BASE" ]; then
+        printf '%s/bin\n' "$USER_BASE"
+    fi
+}
+
+# 确保 uv 可执行在 PATH 中，并可被 command -v 发现
+_resolve_uv_path() {
+    local USER_BASE_BIN
+
+    if command -v uv >/dev/null 2>&1; then
+        return 0
+    fi
+
+    _prepend_path_if_dir "$HOME/.local/bin"
+    if command -v uv >/dev/null 2>&1; then
+        return 0
+    fi
+
+    USER_BASE_BIN=$(_get_python_user_base_bin)
+    _prepend_path_if_dir "$USER_BASE_BIN"
+    if command -v uv >/dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
+}
+
 # uv 路径兜底
-if ! command -v uv >/dev/null 2>&1; then
-    [ -f "$HOME/.local/bin/uv" ] && export PATH="$HOME/.local/bin:$PATH"
+if ! _resolve_uv_path; then
+    :
 fi
 
 # 从 runtime.json 读取 uv 路径
@@ -67,81 +169,174 @@ _save_uv_path_to_runtime() {
     local UV_PATH RUNTIME_FILE TMP_FILE
     UV_PATH="$1"
     RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
-    mkdir -p "$(dirname "$RUNTIME_FILE")"
 
     if [ -f "$RUNTIME_FILE" ] && command -v jq >/dev/null 2>&1; then
         TMP_FILE=$(mktemp)
         jq --arg path "$UV_PATH" '.uv_path = $path' "$RUNTIME_FILE" > "$TMP_FILE" && \
             mv "$TMP_FILE" "$RUNTIME_FILE"
-    elif [ ! -f "$RUNTIME_FILE" ]; then
-        printf '{"version":"1.0","uv_path":"%s"}\n' "$UV_PATH" > "$RUNTIME_FILE"
     fi
+}
+
+# 检测可用的 pip 命令
+_detect_pip_cmd() {
+    if command -v pip3 >/dev/null 2>&1; then
+        echo "pip3"
+    elif command -v pip >/dev/null 2>&1; then
+        echo "pip"
+    fi
+}
+
+# 固定 PyPI 镜像源（label|index-url|trusted-host）
+_install_pypi_sources() {
+    cat <<'EOF'
+tuna|https://pypi.tuna.tsinghua.edu.cn/simple/|pypi.tuna.tsinghua.edu.cn
+aliyun|https://mirrors.aliyun.com/pypi/simple/|mirrors.aliyun.com
+pypi|https://pypi.org/simple|pypi.org
+EOF
+}
+
+# 安装失败摘要日志
+_log_install_fail() {
+    # $1: stage, $2: source, $3: cmd_summary, $4: exit_code
+    local STAGE SOURCE CMD_SUMMARY EXIT_CODE
+    STAGE="$1"
+    SOURCE="$2"
+    CMD_SUMMARY="$3"
+    EXIT_CODE="$4"
+
+    printf '[install-fail][%s] source=%s cmd="%s" exit_code=%s\n' \
+        "$STAGE" "${SOURCE:-na}" "$CMD_SUMMARY" "$EXIT_CODE" >> "$INSTALL_LOG_FILE"
+}
+
+# 脚本失败摘要日志
+_log_script_fail() {
+    # $1: stage, $2: cmd_summary, $3: exit_code
+    local STAGE CMD_SUMMARY EXIT_CODE
+    STAGE="$1"
+    CMD_SUMMARY="$2"
+    EXIT_CODE="$3"
+
+    printf '[script-fail][%s] source=%s cmd="%s" exit_code=%s\n' \
+        "$STAGE" "na" "$CMD_SUMMARY" "$EXIT_CODE" >> "$INSTALL_LOG_FILE"
+}
+
+# 通用 pip 多源执行器（自动附加 -i + --trusted-host）
+_run_pip_install_with_mirrors() {
+    # $1: stage, $2: pip_cmd, $3...: pip 基础参数
+    local STAGE PIP_CMD LABEL INDEX_URL HOST RC CMD_SUMMARY
+    STAGE="$1"
+    PIP_CMD="$2"
+    shift 2
+
+    CMD_SUMMARY="$PIP_CMD $* -i <index> --trusted-host <host>"
+
+    while IFS='|' read -r LABEL INDEX_URL HOST; do
+        [ -n "$LABEL" ] || continue
+
+        "$PIP_CMD" "$@" -i "$INDEX_URL" --trusted-host "$HOST" 2>/dev/null
+        RC=$?
+        if [ "$RC" -eq 0 ]; then
+            _install_log "stage=$STAGE source=$LABEL success"
+            return 0
+        fi
+
+        _log_install_fail "$STAGE" "$LABEL" "$CMD_SUMMARY" "$RC"
+    done <<EOF
+$(_install_pypi_sources)
+EOF
+
+    return 1
+}
+
+# pip 升级前置（失败记录但不阻断）
+_upgrade_pip_before_uv_install() {
+    # $1: pip 命令
+    local PIP_CMD
+    PIP_CMD="$1"
+    [ -n "$PIP_CMD" ] || return 1
+
+    _run_pip_install_with_mirrors "pip-upgrade" "$PIP_CMD" install --upgrade pip --user
 }
 
 # 多来源安装 uv
 # 返回: 0 成功, 1 失败
 install_uv_multi_source() {
-    # 检测可用的 pip 命令
-    local PIP_CMD
-    PIP_CMD=""
-    if command -v pip3 >/dev/null 2>&1; then
-        PIP_CMD="pip3"
-    elif command -v pip >/dev/null 2>&1; then
-        PIP_CMD="pip"
-    fi
+    local PIP_CMD RC
+    PIP_CMD="$(_detect_pip_cmd)"
 
-    # 方式一：pip + PyPI
+    # 先尝试 pip --user 升级（失败只记录，不阻断后续安装）
     if ! command -v uv >/dev/null 2>&1 && [ -n "$PIP_CMD" ]; then
-        print_warning "尝试 pip 安装 uv（官方 PyPI）..."
-        if ($PIP_CMD install uv --quiet 2>/dev/null || \
-            $PIP_CMD install uv --quiet --break-system-packages 2>/dev/null); then
-            export PATH="$HOME/.local/bin:$PATH"
-            return 0
+        if ! _upgrade_pip_before_uv_install "$PIP_CMD"; then
+            _install_log "stage=pip-upgrade all-sources-failed"
         fi
     fi
 
-    # 方式二：pip + 清华镜像
-    if ! command -v uv >/dev/null 2>&1 && [ -n "$PIP_CMD" ]; then
-        print_warning "尝试 pip 安装 uv（清华镜像）..."
-        if ($PIP_CMD install uv --quiet \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-            --trusted-host pypi.tuna.tsinghua.edu.cn 2>/dev/null || \
-         $PIP_CMD install uv --quiet \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
-            --trusted-host pypi.tuna.tsinghua.edu.cn \
-            --break-system-packages 2>/dev/null); then
-            export PATH="$HOME/.local/bin:$PATH"
-            return 0
-        fi
-    fi
-
-    # 方式三：官方安装脚本（推荐，无需 Python）
-    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh 2>/dev/null | sh; then
-      print_warning "尝试官方脚本安装"
-        export PATH="$HOME/.local/bin:$PATH"
+    # pip 升级后若 uv 已可用，直接成功返回
+    if command -v uv >/dev/null 2>&1; then
+        _resolve_uv_path
         return 0
     fi
 
-    # 方式四：conda/mamba
+    # 方式一：pip --user + 固定镜像回退
+    if ! command -v uv >/dev/null 2>&1 && [ -n "$PIP_CMD" ]; then
+        print_warning "尝试 pip 安装 uv（固定镜像回退，--user）..."
+        if _run_pip_install_with_mirrors "uv-install" "$PIP_CMD" install uv --quiet --user --break-system-packages; then
+            _resolve_uv_path
+            command -v uv >/dev/null 2>&1
+            return $?
+        fi
+    fi
+
+    # 方式二：官方安装脚本（推荐，无需 Python）
+    print_warning "尝试官方脚本安装"
+    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh 2>/dev/null | sh; then
+        if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
+            return 0
+        fi
+        _log_script_fail "uv-install-script" "curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh" 127
+    else
+        RC=$?
+        _log_script_fail "uv-install-script" "curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh" "$RC"
+    fi
+
+    # 方式三：conda/mamba
     if ! command -v uv >/dev/null 2>&1; then
         if command -v mamba >/dev/null 2>&1; then
             print_warning "尝试 mamba 安装 uv..."
             if mamba install -c conda-forge uv -y --quiet 2>/dev/null; then
-                return 0
+                if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
+                    return 0
+                fi
+                _log_script_fail "uv-install-mamba" "mamba install -c conda-forge uv -y --quiet" 127
+            else
+                RC=$?
+                _log_script_fail "uv-install-mamba" "mamba install -c conda-forge uv -y --quiet" "$RC"
             fi
         elif command -v conda >/dev/null 2>&1; then
             print_warning "尝试 conda 安装 uv..."
             if conda install -c conda-forge uv -y --quiet 2>/dev/null; then
-                return 0
+                if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
+                    return 0
+                fi
+                _log_script_fail "uv-install-conda" "conda install -c conda-forge uv -y --quiet" 127
+            else
+                RC=$?
+                _log_script_fail "uv-install-conda" "conda install -c conda-forge uv -y --quiet" "$RC"
             fi
         fi
     fi
 
-    # 方式五：brew（macOS）
+    # 方式四：brew（macOS）
     if ! command -v uv >/dev/null 2>&1 && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
         print_warning "尝试 brew install uv..."
         if brew install uv 2>/dev/null; then
-            return 0
+            if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
+                return 0
+            fi
+            _log_script_fail "uv-install-brew" "brew install uv" 127
+        else
+            RC=$?
+            _log_script_fail "uv-install-brew" "brew install uv" "$RC"
         fi
     fi
 
@@ -203,18 +398,80 @@ _is_numeric() {
     esac
 }
 
+# remote-claude 初始化块标记
+REMOTE_CLAUDE_INIT_BEGIN='# >>> remote-claude init >>>'
+REMOTE_CLAUDE_INIT_END='# <<< remote-claude init <<<'
+
+# 获取 shell rc 候选文件（按扫描顺序）
+_get_shell_rc_candidates() {
+    printf '%s\n' "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"
+}
+
 # 获取 shell 配置文件路径（POSIX 兼容）
-# 优先使用当前运行的 shell 类型，而非 $SHELL 环境变量
+# 基于 SHELL 与文件存在性选择写入目标，未知 shell 回退到 ~/.profile
 get_shell_rc() {
-    if [ -n "$ZSH_VERSION" ]; then
-        echo "$HOME/.zshrc"
-    elif [ -n "$BASH_VERSION" ]; then
-        echo "$HOME/.bashrc"
-    elif [ -f "$HOME/.zshrc" ]; then
-        echo "$HOME/.zshrc"
-    else
-        echo "$HOME/.bashrc"
+    case "${SHELL:-}" in
+        */zsh)
+            [ -f "$HOME/.zshrc" ] && { echo "$HOME/.zshrc"; return 0; }
+            echo "$HOME/.profile"
+            return 0
+            ;;
+        */bash)
+            [ -f "$HOME/.bashrc" ] && { echo "$HOME/.bashrc"; return 0; }
+            [ -f "$HOME/.bash_profile" ] && { echo "$HOME/.bash_profile"; return 0; }
+            echo "$HOME/.profile"
+            return 0
+            ;;
+        *)
+            echo "$HOME/.profile"
+            return 0
+            ;;
+    esac
+}
+
+# 在候选 rc 中查找完整标记块（begin/end 成对）
+_find_valid_remote_claude_init_rc() {
+    local rc begin_count end_count
+    for rc in $(_get_shell_rc_candidates); do
+        [ -f "$rc" ] || continue
+        begin_count=$(grep -cF "$REMOTE_CLAUDE_INIT_BEGIN" "$rc" 2>/dev/null || echo 0)
+        end_count=$(grep -cF "$REMOTE_CLAUDE_INIT_END" "$rc" 2>/dev/null || echo 0)
+        if [ "$begin_count" -gt 0 ] && [ "$begin_count" = "$end_count" ]; then
+            echo "$rc"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 检查候选 rc 中是否已存在 remote-claude 初始化块（仅计完整块）
+has_remote_claude_init_in_any_rc() {
+    _find_valid_remote_claude_init_rc >/dev/null 2>&1
+}
+
+# 在 rc 中写入/更新 remote-claude 初始化块（全局查重 + 单文件 upsert）
+upsert_remote_claude_init_block() {
+    local body target rc tmp_file
+    body="$1"
+
+    rc=$(_find_valid_remote_claude_init_rc 2>/dev/null || true)
+    if [ -n "$rc" ]; then
+        tmp_file=$(mktemp)
+        awk -v begin="$REMOTE_CLAUDE_INIT_BEGIN" -v end="$REMOTE_CLAUDE_INIT_END" -v body="$body" '
+            $0==begin {print begin; print body; in_block=1; next}
+            $0==end {print end; in_block=0; next}
+            !in_block {print}
+        ' "$rc" > "$tmp_file" && mv "$tmp_file" "$rc"
+        return $?
     fi
+
+    target=$(get_shell_rc)
+    [ -f "$target" ] || : > "$target"
+    {
+        printf '\n%s\n' "$REMOTE_CLAUDE_INIT_BEGIN"
+        printf '%s\n' "$body"
+        printf '%s\n' "$REMOTE_CLAUDE_INIT_END"
+    } >> "$target"
 }
 
 # 检查 PATH 是否包含指定目录
@@ -268,7 +525,7 @@ _set_lazy_init_result_if_unset() {
 # 返回: 0 是 pnpm 全局安装, 1 不是
 _is_pnpm_global_install() {
     case "$SCRIPT_DIR" in
-        "$HOME"/Library/pnpm/global/*|"$HOME"/.local/share/pnpm/global/*|"$HOME"/AppData/Local/pnpm/global/*)
+        */Library/pnpm/global/*/node_modules/*|*/.local/share/pnpm/global/*/node_modules/*|*/AppData/Local/pnpm/global/*/node_modules/*)
             return 0
             ;;
     esac
@@ -352,7 +609,7 @@ handle_lazy_init_failure() {
 
 # 延迟初始化：检测是否需要运行 setup.sh
 # 条件：.venv 不存在 或依赖文件更新 且不在缓存目录中
-lazy_init_if_needed() {
+_lazy_init() {
     _set_lazy_init_result_if_unset "pending"
 
     # 防止重入：如果已经在 setup.sh 流程中，跳过
@@ -389,28 +646,31 @@ lazy_init_if_needed() {
 
         echo "检测到依赖变更，正在更新 Python 环境..."
         cd "$project_dir"
-        if command -v bash >/dev/null 2>&1; then
-            local setup_rc
-            # 设置标记防止重入
-            _LAZY_INIT_RUNNING=1
-            export _LAZY_INIT_RUNNING
-            _set_lazy_init_result "sync-triggered"
-            bash "$SCRIPT_DIR/setup.sh" --npm --lazy 2>/dev/null
-            setup_rc=$?
-            _LAZY_INIT_RUNNING=0
-            export _LAZY_INIT_RUNNING
-            if [ "$setup_rc" -ne 0 ]; then
-                _set_lazy_init_result "sync-failed"
-                return "$setup_rc"
-            fi
-            _set_lazy_init_result "sync-completed"
-            return 0
+        local setup_rc
+        # 设置标记防止重入
+        _LAZY_INIT_RUNNING=1
+        export _LAZY_INIT_RUNNING
+        _set_lazy_init_result "sync-triggered"
+        sh "$SCRIPT_DIR/setup.sh" --npm --lazy 2>/dev/null
+        setup_rc=$?
+        _LAZY_INIT_RUNNING=0
+        export _LAZY_INIT_RUNNING
+        if [ "$setup_rc" -ne 0 ]; then
+            _set_lazy_init_result "sync-failed"
+            return "$setup_rc"
         fi
-
-        _set_lazy_init_result "sync-shell-missing"
-        return 1
+        _set_lazy_init_result "sync-completed"
+        return 0
     fi
 
     _set_lazy_init_result "no-sync-needed"
     return 0
 }
+
+if [ "${LAZY_INIT_DISABLE_AUTO_RUN:-0}" != "1" ]; then
+    _lazy_init
+    lazy_init_rc=$?
+    if [ "$lazy_init_rc" -ne 0 ]; then
+        handle_lazy_init_failure "$lazy_init_rc"
+    fi
+fi

@@ -170,6 +170,13 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - **tmux 会话前缀：** `rc-`
 - **语言：** 代码注释和用户交互均使用中文
 - **初始化机制：** `cla` / `cl` / `cx` / `cdx` / `remote-claude` 在首次运行时自动检查并初始化 Python 环境，命令可用性不依赖 `postinstall`
+- **pip 升级前置：** 安装 `uv` 前，先对最终选中的 `pip` 执行 `install --upgrade pip --user`
+- **镜像策略：** `pip` 升级与 `uv/pip` 安装统一使用内置镜像回退策略，并附加 `--trusted-host`
+- **安装日志：** 安装链路统一写入 `/tmp/remote-claude-install.log`（每次安装覆盖最近一次日志）
+- **失败日志粒度：** 任一步骤失败都必须写入安装日志，包含 `stage/source/cmd/exit_code` 摘要
+- **runtime 初始化语义：** `runtime.json` 仅在安装成功路径执行初始化，失败路径不创建
+- **目录变量约定：** `PROJECT_DIR/SCRIPT_DIR` 以 `scripts/_common.sh` 为唯一收敛入口
+- **uv 安装策略：** 优先使用 `pip --user` 安装；若失败则按多来源 fallback（官方脚本、conda/mamba、brew）自动恢复
 
 ### 循环依赖处理
 

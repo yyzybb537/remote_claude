@@ -1,10 +1,11 @@
+#!/bin/sh
 # remote-claude shell 自动补全（支持 bash 和 zsh）
 
 _remote_claude_get_sessions() {
     remote-claude list 2>/dev/null | awk 'NR>3 && NF>0 && !/^-/ && !/^共/ {print $1}'
 }
 
-if [[ -n "$ZSH_VERSION" ]]; then
+if [ -n "${ZSH_VERSION:-}" ]; then
     # zsh 原生补全
     # compdef 依赖 compinit 初始化过的 _comps 数组，未初始化时先调用
     if ! (( ${+_comps} )); then
@@ -40,14 +41,14 @@ if [[ -n "$ZSH_VERSION" ]]; then
                 _describe 'lark 子命令' lark_cmds
                 ;;
             *)
-                if [[ $CURRENT -eq 2 ]]; then
+                if [ "$CURRENT" -eq 2 ]; then
                     _describe '子命令' commands
                 fi
                 ;;
         esac
     }
     compdef _remote_claude_zsh remote-claude
-else
+elif [ -n "${BASH_VERSION:-}" ]; then
     # bash 补全
     _remote_claude_bash() {
         local cur
@@ -56,7 +57,7 @@ else
         local commands="start attach list kill status lark stats log update"
         local lark_cmds="start stop restart status"
 
-        if [[ $COMP_CWORD -eq 1 ]]; then
+        if [ "$COMP_CWORD" -eq 1 ]; then
             COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
             return
         fi
@@ -68,7 +69,7 @@ else
                 COMPREPLY=( $(compgen -W "$sessions" -- "$cur") )
                 ;;
             lark)
-                if [[ $COMP_CWORD -eq 2 ]]; then
+                if [ "$COMP_CWORD" -eq 2 ]; then
                     COMPREPLY=( $(compgen -W "$lark_cmds" -- "$cur") )
                 fi
                 ;;

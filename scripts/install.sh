@@ -11,13 +11,16 @@
 set -e
 
 # 脚本目录（scripts/ 目录）
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 项目根目录
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
 # 使用 . 而非 source，兼容 POSIX sh
-. "$SCRIPT_DIR/_common.sh"
+LAZY_INIT_DISABLE_AUTO_RUN=1
+export LAZY_INIT_DISABLE_AUTO_RUN
+. "$PROJECT_DIR/scripts/_common.sh"
+unset LAZY_INIT_DISABLE_AUTO_RUN
 
 # 检测操作系统
 detect_os() {
@@ -25,7 +28,7 @@ detect_os() {
     if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
         print_error "不支持的操作系统: $OS"
         print_error "Remote Claude 仅支持 macOS 和 Linux"
-        exit 1
+        return 1
     fi
     print_success "操作系统: $OS"
 }
@@ -41,12 +44,8 @@ check_and_install_uv_install() {
     fi
 
     print_error "uv 安装失败，请手动安装："
-    print_info "  curl -LsSf https://astral.sh/uv/install.sh | sh"
-    print_info "  pip3 install uv"
-    print_info "  pip3 install uv -i https://pypi.tuna.tsinghua.edu.cn/simple/"
-    print_info "  conda install -c conda-forge uv"
-    print_info "  或访问 https://docs.astral.sh/uv/getting-started/installation/"
-    exit 1
+    print_uv_manual_install_hint
+    return 1
 }
 
 # 创建虚拟环境并安装依赖
@@ -88,11 +87,11 @@ verify_installation() {
 
 # 运行 setup.sh 完成初始化
 run_setup_script() {
-    setup_script="$SCRIPT_DIR/setup.sh"
+    setup_script="$PROJECT_DIR/scripts/setup.sh"
 
     if [ ! -f "$setup_script" ]; then
         print_error "未找到 setup.sh 脚本: $setup_script"
-        exit 1
+        return 1
     fi
 
     print_info "执行 setup.sh 进行完整初始化..."
@@ -123,9 +122,9 @@ run_init_script() {
     print_header "运行初始化脚本"
 
     if $NPM_MODE; then
-        run_npm_postinstall
+        run_npm_postinstall || return $?
     else
-        run_setup_script
+        run_setup_script || return $?
     fi
 
     print_success "setup.sh 执行完成"
@@ -144,7 +143,7 @@ show_completion() {
     echo "  ${GREEN}cdx${NC}  - 启动 Codex (需权限)"
     echo "  ${GREEN}remote-claude${NC} - 管理工具"
     echo ""
-    echo "${YELLOW}提示:${NC} 重新打开终端或运行 ${GREEN}source $shell_rc${NC} 生效"
+    echo "${YELLOW}提示:${NC} 重新打开终端或运行 ${GREEN}. $shell_rc${NC} 生效"
 }
 
 # 主流程
@@ -157,9 +156,12 @@ main() {
         [ "$arg" = "--lazy" ] && LAZY_MODE=true
     done
 
+    _init_install_log
+
     # npm postinstall 场景的缓存跳过逻辑由 run_npm_postinstall() 收敛处理
     if _is_in_package_manager_cache && ! $NPM_MODE; then
         echo "检测到缓存安装，跳过初始化"
+        _install_stage "cache-skip"
         exit 0
     fi
 
@@ -172,17 +174,26 @@ main() {
 
     # 延迟模式：只运行必要步骤
     if $LAZY_MODE; then
-        check_and_install_uv_install
-        setup_virtual_env
+        _install_stage "uv"
+        check_and_install_uv_install || { rc=$?; _log_script_fail "uv" "check_and_install_uv_install" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+        _install_stage "deps"
+        setup_virtual_env || { rc=$?; _log_script_fail "deps" "setup_virtual_env" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+        _install_stage "lazy-done"
         print_success "Python 环境初始化完成"
         return 0
     fi
 
-    detect_os
-    check_and_install_uv_install
-    setup_virtual_env
-    verify_installation
-    run_init_script
+    _install_stage "precheck"
+    detect_os || { rc=$?; _log_script_fail "precheck" "detect_os" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    _install_stage "uv"
+    check_and_install_uv_install || { rc=$?; _log_script_fail "uv" "check_and_install_uv_install" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    _install_stage "deps"
+    setup_virtual_env || { rc=$?; _log_script_fail "deps" "setup_virtual_env" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    _install_stage "verify"
+    verify_installation || { rc=$?; _log_script_fail "verify" "verify_installation" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    _install_stage "setup"
+    run_init_script || { rc=$?; _log_script_fail "setup" "run_init_script" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    _install_stage "done"
     show_completion
 }
 

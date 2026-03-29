@@ -597,6 +597,7 @@ run_unit_tests() {
         "tests/test_auto_answer_integration.py"
         "tests/test_base_client.py"
         "tests/test_local_client.py"
+        "tests/test_entry_lazy_init.py"
     )
 
     # 非核心测试列表（失败继续）

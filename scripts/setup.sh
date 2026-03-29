@@ -2,13 +2,13 @@
 # setup.sh - 项目初始化脚本（POSIX sh 兼容，支持 sh/bash/zsh）
 
 # 脚本目录（scripts/ 目录）
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 项目根目录
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
 # 使用 . 而非 source，兼容 POSIX sh
-. "$SCRIPT_DIR/_common.sh"
+. "$PROJECT_DIR/scripts/_common.sh"
 
 # 末尾汇总警告（使用简单变量，POSIX sh 不支持数组）
 WARNINGS_COUNT=0
@@ -33,24 +33,7 @@ print_warnings() {
 
 # 确保 ~/.local/bin 在 PATH 中
 setup_path() {
-    PROFILE="$HOME/.bash_profile"
-    # 不存在则创建
-    [ -f "$PROFILE" ] || touch "$PROFILE"
-
-    # 未写入 source .bashrc 则追加
-    if ! grep -qF '.bashrc' "$PROFILE" 2>/dev/null; then
-        echo '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' >> "$PROFILE"
-    fi
-
-    # 未写入则追加
-    if ! grep -qF '$HOME/.local/bin' "$PROFILE" 2>/dev/null; then
-        echo "" >> "$PROFILE"
-        echo '# remote-claude: 确保 ~/.local/bin 在 PATH' >> "$PROFILE"
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$PROFILE"
-    fi
-
-    # 使当前脚本会话立即生效
-    . "$PROFILE" 2>/dev/null || true
+    upsert_remote_claude_init_block 'export PATH="$HOME/.local/bin:$PATH"'
     export PATH="$HOME/.local/bin:$PATH"
 }
 
@@ -62,7 +45,7 @@ check_os() {
     if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
         print_error "不支持的操作系统: $OS"
         print_error "Remote Claude 仅支持 macOS 和 Linux"
-        exit 1
+        return 1
     fi
 
     print_success "操作系统: $OS"
@@ -75,21 +58,12 @@ check_uv() {
     if check_and_install_uv; then
         UV_VERSION=$(uv --version)
         print_success "$UV_VERSION 已安装"
-        # 确保 ~/.local/bin 写入 shell rc
-        _RC=$(get_shell_rc)
-        if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
-            echo "" >> "$_RC"
-            echo "# uv" >> "$_RC"
-            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_RC"
-            print_success "已将 \$HOME/.local/bin 写入 $_RC"
-        fi
+        upsert_remote_claude_init_block 'export PATH="$HOME/.local/bin:$PATH"'
+        print_success "已确保 \$HOME/.local/bin 写入 shell 初始化配置"
     else
         print_error "uv 安装失败，请手动安装："
-        print_info "  pip3 install uv"
-        print_info "  pip3 install uv -i https://pypi.tuna.tsinghua.edu.cn/simple/"
-        print_info "  conda install -c conda-forge uv"
-        print_info "  详见: https://docs.astral.sh/uv/getting-started/installation/"
-        exit 1
+        print_uv_manual_install_hint
+        return 1
     fi
 }
 
@@ -117,7 +91,7 @@ check_tmux() {
         if [ "$OS" = "Darwin" ]; then
             if ! command -v brew >/dev/null 2>&1; then
                 print_warning "未找到 Homebrew，正在自动安装..."
-                /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+                sh -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
                 # 将 Homebrew 加入 PATH（Apple Silicon / Intel 路径不同）
                 if [ -x "/opt/homebrew/bin/brew" ]; then
                     eval "$(/opt/homebrew/bin/brew shellenv)"
@@ -126,7 +100,7 @@ check_tmux() {
                 fi
                 if ! command -v brew >/dev/null 2>&1; then
                     print_error "Homebrew 安装失败，请手动安装后重试: https://brew.sh"
-                    exit 1
+                    return 1
                 fi
                 print_success "Homebrew 安装成功"
             fi
@@ -214,13 +188,8 @@ check_tmux() {
                 *":$HOME/.local/bin:"*) ;;
                 *)
                     export PATH="$HOME/.local/bin:$PATH"
-                    _RC=$(get_shell_rc)
-                    if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
-                        echo "" >> "$_RC"
-                        echo "# remote-claude: tmux 路径" >> "$_RC"
-                        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_RC"
-                        print_success "已自动将 \$HOME/.local/bin 加入 PATH（写入 $_RC）"
-                    fi
+                    upsert_remote_claude_init_block 'export PATH="$HOME/.local/bin:$PATH"'
+                    print_success "已自动将 \$HOME/.local/bin 加入 PATH 并写入 shell 初始化配置"
                     ;;
             esac
         fi
@@ -315,13 +284,13 @@ check_cli_tools() {
         [Yy]*) ;;
         *)
             print_error "请先安装 Claude CLI 或 Codex CLI 后再运行此脚本"
-            exit 1
+            return 1
             ;;
     esac
 
     if ! command -v claude >/dev/null 2>&1 && ! command -v codex >/dev/null 2>&1; then
         print_error "仍未找到 claude 或 codex 命令，请检查安装或 PATH 配置"
-        exit 1
+        return 1
     fi
 }
 
@@ -329,9 +298,11 @@ check_cli_tools() {
 install_dependencies() {
     print_header "安装 Python 依赖"
 
+    cd "$PROJECT_DIR"
+
     if [ ! -f "pyproject.toml" ]; then
         print_error "未找到 pyproject.toml 文件"
-        exit 1
+        return 1
     fi
 
     # 检测并配置 PyPI 镜像（按优先级：清华 > 阿里 > 官方）
@@ -350,10 +321,10 @@ install_dependencies() {
 
     if [ -n "$mirror_url" ]; then
         print_info "使用 ${mirror_name}镜像加速..."
-        uv sync --index-url "$mirror_url" || { print_error "依赖安装失败"; exit 1; }
+        uv sync --index-url "$mirror_url" || { print_error "依赖安装失败"; return 1; }
     else
         print_info "使用官方 PyPI..."
-        uv sync || { print_error "依赖安装失败"; exit 1; }
+        uv sync || { print_error "依赖安装失败"; return 1; }
     fi
 
     print_success "依赖安装完成"
@@ -384,7 +355,7 @@ configure_lark() {
 
     if [ ! -f "$TEMPLATE_ENV" ]; then
         print_error "未找到 .env.example 模板文件: $TEMPLATE_ENV"
-        exit 1
+        return 1
     fi
 
     printf "%b" "${YELLOW}是否需要配置飞书客户端？${NC} [y/N]: "
@@ -610,12 +581,12 @@ init_config_files() {
 
     if [ ! -f "$CONFIG_TEMPLATE" ]; then
         print_error "未找到配置模板: $CONFIG_TEMPLATE"
-        exit 1
+        return 1
     fi
 
     if [ ! -f "$RUNTIME_TEMPLATE" ]; then
         print_error "未找到运行时模板: $RUNTIME_TEMPLATE"
-        exit 1
+        return 1
     fi
 
     # 1. 创建默认 config.json（如不存在）
@@ -695,13 +666,8 @@ configure_shell() {
             BIN_DIR="$HOME/.local/bin"
             # 自动写入 PATH 到 shell 配置文件
             export PATH="$BIN_DIR:$PATH"
-            _RC=$(get_shell_rc)
-            if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
-                echo "" >> "$_RC"
-                echo "# remote-claude: 快捷命令路径" >> "$_RC"
-                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_RC"
-                print_success "已自动将 \$HOME/.local/bin 加入 PATH（写入 $_RC）"
-            fi
+            upsert_remote_claude_init_block 'export PATH="$HOME/.local/bin:$PATH"'
+            print_success "已自动将 \$HOME/.local/bin 加入 PATH 并写入 shell 初始化配置"
         fi
         mkdir -p "$BIN_DIR"
         ln -sf "$PROJECT_DIR/bin/cla"           "$BIN_DIR/cla"          2>/dev/null || true
@@ -724,17 +690,12 @@ configure_shell() {
     print_info "  remote-claude - Remote Claude 主命令（start/attach/list/kill/lark）"
 
     # 安装 shell 自动补全
-    COMPLETION_LINE="source \"$PROJECT_DIR/completion.sh\""
-    SHELL_RC=$(get_shell_rc)
+    COMPLETION_LINE=". \"$PROJECT_DIR/scripts/completion.sh\""
+    BLOCK_CONTENT="export PATH=\"\$HOME/.local/bin:\$PATH\"; $COMPLETION_LINE"
+    upsert_remote_claude_init_block "$BLOCK_CONTENT"
 
-    if [ -f "$SHELL_RC" ] && grep -qF "$PROJECT_DIR/completion.sh" "$SHELL_RC" 2>/dev/null; then
-        print_info "自动补全已配置（$SHELL_RC）"
-    else
-        echo "" >> "$SHELL_RC"
-        echo "# remote-claude 自动补全" >> "$SHELL_RC"
-        echo "$COMPLETION_LINE" >> "$SHELL_RC"
-        print_success "已添加自动补全到 $SHELL_RC（重新打开终端后生效）"
-    fi
+    SHELL_RC=$(get_shell_rc)
+    print_success "已更新 shell 初始化配置到 $SHELL_RC（重新打开终端后生效）"
 }
 
 # 重启飞书客户端
@@ -772,7 +733,7 @@ ${YELLOW}快捷命令：${NC}
 详细使用说明请阅读 README.md
 
 ${YELLOW}提示：${NC}请运行以下命令使 PATH 生效，或重新打开终端：
-  . ~/.bash_profile
+  . $(get_shell_rc)
 
 EOF
 }
@@ -786,6 +747,8 @@ main() {
         [ "$arg" = "--npm" ] && NPM_MODE=true
         [ "$arg" = "--lazy" ] && LAZY_MODE=true
     done
+
+    _init_install_log
 
     # CI 模式：跳过 tmux 版本检查（CI 环境可能没有 sudo）
     if [ -n "$CI" ]; then
@@ -801,31 +764,40 @@ main() {
 
     # 延迟初始化模式：只运行必要步骤
     if $LAZY_MODE; then
-        setup_path
-        check_uv
-        install_dependencies
+        _install_stage "setup-lazy-precheck"
+        setup_path || { rc=$?; _log_script_fail "setup-lazy-precheck" "setup_path" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+        check_uv || { rc=$?; _log_script_fail "setup-lazy-precheck" "check_uv" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+        _install_stage "setup-lazy-deps"
+        install_dependencies || { rc=$?; _log_script_fail "setup-lazy-deps" "install_dependencies" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+        _install_stage "setup-lazy-done"
         print_success "Python 环境初始化完成"
         return 0
     fi
 
-    setup_path
-    check_os
-    check_uv
-    check_tmux
-    check_cli_tools
-    install_dependencies
-    if ! $NPM_MODE; then
-        configure_lark
-    fi
-    create_directories
-    init_config_files
-    migrate_legacy_notify_files
-    migrate_claude_command
-    set_permissions
-    configure_shell
-    restart_lark_client
-    show_usage
+    _install_stage "setup-precheck"
+    setup_path || { rc=$?; _log_script_fail "setup-precheck" "setup_path" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    check_os || { rc=$?; _log_script_fail "setup-precheck" "check_os" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    check_uv || { rc=$?; _log_script_fail "setup-precheck" "check_uv" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    check_tmux || { rc=$?; _log_script_fail "setup-precheck" "check_tmux" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    check_cli_tools || { rc=$?; _log_script_fail "setup-precheck" "check_cli_tools" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    install_dependencies || { rc=$?; _log_script_fail "setup-precheck" "install_dependencies" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
 
+    _install_stage "setup-config"
+    if ! $NPM_MODE; then
+        configure_lark || { rc=$?; _log_script_fail "setup-config" "configure_lark" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    fi
+    create_directories || { rc=$?; _log_script_fail "setup-config" "create_directories" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    init_config_files || { rc=$?; _log_script_fail "setup-config" "init_config_files" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    migrate_legacy_notify_files || { rc=$?; _log_script_fail "setup-config" "migrate_legacy_notify_files" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    migrate_claude_command || { rc=$?; _log_script_fail "setup-config" "migrate_claude_command" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+
+    _install_stage "setup-finalize"
+    set_permissions || { rc=$?; _log_script_fail "setup-finalize" "set_permissions" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    configure_shell || { rc=$?; _log_script_fail "setup-finalize" "configure_shell" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    restart_lark_client || { rc=$?; _log_script_fail "setup-finalize" "restart_lark_client" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    show_usage || { rc=$?; _log_script_fail "setup-finalize" "show_usage" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+
+    _install_stage "setup-done"
     print_warnings
 }
 

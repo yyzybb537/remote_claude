@@ -4,23 +4,18 @@
 # 解析符号链接，兼容 macOS（不支持 readlink -f）
 SOURCE="$0"
 while [ -L "$SOURCE" ]; do
-    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
     SOURCE="$(readlink "$SOURCE")"
     case "$SOURCE" in
         /*) ;;
-        *) SOURCE="$DIR/$SOURCE" ;;
+        *) SOURCE="$SELF_DIR/$SOURCE" ;;
     esac
 done
-PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
 # _common.sh 末尾会自动调用 _lazy_init 进行初始化检查
-. "${PROJECT_DIR}/scripts/_common.sh"
-
-lazy_init_if_needed
-lazy_init_rc=$?
-if [ "$lazy_init_rc" -ne 0 ]; then
-    handle_lazy_init_failure "$lazy_init_rc"
-fi
+. "$PROJECT_DIR/scripts/_common.sh"
 
 # log 子命令：查看最后启动的 session 日志
 if [ "$1" = "log" ]; then

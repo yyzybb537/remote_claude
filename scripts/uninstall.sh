@@ -4,13 +4,16 @@
 
 set -e
 
-# 获取脚本目录（scripts/ 目录）
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 脚本目录（scripts/ 目录）
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 项目根目录
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
 # 引入共享脚本（提供颜色定义、打印函数）
-. "$SCRIPT_DIR/_common.sh"
+LAZY_INIT_DISABLE_AUTO_RUN=1
+export LAZY_INIT_DISABLE_AUTO_RUN
+. "$PROJECT_DIR/scripts/_common.sh"
+unset LAZY_INIT_DISABLE_AUTO_RUN
 
 # 检测是否在 npm/pnpm 的 uninstall hook 上下文中
 # 仅在存在 lifecycle event 且事件名包含 uninstall 时判定为真
@@ -67,28 +70,20 @@ cleanup_shell_config() {
     print_info "清理 shell 配置..."
 
     local cleaned=0
+    local rc tmp_file
     for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do
-        if [ -f "$rc" ]; then
-            # 创建临时文件
-            tmp_file=$(mktemp)
+        [ -f "$rc" ] || continue
 
-            # 删除 remote-claude 相关行（包括注释、source、PATH 等）
-            # 使用 grep 过滤，保留不相关的行
-            grep -v -E \
-                -e '# remote-claude' \
-                -e 'completion\.sh' \
-                -e 'REMOTE_CLAUDE' \
-                -e '\$HOME/\.local/bin.*#.*remote' \
-                "$rc" > "$tmp_file" 2>/dev/null || cp "$rc" "$tmp_file"
+        tmp_file=$(mktemp)
+        awk -v begin='# >>> remote-claude init >>>' -v end='# <<< remote-claude init <<<' '
+            $0==begin {in_block=1; next}
+            $0==end {in_block=0; next}
+            !in_block {print}
+        ' "$rc" > "$tmp_file" && mv "$tmp_file" "$rc"
 
-            # 检查是否有变化
-            if ! diff -q "$rc" "$tmp_file" > /dev/null 2>&1; then
-                mv "$tmp_file" "$rc"
-                print_detail "已清理: $rc"
-                cleaned=$((cleaned + 1))
-            else
-                rm -f "$tmp_file"
-            fi
+        if ! grep -qF '# >>> remote-claude init >>>' "$rc" 2>/dev/null; then
+            cleaned=$((cleaned + 1))
+            print_detail "已清理: $rc"
         fi
     done
 

@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 # 发布 remote-claude 到 npm
-# 用法：bash scripts/publish.sh [patch|minor|major] [--token <npm-token>]
+# 用法：sh scripts/npm-publish.sh [patch|minor|major] [--token <npm-token>]
 #       默认 patch（0.0.x）
 
 set -e
@@ -12,11 +12,20 @@ cd "$ROOT_DIR"
 # 解析参数
 BUMP="patch"
 TOKEN=""
-while [[ $# -gt 0 ]]; do
+while [ "$#" -gt 0 ]; do
     case "$1" in
-        --token) TOKEN="$2"; shift 2 ;;
-        patch|minor|major) BUMP="$1"; shift ;;
-        *) echo "未知参数: $1"; exit 1 ;;
+        --token)
+            TOKEN="$2"
+            shift 2
+            ;;
+        patch|minor|major)
+            BUMP="$1"
+            shift
+            ;;
+        *)
+            echo "未知参数: $1"
+            exit 1
+            ;;
     esac
 done
 
@@ -27,9 +36,9 @@ if [ -n "$TOKEN" ]; then
 fi
 
 # 检查 npm 登录状态
-if ! npm whoami --registry=https://registry.npmjs.org/ &>/dev/null; then
+if ! npm whoami --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
     echo "❌ 未登录 npm，请通过 --token 传入 token："
-    echo "   bash scripts/publish.sh --token <npm-token>"
+    echo "   sh scripts/npm-publish.sh --token <npm-token>"
     exit 1
 fi
 
