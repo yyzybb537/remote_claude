@@ -189,9 +189,9 @@ _detect_pip_cmd() {
 # 固定 PyPI 镜像源（label|index-url|trusted-host）
 _install_pypi_sources() {
     cat <<'EOF'
-tuna|https://pypi.tuna.tsinghua.edu.cn/simple/|pypi.tuna.tsinghua.edu.cn
-aliyun|https://mirrors.aliyun.com/pypi/simple/|mirrors.aliyun.com
 pypi|https://pypi.org/simple|pypi.org
+aliyun|https://mirrors.aliyun.com/pypi/simple/|mirrors.aliyun.com
+tuna|https://pypi.tuna.tsinghua.edu.cn/simple/|pypi.tuna.tsinghua.edu.cn
 EOF
 }
 
@@ -234,6 +234,33 @@ _run_pip_install_with_mirrors() {
         [ -n "$LABEL" ] || continue
 
         "$PIP_CMD" "$@" -i "$INDEX_URL" --trusted-host "$HOST" 2>/dev/null
+        RC=$?
+        if [ "$RC" -eq 0 ]; then
+            _install_log "stage=$STAGE source=$LABEL success"
+            return 0
+        fi
+
+        _log_install_fail "$STAGE" "$LABEL" "$CMD_SUMMARY" "$RC"
+    done <<EOF
+$(_install_pypi_sources)
+EOF
+
+    return 1
+}
+
+# 通用 uv 多源执行器（自动附加 --index-url + --allow-insecure-host）
+_run_uv_with_pypi_sources() {
+    # $1: stage, $2...: uv 基础参数
+    local STAGE LABEL INDEX_URL HOST RC CMD_SUMMARY
+    STAGE="$1"
+    shift
+
+    CMD_SUMMARY="uv $* --index-url <index> --allow-insecure-host <host>"
+
+    while IFS='|' read -r LABEL INDEX_URL HOST; do
+        [ -n "$LABEL" ] || continue
+
+        uv "$@" --index-url "$INDEX_URL" --allow-insecure-host "$HOST" 2>/dev/null
         RC=$?
         if [ "$RC" -eq 0 ]; then
             _install_log "stage=$STAGE source=$LABEL success"

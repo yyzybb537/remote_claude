@@ -14,6 +14,27 @@ ENTRY_SCRIPTS = [
 ]
 
 
+PIP_SOURCE_MARKERS = {
+    "官方": "https://pypi.org/simple",
+    "阿里": "https://mirrors.aliyun.com/pypi/simple/",
+    "清华": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+}
+
+
+def extract_first_pip_sources(output: str) -> list[str]:
+    seen_sources: set[str] = set()
+    ordered_sources: list[str] = []
+    for line in output.splitlines():
+        if "install uv" not in line:
+            continue
+        for source, marker in PIP_SOURCE_MARKERS.items():
+            if marker in line and source not in seen_sources:
+                seen_sources.add(source)
+                ordered_sources.append(source)
+                break
+    return ordered_sources
+
+
 def _expected_recovery_command(project_root: Path) -> str:
     return f"sh {project_root / 'scripts' / 'setup.sh'} --npm --lazy"
 
@@ -352,6 +373,59 @@ cat "$TMPDIR_PATH/calls.log"
     assert all("--trusted-host" in l for l in pip_lines)
 
 
+
+def test_install_uv_multi_source_uses_official_then_aliyun_then_tuna_order():
+    result = run_common(r'''
+TMPDIR_PATH="$(mktemp -d)"
+export HOME="$TMPDIR_PATH/home"
+mkdir -p "$TMPDIR_PATH/bin"
+PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
+: > "$TMPDIR_PATH/calls.log"
+
+pip3() {
+    echo "$*" >> "$TMPDIR_PATH/calls.log"
+    return 1
+}
+
+pip() { pip3 "$@"; }
+curl() { return 1; }
+install_uv_multi_source || true
+cat "$TMPDIR_PATH/calls.log"
+''')
+
+    assert result.returncode == 0, result.stderr
+    assert extract_first_pip_sources(result.stdout) == ["官方", "阿里", "清华"]
+
+
+def test_run_uv_with_pypi_sources_uses_index_and_trusted_host_for_each_attempt():
+    result = run_common(r'''
+TMPDIR_PATH="$(mktemp -d)"
+export HOME="$TMPDIR_PATH/home"
+mkdir -p "$TMPDIR_PATH/bin"
+PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
+: > "$TMPDIR_PATH/uv.log"
+
+uv() {
+    echo "$*" >> "$TMPDIR_PATH/uv.log"
+    return 1
+}
+
+_run_uv_with_pypi_sources "uv-sync" sync || true
+cat "$TMPDIR_PATH/uv.log"
+''')
+
+    assert result.returncode == 0, result.stderr
+    uv_lines = [l for l in result.stdout.splitlines() if l.startswith("sync")]
+    assert len(uv_lines) == 3
+    assert "--index-url https://pypi.org/simple" in uv_lines[0]
+    assert "--allow-insecure-host pypi.org" in uv_lines[0]
+    assert "--index-url https://mirrors.aliyun.com/pypi/simple/" in uv_lines[1]
+    assert "--allow-insecure-host mirrors.aliyun.com" in uv_lines[1]
+    assert "--index-url https://pypi.tuna.tsinghua.edu.cn/simple/" in uv_lines[2]
+    assert "--allow-insecure-host pypi.tuna.tsinghua.edu.cn" in uv_lines[2]
+
+
+
 def test_common_install_fail_summary_contains_required_fields():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
@@ -372,6 +446,50 @@ cat "$INSTALL_LOG_FILE"
     assert "exit_code=9" in out
 
 
+def test_install_uv_multi_source_keeps_fallback_after_all_pypi_sources_fail():
+    result = run_common(r'''
+TMPDIR_PATH="$(mktemp -d)"
+export HOME="$TMPDIR_PATH/home"
+mkdir -p "$HOME/.local/bin" "$TMPDIR_PATH/bin"
+PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
+: > "$TMPDIR_PATH/pip_args.log"
+: > "$TMPDIR_PATH/fallback.log"
+
+pip3() {
+    echo "$*" >> "$TMPDIR_PATH/pip_args.log"
+    return 1
+}
+
+pip() { pip3 "$@"; }
+
+curl() {
+    echo "curl-called" >> "$TMPDIR_PATH/fallback.log"
+    cat <<'EOF'
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/uv" <<'UVEOF'
+#!/bin/sh
+echo "uv 0.test"
+UVEOF
+chmod +x "$HOME/.local/bin/uv"
+EOF
+    return 0
+}
+
+install_uv_multi_source || exit 1
+cat "$TMPDIR_PATH/pip_args.log"
+cat "$TMPDIR_PATH/fallback.log"
+''')
+
+    assert result.returncode == 0, result.stderr
+    pip_uv_lines = [l for l in result.stdout.splitlines() if "install uv" in l]
+    assert len(pip_uv_lines) >= 3
+    assert "-i https://pypi.org/simple" in pip_uv_lines[0]
+    assert "-i https://mirrors.aliyun.com/pypi/simple/" in pip_uv_lines[1]
+    assert "-i https://pypi.tuna.tsinghua.edu.cn/simple/" in pip_uv_lines[2]
+    assert "curl-called" in result.stdout
+
+
+
 def test_common_script_fail_summary_contains_required_fields():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
@@ -390,6 +508,13 @@ cat "$INSTALL_LOG_FILE"
     assert "source=na" in out
     assert "cmd=\"curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh\"" in out
     assert "exit_code=127" in out
+
+
+def test_setup_install_dependencies_uses_uv_retry_helper_instead_of_curl_probe():
+    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    assert '_run_uv_with_pypi_sources "uv-sync" sync' in content
+    assert 'curl -sSf --connect-timeout 3' not in content
+
 
 
 def test_lazy_init_if_needed_reports_setup_success_after_trigger(tmp_path: Path):

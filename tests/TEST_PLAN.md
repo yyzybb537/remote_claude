@@ -190,7 +190,10 @@ echo "快速回归测试通过"
 |------|--------|------|
 | 安装失败日志落盘 | 失败后提示并可在 `/tmp/remote-claude-install.log` 定位阶段 | `uv run pytest tests/test_entry_lazy_init.py::test_install_sh_initializes_install_log_helpers -q` |
 | pip 升级前置 | 安装 uv 前会先对最终选中的 pip 执行 `install --upgrade pip --user` | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_upgrades_pip_before_uv_install -q` |
+| uv 安装源顺序 | `install_uv_multi_source` 按官方 → 阿里 → 清华顺序尝试 PyPI 源 | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_official_then_aliyun_then_tuna_order -q` |
+| uv sync 多源回退 | `_run_uv_with_pypi_sources` / `install_dependencies` 按官方 → 阿里 → 清华依次回退，并附加 host trust 参数 | `uv run pytest tests/test_entry_lazy_init.py::test_run_uv_with_pypi_sources_uses_index_and_trusted_host_for_each_attempt -q` |
 | 镜像与 trusted-host 一致性 | pip 升级与 uv/pip 安装共用内置镜像回退并附带 `--trusted-host` | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_trusted_host_for_all_pip_attempts -q` |
+| 全部 PyPI 源失败后继续 fallback | pip 多源失败后仍继续官方脚本等后续安装兜底 | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_keeps_fallback_after_all_pypi_sources_fail -q` |
 | 失败日志字段粒度（install-fail） | 安装步骤失败日志含 `stage/source/cmd/exit_code` 摘要 | `uv run pytest tests/test_entry_lazy_init.py::test_common_install_fail_summary_contains_required_fields -q` |
 | 失败日志字段粒度（script-fail） | 脚本步骤失败日志含 `stage/source/cmd/exit_code` 摘要（含新加 script-fail 字段用例） | `uv run pytest tests/test_entry_lazy_init.py::test_common_script_fail_summary_contains_required_fields -q` |
 | 补全路径一致 | setup 写入补全路径为 `scripts/completion.sh` | `uv run pytest tests/test_entry_lazy_init.py::test_setup_completion_uses_scripts_path -q` |

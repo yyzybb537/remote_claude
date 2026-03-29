@@ -305,27 +305,11 @@ install_dependencies() {
         return 1
     fi
 
-    # 检测并配置 PyPI 镜像（按优先级：清华 > 阿里 > 官方）
-    mirror_url=""
-    mirror_name=""
-
-    # 检测清华镜像可达性
-    if curl -sSf --connect-timeout 3 "https://pypi.tuna.tsinghua.edu.cn/simple/" >/dev/null 2>&1; then
-        mirror_url="https://pypi.tuna.tsinghua.edu.cn/simple/"
-        mirror_name="清华"
-    # 检测阿里镜像可达性
-    elif curl -sSf --connect-timeout 3 "https://mirrors.aliyun.com/pypi/simple/" >/dev/null 2>&1; then
-        mirror_url="https://mirrors.aliyun.com/pypi/simple/"
-        mirror_name="阿里"
-    fi
-
-    if [ -n "$mirror_url" ]; then
-        print_info "使用 ${mirror_name}镜像加速..."
-        uv sync --index-url "$mirror_url" || { print_error "依赖安装失败"; return 1; }
-    else
-        print_info "使用官方 PyPI..."
-        uv sync || { print_error "依赖安装失败"; return 1; }
-    fi
+    print_info "按官方 → 阿里 → 清华顺序尝试同步依赖..."
+    _run_uv_with_pypi_sources "uv-sync" sync || {
+        print_error "依赖安装失败"
+        return 1
+    }
 
     print_success "依赖安装完成"
 
