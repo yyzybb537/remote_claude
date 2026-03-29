@@ -7,6 +7,7 @@ INSTALL_DIR="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 ENV_FILE="$HOME/.remote-claude/.env"
 mkdir -p "$HOME/.remote-claude"
 ENV_OK=false
+REQUIRE_FEISHU="${REMOTE_CLAUDE_REQUIRE_FEISHU:-1}"
 
 if [ -f "$ENV_FILE" ]; then
     APP_ID=$(grep -E '^FEISHU_APP_ID=' "$ENV_FILE" | cut -d= -f2)
@@ -18,6 +19,13 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 if [ "$ENV_OK" = false ]; then
+    if [ "$REQUIRE_FEISHU" = "0" ]; then
+        echo ""
+        echo "飞书客户端未配置，跳过飞书启动。"
+        echo "如需启用飞书客户端，请先配置 $ENV_FILE"
+        echo ""
+        return 0
+    fi
     echo ""
     echo "飞书客户端尚未配置，需要填写应用凭证。"
     echo "（在飞书开发者后台创建应用获取: https://open.feishu.cn/app）"

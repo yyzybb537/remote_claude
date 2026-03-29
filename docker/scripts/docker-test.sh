@@ -597,6 +597,9 @@ run_unit_tests() {
         "tests/test_auto_answer_integration.py"
         "tests/test_base_client.py"
         "tests/test_local_client.py"
+        "tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional"
+        "tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required"
+        "tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details"
         "tests/test_entry_lazy_init.py"
     )
 
@@ -634,7 +637,7 @@ run_unit_tests() {
         local test_type="$2"
         local log_file="$RESULTS_DIR/$(basename "$test" .py).log"
 
-        if uv run python3 "$test" > "$log_file" 2>&1; then
+        if uv run pytest -q "$test" > "$log_file" 2>&1; then
             echo "PASS:$test:$test_type"
         else
             echo "FAIL:$test:$test_type"
@@ -671,7 +674,7 @@ run_unit_tests() {
             if [ -f "$test" ]; then
                 unit_total=$((unit_total + 1))
                 log_info "运行核心测试: $test"
-                if uv run python3 "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
+                if uv run pytest -q "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
                     log_success "核心测试通过: $test"
                     unit_passed=$((unit_passed + 1))
                 else
@@ -719,7 +722,7 @@ run_unit_tests() {
             if [ -f "$test" ]; then
                 unit_total=$((unit_total + 1))
                 log_info "运行非核心测试: $test"
-                if uv run python3 "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
+                if uv run pytest -q "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
                     log_success "非核心测试通过: $test"
                     unit_passed=$((unit_passed + 1))
                 else

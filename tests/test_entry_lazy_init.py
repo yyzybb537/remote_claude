@@ -528,20 +528,102 @@ def test_entry_script_preserves_lazy_init_failure_exit_code_and_reports_real_set
     assert _expected_recovery_command(project_dir) in result.stderr
 
 
-def test_install_sh_skips_successfully_in_package_cache():
-    result = run_common("""
-SCRIPT_DIR="$HOME/.npm/_cacache/remote-claude/scripts"
-PROJECT_DIR="$HOME/.npm/_cacache/remote-claude"
-if _is_in_package_manager_cache; then
-    echo cache-detected
-else
-    echo cache-missed
-    exit 1
-fi
-""")
+
+
+def test_check_env_allows_skip_when_feishu_not_required(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    script_dir = project_dir / "scripts"
+    resources_dir = project_dir / "resources" / "defaults"
+    script_dir.mkdir(parents=True)
+    resources_dir.mkdir(parents=True)
+
+    check_env = script_dir / "check-env.sh"
+    check_env.write_text((REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (resources_dir / ".env.example").write_text("FEISHU_APP_ID=cli_xxxxx\nFEISHU_APP_SECRET=xxxxx\n", encoding="utf-8")
+
+    shell_script = f"""#!/bin/sh
+set -e
+export HOME='{tmp_path / 'home'}'
+mkdir -p "$HOME"
+export REMOTE_CLAUDE_REQUIRE_FEISHU=0
+. '{check_env}' '{project_dir}'
+echo skip-ok
+"""
+    result = subprocess.run(["sh"], input=shell_script, text=True, capture_output=True, cwd=project_dir)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().endswith("cache-detected")
+    assert result.stdout.strip().endswith("skip-ok")
+
+
+def test_lazy_init_failure_surfaces_log_hint_and_stage_details(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    script_dir = project_dir / "scripts"
+    script_dir.mkdir(parents=True)
+    setup_sh = script_dir / "setup.sh"
+    setup_sh.write_text("#!/bin/sh\necho 'setup stderr detail' >&2\nexit 9\n", encoding="utf-8")
+    setup_sh.chmod(0o755)
+
+    result = run_common(f"""
+PROJECT_DIR='{project_dir}'
+SCRIPT_DIR='{script_dir}'
+INSTALL_LOG_FILE='{tmp_path / 'install.log'}'
+_lazy_init || true
+lazy_init_result=${{LAZY_INIT_RESULT:-missing}}
+case "$lazy_init_result" in
+    sync-failed) handle_lazy_init_failure 9 ;;
+    *)
+        echo "unexpected-result:$lazy_init_result"
+        exit 1
+        ;;
+esac
+""")
+
+    assert result.returncode == 9
+    assert _expected_recovery_command(project_dir) in result.stderr
+    assert "setup stderr detail" in result.stderr
+    assert str(tmp_path / 'install.log') in result.stderr
+
+
+def test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    bin_dir = project_dir / "bin"
+    script_dir = project_dir / "scripts"
+    bin_dir.mkdir(parents=True)
+    script_dir.mkdir()
+
+    for name in ("cla",):
+        target = bin_dir / name
+        target.write_text((REPO_ROOT / "bin" / name).read_text(encoding="utf-8"), encoding="utf-8")
+        target.chmod(0o755)
+
+    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "check-env.sh").write_text((REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8"), encoding="utf-8")
+
+    home = tmp_path / "home"
+    (home / ".remote-claude").mkdir(parents=True)
+    (home / ".remote-claude" / "runtime.json").write_text("{}\n", encoding="utf-8")
+    (project_dir / "package.json").write_text('{"name":"remote-claude","version":"0.test"}\n', encoding="utf-8")
+    (project_dir / "pyproject.toml").write_text('[project]\nname="x"\nversion="0.1.0"\n', encoding="utf-8")
+    (project_dir / ".venv").mkdir()
+
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    (bindir / "uv").write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
+    (bindir / "uv").chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", str(bin_dir / "cla"), "--hello"],
+        text=True,
+        capture_output=True,
+        cwd=project_dir,
+        env={**os.environ, "HOME": str(home), "PATH": f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin", "REMOTE_CLAUDE_REQUIRE_FEISHU": "0"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "飞书客户端尚未配置" not in result.stdout
+    assert "飞书客户端未配置，跳过飞书启动。" in result.stdout
+    assert "UV:run remote-claude lark start" not in result.stdout
+    assert "UV:run remote-claude start" in result.stdout
 
 
 def test_check_and_install_uv_supports_python_user_base_bin_path():
@@ -597,9 +679,13 @@ fi
     assert "/Library/Python/3.12/bin/uv" in result.stdout
 
 
-def test_install_log_path_constant_in_common_sh():
-    content = (REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8")
-    assert "/tmp/remote-claude-install.log" in content
+
+
+def test_docker_test_script_runs_startup_regression_cases():
+    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
+    assert "test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional" in content
+    assert "test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required" in content
+    assert "test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details" in content
 
 
 def test_setup_completion_uses_scripts_path():

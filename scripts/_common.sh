@@ -604,6 +604,9 @@ handle_lazy_init_failure() {
 
     print_error "Python 环境初始化失败，请执行以下命令恢复："
     printf 'sh %s --npm --lazy\n' "$setup_script" >&2
+    if [ -n "${INSTALL_LOG_FILE:-}" ]; then
+        printf '安装日志: %s\n' "$INSTALL_LOG_FILE" >&2
+    fi
     exit "$exit_code"
 }
 
@@ -651,7 +654,7 @@ _lazy_init() {
         _LAZY_INIT_RUNNING=1
         export _LAZY_INIT_RUNNING
         _set_lazy_init_result "sync-triggered"
-        sh "$SCRIPT_DIR/setup.sh" --npm --lazy 2>/dev/null
+        sh "$SCRIPT_DIR/setup.sh" --npm --lazy
         setup_rc=$?
         _LAZY_INIT_RUNNING=0
         export _LAZY_INIT_RUNNING

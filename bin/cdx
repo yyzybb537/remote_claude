@@ -12,10 +12,14 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 . "$PROJECT_DIR/scripts/_common.sh"
 
-# 检查飞书配置
+# 飞书未配置时允许继续启动本地会话
+REMOTE_CLAUDE_REQUIRE_FEISHU=0
+export REMOTE_CLAUDE_REQUIRE_FEISHU
 . "$PROJECT_DIR/scripts/check-env.sh" "$PROJECT_DIR"
 
 # 切换到项目目录，使用 uv run 调用入口点
 cd "$PROJECT_DIR"
-uv run remote-claude lark start
+if [ -f "$HOME/.remote-claude/.env" ]; then
+    uv run remote-claude lark start
+fi
 uv run remote-claude start "${PWD}_$(date +%m%d_%H%M%S)" --cli codex -- "$@"

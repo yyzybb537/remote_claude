@@ -167,6 +167,10 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 - `test_auto_answer_integration.py` - 自动应答集成测试
 - `test_base_client.py` - 客户端基类测试
 - `test_local_client.py` - 本地客户端测试
+- `test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional` - 飞书未配置时本地启动不阻塞
+- `test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required` - 跳过飞书配置检查
+- `test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details` - lazy init 失败信息可见
+- `test_entry_lazy_init.py` - 入口脚本与 lazy init 全量回归
 
 **非核心测试**（失败继续执行，记录警告）：
 - `test_stream_poller.py` - 流式卡片模型测试

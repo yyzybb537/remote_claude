@@ -196,6 +196,14 @@ echo "快速回归测试通过"
 | 补全路径一致 | setup 写入补全路径为 `scripts/completion.sh` | `uv run pytest tests/test_entry_lazy_init.py::test_setup_completion_uses_scripts_path -q` |
 | runtime 成功时创建 | runtime 初始化逻辑位于成功主流程 | `uv run pytest tests/test_entry_lazy_init.py::test_setup_runtime_creation_stays_in_success_flow -q` |
 
+### 启动链路与飞书解耦回归
+
+| 场景 | 验证点 | 命令 |
+|------|--------|------|
+| 飞书未配置时允许本地启动 | `cla/cl/cx/cdx` 不因飞书缺失阻塞本地会话启动 | `uv run pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q` |
+| 显式跳过飞书配置检查 | `REMOTE_CLAUDE_REQUIRE_FEISHU=0` 时 `check-env.sh` 直接返回成功 | `uv run pytest tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required -q` |
+| lazy init 失败信息可见 | 失败时 stderr 保留 setup 错误细节并提示安装日志路径 | `uv run pytest tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details -q` |
+
 ---
 
 ## 特殊场景说明
