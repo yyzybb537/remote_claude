@@ -1059,7 +1059,7 @@ def test_entry_init_failure_shows_manual_recovery_command(tmp_path: Path):
         env={**os.environ, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
     )
 
-    assert result.returncode == 127
+    assert result.returncode == 1
     assert _expected_recovery_command(project_dir) in result.stderr
 
 

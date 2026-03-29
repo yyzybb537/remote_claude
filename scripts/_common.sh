@@ -587,6 +587,11 @@ handle_lazy_init_failure() {
     exit_code=${1:-$?}
     [ -z "$exit_code" ] && exit_code=1
     [ "$exit_code" -eq 0 ] && exit_code=1
+    case "$exit_code" in
+        126|127)
+            exit_code=127
+            ;;
+    esac
 
     project_dir="${PROJECT_DIR:-}"
     if [ -z "$project_dir" ]; then
@@ -649,17 +654,28 @@ _lazy_init() {
 
         echo "检测到依赖变更，正在更新 Python 环境..."
         cd "$project_dir"
-        local setup_rc
+        local setup_rc shell_cmd
+        shell_cmd=$(command -v sh 2>/dev/null || true)
+        [ -n "$shell_cmd" ] || shell_cmd="/bin/sh"
         # 设置标记防止重入
         _LAZY_INIT_RUNNING=1
         export _LAZY_INIT_RUNNING
         _set_lazy_init_result "sync-triggered"
-        sh "$SCRIPT_DIR/setup.sh" --npm --lazy
-        setup_rc=$?
+        if [ -x "$SCRIPT_DIR/setup.sh" ] || [ -f "$SCRIPT_DIR/setup.sh" ]; then
+            "$shell_cmd" "$SCRIPT_DIR/setup.sh" --npm --lazy
+            setup_rc=$?
+        else
+            setup_rc=127
+        fi
         _LAZY_INIT_RUNNING=0
         export _LAZY_INIT_RUNNING
         if [ "$setup_rc" -ne 0 ]; then
             _set_lazy_init_result "sync-failed"
+            case "$setup_rc" in
+                126|127)
+                    return 1
+                    ;;
+            esac
             return "$setup_rc"
         fi
         _set_lazy_init_result "sync-completed"

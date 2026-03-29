@@ -757,14 +757,30 @@ class HistoryBuffer:
 
     def append(self, data: bytes):
         """追加数据，超出容量时自动丢弃最旧数据"""
-        if not data:
+        if not data or self._max_size <= 0:
             return
+
+        if len(data) >= self._max_size:
+            tail = data[-self._max_size:]
+            self._buffer.clear()
+            self._buffer.append(tail)
+            self._total_size = len(tail)
+            return
+
+        overflow = self._total_size + len(data) - self._max_size
+        while overflow > 0 and self._buffer:
+            old = self._buffer[0]
+            if len(old) <= overflow:
+                self._buffer.popleft()
+                self._total_size -= len(old)
+                overflow -= len(old)
+            else:
+                self._buffer[0] = old[overflow:]
+                self._total_size -= overflow
+                overflow = 0
+
         self._buffer.append(data)
         self._total_size += len(data)
-        # 超出容量时丢弃最旧的数据
-        while self._total_size > self._max_size and self._buffer:
-            old = self._buffer.popleft()
-            self._total_size -= len(old)
 
     def get_all(self) -> bytes:
         """获取所有历史数据"""

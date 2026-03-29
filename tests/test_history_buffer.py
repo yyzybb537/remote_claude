@@ -94,10 +94,9 @@ class TestHistoryBuffer:
         buf.append(b"BBBB")  # [AAAABBBB__]
         # 再填充超过容量
         buf.append(b"CCCCCC")  # 应该覆盖最旧的 4 字节
-        # 预期：保留最后 10 字节 = "BB" + "CCCCCC" (BBBB 被部分覆盖) + 之前
-        # 实际：6 字节 + 已有 8 字节 = 14 字节，保留最后 10 字节
+        # 预期：保留最后 10 字节 = "BBBB" + "CCCCCC"
         assert len(buf) == 10
-        assert buf.get_all() == b"BBCCCCCC"
+        assert buf.get_all() == b"BBBBCCCCCC"
 
     def test_large_overflow_keeps_tail(self):
         """测试大块数据溢出时保留尾部"""

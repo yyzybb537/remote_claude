@@ -36,6 +36,7 @@
     "uv.lock",
     "tests/",
     "resources/",
+    "docker/scripts/docker-test.sh",
     ".npmrc"
   ],
   "os": [

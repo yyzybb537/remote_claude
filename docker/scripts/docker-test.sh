@@ -635,7 +635,9 @@ run_unit_tests() {
     run_single_test() {
         local test="$1"
         local test_type="$2"
-        local log_file="$RESULTS_DIR/$(basename "$test" .py).log"
+        local log_name
+        log_name=$(printf '%s' "$test" | tr '/:' '__')
+        local log_file="$RESULTS_DIR/${log_name}.log"
 
         if uv run pytest -q "$test" > "$log_file" 2>&1; then
             echo "PASS:$test:$test_type"
@@ -674,7 +676,7 @@ run_unit_tests() {
             if [ -f "$test" ]; then
                 unit_total=$((unit_total + 1))
                 log_info "运行核心测试: $test"
-                if uv run pytest -q "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
+                if uv run pytest -q "$test" > "$RESULTS_DIR/$(printf '%s' "$test" | tr '/:' '__').log" 2>&1; then
                     log_success "核心测试通过: $test"
                     unit_passed=$((unit_passed + 1))
                 else
@@ -722,7 +724,7 @@ run_unit_tests() {
             if [ -f "$test" ]; then
                 unit_total=$((unit_total + 1))
                 log_info "运行非核心测试: $test"
-                if uv run pytest -q "$test" > "$RESULTS_DIR/$(basename "$test" .py).log" 2>&1; then
+                if uv run pytest -q "$test" > "$RESULTS_DIR/$(printf '%s' "$test" | tr '/:' '__').log" 2>&1; then
                     log_success "非核心测试通过: $test"
                     unit_passed=$((unit_passed + 1))
                 else
