@@ -45,10 +45,10 @@ curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/script
 
 | 快捷命令 | 说明 |
 |------|------|
-| `cla` | 启动 Claude（以当前目录路径为会话名） |
+| `cla` | 启动 Claude（会话名：当前目录路径+时间戳） |
 | `cl` | 同 `cla`，跳过权限确认 |
 | `cx` | 启动 Codex（跳过权限确认） |
-| `cdx` | 同 `cx`，需要确认权限 |
+| `cdx` | 同 `cx`，需确认权限 |
 
 ### 从其他终端连接
 
@@ -100,6 +100,10 @@ remote-claude kill <会话名>      # 终止会话
 remote-claude status <会话名>    # 查看会话状态
 remote-claude stats              # 查看使用统计
 remote-claude update             # 更新到最新版本
+remote-claude log [会话名]       # 查看会话日志（不指定则查看最近会话）
+remote-claude config reset       # 重置配置
+remote-claude token <会话名>     # 显示会话 token
+remote-claude regenerate-token <会话名>  # 重新生成 token
 ```
 
 ### 飞书客户端
@@ -288,6 +292,18 @@ remote-claude regenerate-token <session> --remote --host <host> --token <token>
 remote-claude lark start --remote --host <host> --token <token>
 remote-claude lark stop --remote --host <host> --token <token>
 remote-claude lark status --remote --host <host> --token <token>
+```
+
+### 简化远程连接命令
+
+```bash
+# connect 命令 - 简化连接
+remote-claude connect <host>:<port>/<session> --token <token>
+
+# remote 命令 - 远程控制
+remote-claude remote shutdown <host>:<port>/<session> --token <token>
+remote-claude remote restart <host>:<port>/<session> --token <token>
+remote-claude remote update <host>:<port>/<session> --token <token>
 ```
 
 ### 远程控制命令

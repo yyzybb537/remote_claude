@@ -22,4 +22,4 @@ cd "$PROJECT_DIR"
 if [ -f "$HOME/.remote-claude/.env" ]; then
     uv run remote-claude lark start
 fi
-uv run remote-claude start "${PWD}_$(date +%m%d_%H%M%S)" --cli codex -- "$@"
+uv run remote-claude start "${PWD}_$(date +%m%d_%H%M%S)" --cli codex "$@"
