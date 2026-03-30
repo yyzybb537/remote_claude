@@ -6,11 +6,6 @@
 REQUIRE_FEISHU="${REMOTE_CLAUDE_REQUIRE_FEISHU:-1}"
 PROJECT_DIR="${PROJECT_DIR:-}"
 
-_finish_check_env() {
-    code="${1:-0}"
-    return "$code" 2>/dev/null || exit "$code"
-}
-
 is_valid_project_dir() {
     [ -n "$1" ] && [ -f "$1/scripts/_common.sh" ]
 }
@@ -44,10 +39,10 @@ if [ ! -f "$INSTALL_DIR/resources/defaults/.env.example" ]; then
         echo "飞书客户端未配置，跳过飞书启动。"
         echo "如需启用飞书客户端，请先配置 $HOME/.remote-claude/.env"
         echo ""
-        _finish_check_env 0
+        return 0
     fi
     echo "错误: 无法定位安装目录模板文件: $INSTALL_DIR/resources/defaults/.env.example" >&2
-    _finish_check_env 1
+    return 1
 fi
 
 ENV_FILE="$HOME/.remote-claude/.env"
@@ -55,7 +50,7 @@ mkdir -p "$HOME/.remote-claude"
 ENV_OK=false
 
 if [ "$REQUIRE_FEISHU" = "0" ]; then
-    _finish_check_env 0
+    return 0
 fi
 
 if [ -f "$ENV_FILE" ]; then
@@ -81,7 +76,7 @@ if [ "$ENV_OK" = false ]; then
 
     if [ -z "$INPUT_APP_ID" ] || [ -z "$INPUT_APP_SECRET" ]; then
         echo "错误: APP_ID 和 APP_SECRET 不能为空"
-        _finish_check_env 1
+        return 1
     fi
 
     cp "$INSTALL_DIR/resources/defaults/.env.example" "$ENV_FILE"
