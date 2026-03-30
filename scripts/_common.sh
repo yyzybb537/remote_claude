@@ -47,6 +47,23 @@ print_detail() {
     printf "${BLUE}  %s${NC}\n" "$1"
 }
 
+_init_startup_dir() {
+    STARTUP_DIR="${STARTUP_DIR:-$(pwd)}"
+    export STARTUP_DIR
+}
+
+_require_startup_dir() {
+    if [ -z "${STARTUP_DIR:-}" ]; then
+        print_error "启动目录无效，无法继续"
+        return 1
+    fi
+    if [ ! -d "$STARTUP_DIR" ]; then
+        print_error "启动目录不存在: $STARTUP_DIR"
+        return 1
+    fi
+    return 0
+}
+
 INSTALL_LOG_FILE="/tmp/remote-claude-install.log"
 
 _init_install_log() {
@@ -73,7 +90,15 @@ _install_fail_hint() {
 # 约定：PROJECT_DIR 为项目根目录；SCRIPT_DIR 为 $PROJECT_DIR/scripts
 _normalize_project_and_script_dir() {
     if [ -n "${PROJECT_DIR:-}" ] && [ -d "$PROJECT_DIR" ]; then
-        SCRIPT_DIR="$PROJECT_DIR/scripts"
+        case "$PROJECT_DIR" in
+            */scripts)
+                SCRIPT_DIR="$PROJECT_DIR"
+                PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
+                ;;
+            *)
+                SCRIPT_DIR="$PROJECT_DIR/scripts"
+                ;;
+        esac
         export PROJECT_DIR SCRIPT_DIR
         return 0
     fi

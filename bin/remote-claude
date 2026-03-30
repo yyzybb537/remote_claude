@@ -13,9 +13,12 @@ while [ -L "$SOURCE" ]; do
 done
 SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+STARTUP_DIR="${STARTUP_DIR:-$(pwd)}"
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
 # _common.sh 末尾会自动调用 _lazy_init 进行初始化检查
 . "$PROJECT_DIR/scripts/_common.sh"
+_init_startup_dir
+_require_startup_dir || exit 1
 
 # log 子命令：查看最后启动的 session 日志
 if [ "$1" = "log" ]; then
@@ -58,6 +61,6 @@ if [ "$1" = "lark" ]; then
     sh "${PROJECT_DIR}/scripts/check-env.sh"
 fi
 
-# 切换到项目目录，使用 uv run 调用入口点
-cd "${PROJECT_DIR}"
+# 在启动目录执行入口点，保持调用方 cwd
+cd "$STARTUP_DIR" || exit 1
 exec uv run remote-claude "$@"
