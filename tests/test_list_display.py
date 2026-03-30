@@ -15,6 +15,8 @@ import shutil
 import json
 from pathlib import Path
 
+import remote_claude
+
 # 确保项目根目录在 sys.path 中
 _PROJECT_ROOT = str(Path(__file__).parent.parent)
 if _PROJECT_ROOT not in sys.path:
@@ -29,7 +31,7 @@ from utils.runtime_config import (
 )
 
 
-class TestEnv:
+class _TestEnv:
     """测试环境管理"""
 
     def __init__(self):
@@ -68,9 +70,25 @@ class TestEnv:
 
 # ============== 测试函数 ==============
 
+def test_normalize_original_path_returns_dash_for_none():
+    assert remote_claude._normalize_original_path(None) == "-"
+
+
+def test_normalize_original_path_returns_dash_for_empty_string():
+    assert remote_claude._normalize_original_path("") == "-"
+
+
+def test_normalize_original_path_returns_dash_for_whitespace():
+    assert remote_claude._normalize_original_path("   ") == "-"
+
+
+def test_normalize_original_path_strips_regular_value():
+    assert remote_claude._normalize_original_path(" /tmp/demo ") == "/tmp/demo"
+
+
 def test_list_display_with_mapping():
     """测试 list 展示截断名称和原始路径"""
-    env = TestEnv()
+    env = _TestEnv()
     env.setup()
     try:
         # 创建配置，包含映射
@@ -95,7 +113,7 @@ def test_list_display_with_mapping():
 
 def test_list_display_no_mapping():
     """测试无映射时原始路径显示 '-'"""
-    env = TestEnv()
+    env = _TestEnv()
     env.setup()
     try:
         # 创建空配置
@@ -120,9 +138,52 @@ def test_list_display_no_mapping():
         env.teardown()
 
 
+def test_list_display_empty_mapping_shows_dash():
+    """测试空字符串映射时原始路径显示 '-'"""
+    env = _TestEnv()
+    env.setup()
+    try:
+        config = RuntimeConfig()
+        config.session_mappings["empty_session"] = ""
+        save_runtime_config(config)
+
+        loaded = load_runtime_config()
+        result = loaded.get_session_mapping("empty_session")
+        assert result == "", f"空字符串映射应保留原值，实际: {result!r}"
+
+        display_path = result or "-"
+        assert display_path == "-", f"空字符串映射应显示 '-'，实际: {display_path}"
+
+        print("✓ List 展示：空字符串映射时显示 '-'")
+    finally:
+        env.teardown()
+
+
+def test_list_display_whitespace_mapping_shows_dash():
+    """测试空白字符串映射时原始路径显示 '-'"""
+    env = _TestEnv()
+    env.setup()
+    try:
+        config = RuntimeConfig()
+        config.session_mappings["blank_session"] = "   "
+        save_runtime_config(config)
+
+        loaded = load_runtime_config()
+        result = loaded.get_session_mapping("blank_session")
+        assert result == "   ", f"空白字符串映射应保留原值，实际: {result!r}"
+
+        display_path = result.strip() if isinstance(result, str) else result
+        display_path = display_path or "-"
+        assert display_path == "-", f"空白字符串映射应显示 '-'，实际: {display_path!r}"
+
+        print("✓ List 展示：空白字符串映射时显示 '-'")
+    finally:
+        env.teardown()
+
+
 def test_list_display_long_names():
     """测试长名称和长路径的截断显示"""
-    env = TestEnv()
+    env = _TestEnv()
     env.setup()
     try:
         # 创建长路径映射
@@ -157,7 +218,7 @@ def test_list_display_long_names():
 
 def test_list_display_special_characters():
     """测试特殊字符路径的展示"""
-    env = TestEnv()
+    env = _TestEnv()
     env.setup()
     try:
         # 创建包含特殊字符的路径映射
@@ -183,7 +244,7 @@ def test_list_display_special_characters():
 
 def test_list_display_multiple_sessions():
     """测试多会话列表展示"""
-    env = TestEnv()
+    env = _TestEnv()
     env.setup()
     try:
         # 创建多个会话映射
@@ -216,7 +277,7 @@ def test_list_display_multiple_sessions():
 
 def test_list_display_with_lark_group_mappings():
     """测试 session_mappings 和 lark_group_mappings 共存"""
-    env = TestEnv()
+    env = _TestEnv()
     env.setup()
     try:
         # 创建配置，包含两种映射

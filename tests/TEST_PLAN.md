@@ -138,6 +138,21 @@ tail -f ~/.remote-claude/lark_client.log
 | attach 子命令帮助 | 不检查会话存在 | `uv run python3 remote_claude.py attach --help` |
 | lark 子命令帮助 | 只显示帮助 | `uv run python3 remote_claude.py lark --help` |
 | lark status 子命令帮助 | 不检查客户端状态 | `uv run python3 remote_claude.py lark status --help` |
+| lark 无子命令 | 打印 lark 子解析器帮助并返回 0 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_lark_without_subcommand_prints_help_and_returns_zero -q` |
+| attach 远程参数兼容 | 保持 `--token/--port/--host <session> --save --remote` 顺序兼容 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_validate_remote_args_accepts_current_attach_order -q` |
+| 远程 tracing 日志 | attach/list 记录 `stage=remote_args_parsed`，token 脱敏 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_cmd_attach_remote_logs_tracing tests/test_cli_help_and_remote.py::test_cmd_list_remote_logs_tracing -q` |
+
+### User Story 5：远程断连原因透传
+
+**测试文件**：`tests/test_client_integration.py`
+
+| 场景 | 验证点 | 测试方法 |
+|------|-------|---------|
+| 远程 recv 关闭 | `read_message()` 返回 `None` 且记录断连原因 | `uv run python3 -m pytest tests/test_client_integration.py::TestRemoteClientIntegration::test_remote_client_read_message_closed_sets_disconnect_reason -q` |
+| 远程 send 失败 | `send_message()` 抛 `ConnectionError` 且记录原因 | `uv run python3 -m pytest tests/test_client_integration.py::TestRemoteClientIntegration::test_remote_client_send_message_failure_sets_disconnect_reason -q` |
+| 客户端断连展示 | `BaseClient` 输出 `已断开连接: <reason>` | `uv run python3 -m pytest tests/test_client_integration.py -k disconnect -q` |
+| 主日志路径统一 | client/server/lark 主日志均落到 `/tmp/remote-claude/` | `uv run python3 -m pytest tests/test_logging_setup.py -q` |
+| 主日志轮转参数 | 使用 `RotatingFileHandler`，配置为 `10MB × 5` | `uv run python3 -m pytest tests/test_logging_setup.py::test_setup_role_logging_uses_rotating_file_handler -q` |
 
 ---
 

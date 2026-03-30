@@ -41,9 +41,10 @@ from utils.session import (
 )
 
 from server.biz_enum import CliType
+from utils.logging_setup import setup_role_logging, get_role_log_path
 
 
-logger = logging.getLogger('Server')
+logger = setup_role_logging('server')
 
 # Server 日志级别配置
 _SERVER_LOG_LEVEL = os.getenv("SERVER_LOG_LEVEL", "INFO").upper()
@@ -1020,43 +1021,10 @@ class ProxyServer:
             if isinstance(handler, logging.FileHandler) and hasattr(handler, '_startup_handler'):
                 root_logger.removeHandler(handler)
 
-        # 重定向 sys.stderr 到 ~/.remote-claude/server.error.log
-        # 注意：这不会影响外层的 2>> startup.log，但 Python 的 stderr 输出会走这里
-        # 适用于：print(..., file=sys.stderr)、logging 的 StreamHandler 等
-        # 不适用于：C 扩展模块直接写文件描述符 2、解释器崩溃等底层错误
-        error_log_path = os.path.expanduser('~/.remote-claude/server.error.log')
+        error_log_path = str(get_role_log_path("server"))
         sys.stderr = open(error_log_path, 'a', encoding='utf-8')
         logger.info(f"已重定向 stderr 到 {error_log_path}")
-
-        # 添加运行阶段日志文件
-        safe_name = _safe_filename(self.session_name)
-        runtime_handler = logging.FileHandler(
-            f"{SOCKET_DIR}/{safe_name}_server.log",
-            encoding="utf-8"
-        )
-        runtime_handler.setFormatter(logging.Formatter(
-            "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        ))
-        runtime_handler._runtime_handler = True  # 标记，方便后续清理
-        root_logger.addHandler(runtime_handler)
-
-        # DEBUG 级别时额外记录调试日志到独立文件
-        if SERVER_LOG_LEVEL_MAP == logging.DEBUG:
-            debug_handler = logging.FileHandler(
-                f"{SOCKET_DIR}/{safe_name}_debug.log",
-                encoding="utf-8"
-            )
-            debug_handler.setLevel(logging.DEBUG)
-            debug_handler.setFormatter(logging.Formatter(
-                "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S"
-            ))
-            debug_handler._debug_handler = True  # 标记，方便后续清理
-            root_logger.addHandler(debug_handler)
-            logger.info(f"已启用 DEBUG 日志: {safe_name}_debug.log")
-
-        logger.info(f"日志已切换到运行阶段: {safe_name}_server.log")
+        logger.info(f"日志已切换到运行阶段: {error_log_path}")
 
     def _get_effective_cmd(self) -> str:
         """根据 cli_command / cli_type 返回实际执行的命令
@@ -1446,7 +1414,6 @@ def _ensure_startup_logging():
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
-    # 确保 stdout handler 存在
     has_stdout_handler = any(
         isinstance(handler, logging.StreamHandler) and getattr(handler, "stream", None) is sys.stdout
         for handler in root_logger.handlers
@@ -1459,32 +1426,7 @@ def _ensure_startup_logging():
         ))
         root_logger.addHandler(stdout_handler)
 
-    startup_log_path = USER_DATA_DIR / "startup.log"
-    startup_log_path_str = str(startup_log_path)
-
-    has_startup_handler = False
-    for handler in list(root_logger.handlers):
-        if not getattr(handler, "_startup_handler", False):
-            continue
-
-        if str(getattr(handler, "baseFilename", "")) == startup_log_path_str:
-            has_startup_handler = True
-            continue
-
-        root_logger.removeHandler(handler)
-        try:
-            handler.close()
-        except Exception:
-            pass
-
-    if not has_startup_handler:
-        startup_handler = logging.FileHandler(startup_log_path, encoding="utf-8")
-        startup_handler.setFormatter(logging.Formatter(
-            "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        ))
-        startup_handler._startup_handler = True
-        root_logger.addHandler(startup_handler)
+    setup_role_logging("server", level=SERVER_LOG_LEVEL_MAP)
 
 
 def main(argv=None):

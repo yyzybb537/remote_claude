@@ -9,6 +9,7 @@ import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
+from websockets import exceptions as ws_exceptions
 
 # 添加项目根目录到 sys.path
 _project_root = Path(__file__).parent.parent
@@ -142,6 +143,54 @@ class TestRemoteClientIntegration:
             # 读取消息
             msg = await client.read_message()
             assert msg is not None
+
+    @pytest.mark.asyncio
+    async def test_remote_client_read_message_closed_sets_disconnect_reason(self):
+        """测试远程客户端关闭时记录断开原因"""
+        client = RemoteClient("192.168.1.100", "test-session", "token123", 8765)
+
+        mock_ws = MagicMock()
+        mock_ws.send = AsyncMock()
+        mock_ws.recv = AsyncMock(side_effect=ws_exceptions.ConnectionClosedOK(None, None))
+        mock_ws.close = AsyncMock()
+
+        async def mock_websockets_connect(*args, **kwargs):
+            return mock_ws
+
+        with patch('client.remote_client.connect', side_effect=mock_websockets_connect):
+            await client.connect()
+            msg = await client.read_message()
+
+            assert msg is None
+            reason = client._consume_disconnect_reason()
+            assert reason is not None
+            assert "连接关闭:" in reason
+
+    @pytest.mark.asyncio
+    async def test_remote_client_send_message_failure_sets_disconnect_reason(self):
+        """测试发送失败时记录断开原因"""
+        client = RemoteClient("192.168.1.100", "test-session", "token123", 8765)
+
+        mock_ws = MagicMock()
+        mock_ws.send = AsyncMock(side_effect=RuntimeError("network down"))
+        mock_ws.recv = AsyncMock(return_value='{"type":"output","data":"dGVzdA=="}')
+        mock_ws.close = AsyncMock()
+
+        async def mock_websockets_connect(*args, **kwargs):
+            return mock_ws
+
+        with patch('client.remote_client.connect', side_effect=mock_websockets_connect):
+            await client.connect()
+
+            from utils.protocol import InputMessage
+            msg = InputMessage(b"test input", "test-client")
+            with pytest.raises(ConnectionError) as exc_info:
+                await client.send_message(msg)
+
+            assert "发送失败:" in str(exc_info.value)
+            reason = client._consume_disconnect_reason()
+            assert reason is not None
+            assert "发送失败:" in reason
 
     @pytest.mark.asyncio
     async def test_remote_client_close_mocked(self):

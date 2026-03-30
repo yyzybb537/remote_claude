@@ -36,13 +36,42 @@ from utils.session import (
     list_active_sessions, is_session_active, cleanup_session,
     is_lark_running, get_lark_pid, get_lark_status, get_lark_pid_file,
     save_lark_status, cleanup_lark,
-    USER_DATA_DIR, ensure_user_data_dir, get_lark_log_file,
+    USER_DATA_DIR, ensure_user_data_dir,
     get_env_snapshot_path,
 )
 from server.biz_enum import CliType
+from utils.logging_setup import get_role_log_path
 
 # 获取脚本所在目录
 SCRIPT_DIR = Path(__file__).parent.absolute()
+logger = logging.getLogger('RemoteCLI')
+
+
+def _mask_token(token: str) -> str:
+    if not token:
+        return ""
+    if len(token) <= 4:
+        return "*" * len(token)
+    return f"{token[:2]}***{token[-2:]}"
+
+
+def _log_remote_args(command: str, host: str, port: int, session: str, token: str) -> None:
+    logger.info(
+        "stage=remote_args_parsed command=%s session=%s host=%s port=%s has_token=%s token_masked=%s",
+        command,
+        session,
+        host,
+        port,
+        bool(token),
+        _mask_token(token),
+    )
+
+
+def _normalize_original_path(value: str | None) -> str:
+    if value is None:
+        return "-"
+    value = value.strip()
+    return value or "-"
 
 # 读取版本号（仅 import 时读取一次）
 try:
@@ -217,9 +246,11 @@ def validate_remote_args(args, session_fallback: str = None) -> tuple:
         print("错误: 远程模式需要 --token 参数")
         return None
 
-    # 会话名称优先使用 parse_host_session 解析结果，其次使用后备值
     if not session and session_fallback:
         session = session_fallback
+    if not session:
+        print("错误: 请指定会话名称")
+        return None
 
     return host, port, session, token
 
@@ -428,19 +459,6 @@ def cmd_attach(args):
         token = args.token
         port = getattr(args, 'port', 8765)
 
-        # 支持 host:port/session 格式
-        if '/' in host:
-            parts = host.split('/')
-            host_part = parts[0]
-            session_name = parts[1] if len(parts) > 1 else session_name
-            if ':' in host_part:
-                host, port_str = host_part.split(':')
-                try:
-                    port = int(port_str)
-                except ValueError:
-                    print(f"错误: 端口格式无效: {port_str}")
-                    return 1
-
         # 如果没有提供必要参数，尝试从保存的配置加载
         if not host or not token:
             conn = get_connection(config_name)
@@ -457,17 +475,17 @@ def cmd_attach(args):
                     port = conn.port
                 print(f"使用保存的配置: {conn.name}")
 
+        normalized_args = argparse.Namespace(host=host, port=port, token=token, name=session_name)
+        result = validate_remote_args(normalized_args, session_name)
+        if result is None:
+            return 1
+        host, port, session_name, token = result
+
         if not session_name:
             print("错误: 请指定会话名称")
             return 1
 
-        if not token:
-            print("错误: 远程模式需要 --token 参数")
-            return 1
-
-        if not host:
-            print("错误: 远程模式需要 --host 参数")
-            return 1
+        _log_remote_args("attach", host, port, session_name, token)
 
         # 保存配置
         if should_save:
@@ -505,6 +523,7 @@ def cmd_list(args):
         if result is None:
             return 1
         host, port, session, token = result
+        _log_remote_args("list", host, port, session or 'list', token)
         return run_remote_control(host, port, session or 'list', token, 'list')
 
     # 本地模式
@@ -533,7 +552,7 @@ def cmd_list(args):
         cli_type = s.get('cli_type', 'claude')
         session_name = s['name']
         # 从映射中获取原始路径
-        original_path = config.get_session_mapping(session_name) or "-"
+        original_path = _normalize_original_path(config.get_session_mapping(session_name))
 
         # 根据类型选择颜色
         if cli_type == CliType.CODEX:
@@ -562,9 +581,7 @@ def cmd_kill(args):
         if result is None:
             return 1
         host, port, session, token = result
-        if not session:
-            print("错误: 请指定会话名称")
-            return 1
+        _log_remote_args("kill", host, port, session, token)
         return run_remote_control(host, port, session, token, 'kill')
 
     # 本地模式
@@ -663,7 +680,7 @@ def cmd_lark_start(args):
     ensure_user_data_dir()
 
     # 启动守护进程（使用 -m 模块方式运行，确保相对导入正常工作）
-    log_file = get_lark_log_file()
+    log_file = get_role_log_path("lark")
 
     try:
         # 启动进程
@@ -791,7 +808,7 @@ def cmd_lark_status(args):
     print(f"运行时长: {status['uptime']}")
 
     # 检查日志文件
-    log_file = get_lark_log_file()
+    log_file = get_role_log_path("lark")
     if log_file.exists():
         print(f"日志文件: {log_file}")
         print(f"日志大小: {log_file.stat().st_size / 1024:.1f} KB")
@@ -999,17 +1016,21 @@ def cmd_regenerate_token(args):
 
 def cmd_lark(args):
     """飞书客户端管理（兼容旧命令）"""
-    # 如果没有子命令，默认显示状态或启动
+    parser = getattr(args, '_subparser', None)
+    if parser is not None:
+        parser.print_help()
+        return 0
+
     if is_lark_running():
         return cmd_lark_status(args)
-    else:
-        print("飞书客户端未运行")
-        print("\n可用命令:")
-        print("  python3 remote_claude.py lark start    - 启动客户端")
-        print("  python3 remote_claude.py lark stop     - 停止客户端")
-        print("  python3 remote_claude.py lark restart  - 重启客户端")
-        print("  python3 remote_claude.py lark status   - 查看状态")
-        return 0
+
+    print("飞书客户端未运行")
+    print("\n可用命令:")
+    print("  python3 remote_claude.py lark start    - 启动客户端")
+    print("  python3 remote_claude.py lark stop     - 停止客户端")
+    print("  python3 remote_claude.py lark restart  - 重启客户端")
+    print("  python3 remote_claude.py lark status   - 查看状态")
+    return 0
 
 
 def cmd_config(args):
@@ -1345,7 +1366,7 @@ def main():
 
     # lark 命令（带子命令）
     lark_parser = subparsers.add_parser("lark", help="飞书客户端管理")
-    lark_parser.set_defaults(func=cmd_lark)
+    lark_parser.set_defaults(func=cmd_lark, _subparser=lark_parser)
     lark_subparsers = lark_parser.add_subparsers(dest="lark_command", help="飞书客户端操作")
 
     # lark start

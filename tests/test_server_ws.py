@@ -99,6 +99,27 @@ def test_run_server_logs_entry_trace(monkeypatch):
     )
 
 
+def test_parse_url_params_handles_missing_values():
+    from server.ws_handler import parse_url_params
+
+    assert parse_url_params("/ws") == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_rejects_invalid_token_with_error_message():
+    from server.ws_handler import WebSocketHandler
+
+    server = MagicMock(history_buffer=b"")
+    handler = WebSocketHandler(server, "demo")
+    handler._authenticate = MagicMock(return_value=False)
+    websocket = AsyncMock()
+
+    await handler.handle_connection(websocket, "/ws?session=demo&token=bad")
+
+    websocket.send.assert_awaited()
+    websocket.close.assert_awaited()
+
+
 def test_start_pty_log_command_is_sanitized(monkeypatch):
     """测试 _start_pty 记录的启动命令会脱敏敏感参数"""
     from server import server as server_module

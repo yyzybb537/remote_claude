@@ -20,49 +20,32 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.session import USER_DATA_DIR
 from utils.runtime_config import migrate_legacy_config, migrate_legacy_notify_settings
+from utils.logging_setup import setup_role_logging
 
 
 def _setup_logging():
-    """配置 lark_client 日志：INFO → lark_client.log, DEBUG → lark_client.debug.log"""
+    """配置 lark_client 主日志到统一轮转日志文件"""
     from .config import LARK_LOG_LEVEL
 
-    log_dir = USER_DATA_DIR
-    log_dir.mkdir(parents=True, exist_ok=True)
+    role_logger = setup_role_logging("lark", level=LARK_LOG_LEVEL)
 
-    # 日志格式（含毫秒级时间戳）
-    log_format = "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s"
-    date_format = "%Y-%m-%d %H:%M:%S"
-    formatter = logging.Formatter(log_format, datefmt=date_format)
-
-    # 根 logger 配置
     root_logger = logging.getLogger()
     root_logger.setLevel(LARK_LOG_LEVEL)
-
-    # 清除默认 handler
     root_logger.handlers.clear()
 
-    # 正常日志文件（INFO 及以上）
-    info_handler = logging.FileHandler(log_dir / "lark_client.log", encoding="utf-8")
-    info_handler.setLevel(logging.INFO)
-    info_handler.setFormatter(formatter)
-    root_logger.addHandler(info_handler)
+    for handler in role_logger.handlers:
+        root_logger.addHandler(handler)
 
-    # 调试日志文件（DEBUG 及以上，仅当 LARK_LOG_LEVEL=DEBUG 时写入）
-    if LARK_LOG_LEVEL == logging.DEBUG:
-        debug_handler = logging.FileHandler(log_dir / "lark_client.debug.log", encoding="utf-8")
-        debug_handler.setLevel(logging.DEBUG)
-        debug_handler.setFormatter(formatter)
-        root_logger.addHandler(debug_handler)
-
-    # 第三方库保持 INFO 级别
     for _noisy in ('urllib3', 'websockets', 'asyncio'):
         logging.getLogger(_noisy).setLevel(logging.INFO)
 
-    # 控制台输出（仅在终端交互模式下启用，守护进程模式下 stderr 已重定向到日志文件）
     if sys.stderr.isatty():
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(formatter)
+        console_handler.setFormatter(logging.Formatter(
+            "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
         root_logger.addHandler(console_handler)
 
 

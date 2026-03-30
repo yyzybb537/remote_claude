@@ -55,11 +55,6 @@ def get_chat_bindings_file() -> Path:
     return USER_DATA_DIR / "lark_chat_bindings.json"
 
 
-def get_lark_log_file() -> Path:
-    """获取飞书客户端日志文件路径"""
-    return USER_DATA_DIR / "lark_client.log"
-
-
 def ensure_user_data_dir():
     """确保用户数据目录存在"""
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)

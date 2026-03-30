@@ -21,6 +21,7 @@ import tty
 import termios
 import signal
 import select
+import logging
 import websockets
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -31,6 +32,7 @@ from utils.protocol import (
     ControlMessage, encode_message, decode_message
 )
 from utils.session import generate_client_id
+from utils.logging_setup import setup_role_logging
 
 try:
     from stats import track as _track_stats
@@ -40,6 +42,8 @@ except Exception:
 
 # 特殊按键
 CTRL_D = b'\x04'  # Ctrl+D - 退出
+
+logger = setup_role_logging("client")
 
 
 def build_ws_url(host: str, port: Optional[int], session: str, token: str) -> str:
@@ -247,10 +251,11 @@ class BaseClient(ABC):
         msg = InputMessage(data, self.client_id)
         try:
             await self.send_message(msg)
-        except ConnectionError:
+        except ConnectionError as e:
             # 连接已断开，停止运行
             self.running = False
             self._connected = False
+            await self._on_disconnect(str(e) or "连接发送失败")
 
     async def _read_connection_loop(self):
         """读取连接消息循环"""
@@ -262,13 +267,17 @@ class BaseClient(ABC):
                 )
                 if msg is None:
                     # 连接关闭
-                    await self._on_disconnect("连接已关闭")
+                    reason = self._consume_disconnect_reason() or "连接已关闭"
+                    await self._on_disconnect(reason)
                     self.running = False
                     break
                 await self._handle_message(msg)
             except asyncio.TimeoutError:
                 continue
-            except Exception:
+            except Exception as e:
+                reason = self._consume_disconnect_reason() or f"连接异常: {e}"
+                await self._on_disconnect(reason)
+                self.running = False
                 break
 
     async def _handle_message(self, msg: Message):
@@ -290,13 +299,21 @@ class BaseClient(ABC):
         elif msg.type == MessageType.ERROR:
             print(f"\n错误: {msg.message} ({msg.code})")
 
+    def _consume_disconnect_reason(self) -> Optional[str]:
+        """获取并清空断线原因（子类可覆盖）"""
+        return None
+
     async def _on_disconnect(self, reason: str):
         """断线回调
 
         Args:
             reason: 断线原因
         """
-        print("\n已断开连接")
+        message = reason.strip() if isinstance(reason, str) else ""
+        if not message:
+            message = "连接已关闭"
+        print(f"\n已断开连接: {message}")
+        logger.warning("stage=client_disconnected session=%s reason=%s", self.session_name, message)
 
     async def _cleanup(self):
         """清理资源"""

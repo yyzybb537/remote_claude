@@ -11,6 +11,7 @@
 import argparse
 import asyncio
 import sys
+import logging
 from typing import Optional
 
 from websockets.asyncio.client import connect, ClientConnection
@@ -18,6 +19,8 @@ from websockets import exceptions as ws_exceptions
 
 from client.base_client import BaseWSClient
 from utils.protocol import Message, encode_message, decode_message
+
+logger = logging.getLogger("RemoteClient")
 
 
 class RemoteClient(BaseWSClient):
@@ -39,6 +42,7 @@ class RemoteClient(BaseWSClient):
 
         # WebSocket 连接
         self._ws: Optional[ClientConnection] = None
+        self._disconnect_reason: Optional[str] = None
 
     async def connect(self) -> bool:
         """建立 WebSocket 连接
@@ -48,6 +52,7 @@ class RemoteClient(BaseWSClient):
         """
         try:
             url = self._get_ws_url()
+            self._disconnect_reason = None
             self._ws = await connect(
                 url,
                 ping_interval=30,
@@ -57,6 +62,8 @@ class RemoteClient(BaseWSClient):
             print(f"✅ 已连接到远程会话: {self.session_name}@{self.host}")
             return True
         except Exception as e:
+            self._disconnect_reason = f"连接失败: {e}"
+            logger.error("stage=remote_connect_failed session=%s host=%s port=%s error=%s", self.session_name, self.host, self.port, e)
             print(f"❌ 连接失败: {e}")
             return False
 
@@ -76,7 +83,9 @@ class RemoteClient(BaseWSClient):
             await self._ws.send(encode_message(msg))
         except Exception as e:
             self._connected = False
-            raise ConnectionError(f"发送失败: {e}") from e
+            self._disconnect_reason = f"发送失败: {e}"
+            logger.error("stage=remote_send_failed session=%s error=%s", self.session_name, e)
+            raise ConnectionError(self._disconnect_reason) from e
 
     async def read_message(self) -> Optional[Message]:
         """读取消息
@@ -94,11 +103,24 @@ class RemoteClient(BaseWSClient):
                 raw = raw.encode()
             msg = decode_message(raw)
             return msg
-        except ws_exceptions.ConnectionClosed:
+        except ws_exceptions.ConnectionClosed as e:
             self._connected = False
+            reason = str(e).strip()
+            if not reason:
+                reason = "连接已关闭"
+            self._disconnect_reason = f"连接关闭: {reason}"
+            logger.warning("stage=remote_recv_closed session=%s reason=%s", self.session_name, reason)
             return None
-        except Exception:
+        except Exception as e:
+            self._connected = False
+            self._disconnect_reason = f"读取失败: {e}"
+            logger.error("stage=remote_recv_failed session=%s error=%s", self.session_name, e)
             return None
+
+    def _consume_disconnect_reason(self) -> Optional[str]:
+        reason = self._disconnect_reason
+        self._disconnect_reason = None
+        return reason
 
     async def close_connection(self) -> None:
         """关闭 WebSocket 连接"""
