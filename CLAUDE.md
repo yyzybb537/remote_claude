@@ -175,7 +175,8 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - **安装日志：** 安装链路统一写入 `/tmp/remote-claude-install.log`（每次安装覆盖最近一次日志）
 - **失败日志粒度：** 任一步骤失败都必须写入安装日志，包含 `stage/source/cmd/exit_code` 摘要
 - **runtime 初始化语义：** `runtime.json` 仅在安装成功路径执行初始化，失败路径不创建
-- **目录变量约定：** `PROJECT_DIR/SCRIPT_DIR` 以 `scripts/_common.sh` 为唯一收敛入口
+- **目录变量约定：** 路径真相源仅 `PROJECT_DIR/SCRIPT_DIR`，并由 `scripts/_common.sh` 统一收敛
+- **脚本入口约定：** `scripts/*.sh` 必须使用统一入口模板（先解析脚本真实路径并定义 `PROJECT_DIR`，再 source `scripts/_common.sh`）
 - **uv 安装策略：** 优先使用 `pip --user` 安装；若失败则按多来源 fallback（官方脚本、conda/mamba、brew）自动恢复
 
 ### 循环依赖处理
