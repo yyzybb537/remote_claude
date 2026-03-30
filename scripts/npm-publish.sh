@@ -5,9 +5,21 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$ROOT_DIR"
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+    BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in /*) ;; *) SOURCE="$BASE_DIR/$SOURCE" ;; esac
+done
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+
+LAZY_INIT_DISABLE_AUTO_RUN=1
+export LAZY_INIT_DISABLE_AUTO_RUN
+. "$PROJECT_DIR/scripts/_common.sh"
+unset LAZY_INIT_DISABLE_AUTO_RUN
+
+cd "$PROJECT_DIR"
 
 # 解析参数
 BUMP="patch"

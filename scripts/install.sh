@@ -10,9 +10,13 @@
 
 set -e
 
-# 脚本目录（scripts/ 目录）
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-# 项目根目录
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+    BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in /*) ;; *) SOURCE="$BASE_DIR/$SOURCE" ;; esac
+done
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）

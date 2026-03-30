@@ -95,7 +95,23 @@ _normalize_project_and_script_dir() {
     return 1
 }
 
+# fail-fast：校验统一入口布局，确保路径真相源存在
+_require_common_layout() {
+    if [ -z "${PROJECT_DIR:-}" ] || [ ! -d "$PROJECT_DIR" ]; then
+        print_error "PROJECT_DIR 无效，无法继续"
+        return 1
+    fi
+    SCRIPT_DIR="$PROJECT_DIR/scripts"
+    if [ ! -d "$SCRIPT_DIR" ]; then
+        print_error "scripts 目录不存在: $SCRIPT_DIR"
+        return 1
+    fi
+    export PROJECT_DIR SCRIPT_DIR
+    return 0
+}
+
 _normalize_project_and_script_dir || :
+_require_common_layout || return 1
 
 # 将目录加入 PATH（若目录存在且未包含）
 _prepend_path_if_dir() {

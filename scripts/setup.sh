@@ -1,14 +1,21 @@
 #!/bin/sh
 # setup.sh - 项目初始化脚本（POSIX sh 兼容，支持 sh/bash/zsh）
 
-# 脚本目录（scripts/ 目录）
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-# 项目根目录
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+    BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in /*) ;; *) SOURCE="$BASE_DIR/$SOURCE" ;; esac
+done
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
 # 使用 . 而非 source，兼容 POSIX sh
+LAZY_INIT_DISABLE_AUTO_RUN=1
+export LAZY_INIT_DISABLE_AUTO_RUN
 . "$PROJECT_DIR/scripts/_common.sh"
+unset LAZY_INIT_DISABLE_AUTO_RUN
 
 # 末尾汇总警告（使用简单变量，POSIX sh 不支持数组）
 WARNINGS_COUNT=0

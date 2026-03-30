@@ -3,7 +3,24 @@
 # 用法: . scripts/check-env.sh "$INSTALL_DIR"
 # POSIX sh 兼容，不使用 sed -i
 
-INSTALL_DIR="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
+PROJECT_DIR="${1:-}"
+if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR" ]; then
+    SOURCE="$0"
+    while [ -L "$SOURCE" ]; do
+        BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+        SOURCE="$(readlink "$SOURCE")"
+        case "$SOURCE" in /*) ;; *) SOURCE="$BASE_DIR/$SOURCE" ;; esac
+    done
+    SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+fi
+
+LAZY_INIT_DISABLE_AUTO_RUN=1
+export LAZY_INIT_DISABLE_AUTO_RUN
+. "$PROJECT_DIR/scripts/_common.sh"
+unset LAZY_INIT_DISABLE_AUTO_RUN
+
+INSTALL_DIR="${1:-$PROJECT_DIR}"
 ENV_FILE="$HOME/.remote-claude/.env"
 mkdir -p "$HOME/.remote-claude"
 ENV_OK=false

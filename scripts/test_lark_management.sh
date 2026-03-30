@@ -5,13 +5,22 @@
 
 set -e
 
-# 获取项目根目录（脚本位于 scripts/ 目录）
-PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$PROJECT_ROOT"
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+    BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in /*) ;; *) SOURCE="$BASE_DIR/$SOURCE" ;; esac
+done
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+cd "$PROJECT_DIR"
 
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
 # _common.sh 会自动从 runtime.json 读取 uv_path，并设置 PATH
-. "$PROJECT_ROOT/scripts/_common.sh"
+LAZY_INIT_DISABLE_AUTO_RUN=1
+export LAZY_INIT_DISABLE_AUTO_RUN
+. "$PROJECT_DIR/scripts/_common.sh"
+unset LAZY_INIT_DISABLE_AUTO_RUN
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "飞书客户端管理功能测试"
