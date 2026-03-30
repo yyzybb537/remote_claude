@@ -1,10 +1,17 @@
 #!/bin/sh
 # 检查 .env 中 FEISHU_APP_ID/APP_SECRET 是否已配置，未配置则交互引导
-# 用法: . scripts/check-env.sh "$INSTALL_DIR"
+# 用法: . scripts/check-env.sh [项目根目录或安装目录]
 # POSIX sh 兼容，不使用 sed -i
 
-PROJECT_DIR="${1:-}"
-if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR" ]; then
+is_valid_project_dir() {
+    [ -n "$1" ] && [ -f "$1/scripts/_common.sh" ]
+}
+
+if is_valid_project_dir "${PROJECT_DIR:-}"; then
+    PROJECT_DIR="$PROJECT_DIR"
+elif is_valid_project_dir "${1:-}"; then
+    PROJECT_DIR="$1"
+else
     SOURCE="$0"
     while [ -L "$SOURCE" ]; do
         BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
