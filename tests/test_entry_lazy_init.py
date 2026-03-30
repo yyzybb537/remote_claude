@@ -1,3 +1,5 @@
+import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -890,36 +892,47 @@ echo ok
     assert result.stdout.strip().endswith("ok")
 
 
+def _load_report_install_module(entry_path: Path):
+    spec = importlib.util.spec_from_file_location(f"report_install_test_{hash(entry_path)}", entry_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_report_install_version_resolution_not_depend_on_cwd(tmp_path: Path):
     script = REPO_ROOT / "scripts" / "report_install.py"
-    result = subprocess.run(
-        ["uv", "run", "python3", str(script)],
-        cwd=tmp_path,
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == 0, (
-        f"returncode={result.returncode}\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
+    expected_root = REPO_ROOT.resolve()
+    expected_version = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        module = _load_report_install_module(script)
+        resolved_root = module._resolve_project_root().resolve()
+        resolved_version = module._get_version()
+    finally:
+        os.chdir(original_cwd)
+
+    assert resolved_root == expected_root
+    assert resolved_version == expected_version
+    assert resolved_version != "unknown"
 
 
 def test_report_install_symlink_entry_is_stable(tmp_path: Path):
     target = REPO_ROOT / "scripts" / "report_install.py"
-    link = tmp_path / "report_install"
+    link = tmp_path / "report_install.py"
     link.symlink_to(target)
-    result = subprocess.run(
-        ["uv", "run", "python3", str(link)],
-        cwd=tmp_path,
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == 0, (
-        f"returncode={result.returncode}\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
+
+    module = _load_report_install_module(link)
+    resolved_root = module._resolve_project_root().resolve()
+    resolved_version = module._get_version()
+    expected_version = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+
+    assert resolved_root == REPO_ROOT.resolve()
+    assert resolved_version == expected_version
+    assert resolved_version != "unknown"
+
 
 
 def test_check_and_install_uv_does_not_create_runtime_when_missing():
