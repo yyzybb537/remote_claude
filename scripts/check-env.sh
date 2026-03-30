@@ -1,8 +1,9 @@
 #!/bin/sh
 # 检查 .env 中 FEISHU_APP_ID/APP_SECRET 是否已配置，未配置则交互引导
-# 用法: . scripts/check-env.sh [项目根目录或安装目录]
+# 用法: . scripts/check-env.sh [项目根目录或安装目录参数]
 # POSIX sh 兼容，不使用 sed -i
 
+REQUIRE_FEISHU="${REMOTE_CLAUDE_REQUIRE_FEISHU:-1}"
 PROJECT_DIR="${PROJECT_DIR:-}"
 
 is_valid_project_dir() {
@@ -32,6 +33,18 @@ fi
 unset LAZY_INIT_DISABLE_AUTO_RUN
 
 INSTALL_DIR="${1:-$PROJECT_DIR}"
+if [ ! -f "$INSTALL_DIR/resources/defaults/.env.example" ]; then
+    if [ "$REQUIRE_FEISHU" = "0" ]; then
+        echo ""
+        echo "飞书客户端未配置，跳过飞书启动。"
+        echo "如需启用飞书客户端，请先配置 $HOME/.remote-claude/.env"
+        echo ""
+        return 0
+    fi
+    echo "错误: 无法定位安装目录模板文件: $INSTALL_DIR/resources/defaults/.env.example" >&2
+    return 1
+fi
+
 ENV_FILE="$HOME/.remote-claude/.env"
 mkdir -p "$HOME/.remote-claude"
 ENV_OK=false
