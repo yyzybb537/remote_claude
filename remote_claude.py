@@ -53,6 +53,45 @@ except (OSError, json.JSONDecodeError, KeyError):
     _VERSION = "unknown"
 
 
+def _sanitize_command_for_log(command: str) -> str:
+    """对命令字符串做脱敏，避免 token/password/secret 泄漏到日志"""
+    sensitive_flags = {"--token", "--password", "--secret"}
+    sensitive_assign_keys = {"--token", "--password", "--secret", "token", "password", "secret"}
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+
+    sanitized_tokens = []
+    mask_next = False
+    for token in tokens:
+        if mask_next:
+            sanitized_tokens.append("***")
+            mask_next = False
+            continue
+
+        token_lower = token.lower()
+        if token_lower in sensitive_flags:
+            sanitized_tokens.append(token)
+            mask_next = True
+            continue
+
+        if "=" in token:
+            key, _ = token.split("=", 1)
+            if key.lower() in sensitive_assign_keys:
+                sanitized_tokens.append(f"{key}=***")
+                continue
+
+        sanitized_tokens.append(token)
+
+    if mask_next:
+        sanitized_tokens.append("***")
+
+    return " ".join(sanitized_tokens)
+
+
+
 def add_remote_args(parser):
     """添加远程连接公共参数
 
@@ -213,7 +252,6 @@ def cmd_start(args):
     # 将当前 shell 的完整环境变量保存到快照文件（权限 0600 防止密钥泄露）
     # tmux new-session 继承的是 tmux 服务器的全局环境，而非调用方 shell 的环境，
     # 通过快照文件将完整环境传递给 server.py 的 _start_pty()
-    import json
     env_snapshot_path = get_env_snapshot_path(session_name)
     env_fd = os.open(str(env_snapshot_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(env_fd, 'w') as f:
@@ -248,6 +286,7 @@ def cmd_start(args):
         f"python3 {shlex.quote(str(server_script))}{debug_flag}{debug_verbose_flag}"
         f"{cli_type_flag}{remote_flag} -- {shlex.quote(session_name)} {cli_args_str}"
     )
+    server_cmd_sanitized = _sanitize_command_for_log(server_cmd)
 
     # 配置启动日志（写文件 + stdout）
     _log_path = USER_DATA_DIR / "startup.log"
@@ -264,11 +303,26 @@ def cmd_start(args):
 
     start_time = datetime.now()
     _start_logger.info(f"启动会话: {session_name}")
-    # 日志脱敏：不记录完整命令，仅记录关键参数
-    _start_logger.info(f"server启动: cli_type={args.cli}, remote={args.remote}, cli_args_count={len(cli_args)}")
+    _start_logger.info(
+        "stage=server_spawn session=%s cli_type=%s remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
+        session_name,
+        args.cli,
+        args.remote,
+        args.remote_host if args.remote else "",
+        args.remote_port if args.remote else "",
+        len(cli_args),
+    )
+    _start_logger.info("server_cmd_sanitized=%s", server_cmd_sanitized)
 
     # 创建 tmux 会话，运行 server（detached，仅后台）
     if not tmux_create_session(session_name, server_cmd, detached=True):
+        _start_logger.error(
+            "stage=server_start_failed reason=tmux_create_failed session=%s remote=%s remote_host=%s remote_port=%s",
+            session_name,
+            args.remote,
+            args.remote_host if args.remote else "",
+            args.remote_port if args.remote else "",
+        )
         print("错误: 无法创建 tmux 会话")
         return 1
 
@@ -288,6 +342,13 @@ def cmd_start(args):
             break
         # 检查 tmux 会话是否仍在运行（server 启动失败时会退出）
         if not tmux_session_exists(session_name):
+            _start_logger.error(
+                "stage=server_start_failed reason=server_exited session=%s remote=%s remote_host=%s remote_port=%s",
+                session_name,
+                args.remote,
+                args.remote_host if args.remote else "",
+                args.remote_port if args.remote else "",
+            )
             print("错误: Server 进程已退出")
             # 输出启动日志辅助诊断
             if _log_path.exists():
@@ -310,6 +371,14 @@ def cmd_start(args):
             elapsed = (i + 1) // 10
             print(f"等待 Server 启动... ({elapsed}s)")
     else:
+        _start_logger.error(
+            "stage=server_start_failed reason=startup_timeout session=%s remote=%s remote_host=%s remote_port=%s timeout=%s",
+            session_name,
+            args.remote,
+            args.remote_host if args.remote else "",
+            args.remote_port if args.remote else "",
+            startup_timeout,
+        )
         print(f"错误: Server 启动超时 ({startup_timeout}s)")
         # 过滤出本次启动后的日志行
         if _log_path.exists():

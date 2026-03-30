@@ -285,11 +285,10 @@ def _build_operation_selector(user_config: Optional["UserConfig"]) -> Optional[D
     """构建会话页操作下拉（快捷键 + 自定义命令）"""
     options: List[Dict[str, Any]] = []
 
-    # 默认配置（无 user_config 时使用）
     show_builtin_keys = True
     show_custom_commands = True
-    enabled_keys = {"up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"}
 
+    enabled_keys = set()
     if user_config:
         panel_cfg = user_config.ui_settings.operation_panel
         show_builtin_keys = panel_cfg.show_builtin_keys

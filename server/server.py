@@ -37,7 +37,7 @@ from utils.protocol import (
 from utils.session import (
     get_socket_path, get_pid_file, ensure_socket_dir,
     generate_client_id, cleanup_session, get_env_file,
-    SOCKET_DIR
+    SOCKET_DIR, _safe_filename
 )
 
 from server.biz_enum import CliType
@@ -168,6 +168,40 @@ class ClaudeWindow:
     layout_mode: str = "normal"  # "normal" | "option" | "detail" | "agent_list" | "agent_detail"
     cli_type: CliType = CliType.CLAUDE  # CLI 类型（决定 lark 侧的标题文案）
 
+
+
+def _sanitize_cmd_tokens_for_log(tokens: list[str]) -> str:
+    """对命令 token 列表做脱敏，避免 token/password/secret 泄漏到日志"""
+    sensitive_flags = {"--token", "--password", "--secret"}
+    sensitive_assign_keys = {"--token", "--password", "--secret", "token", "password", "secret"}
+
+    sanitized_tokens = []
+    mask_next = False
+
+    for token in tokens:
+        if mask_next:
+            sanitized_tokens.append("***")
+            mask_next = False
+            continue
+
+        token_lower = token.lower()
+        if token_lower in sensitive_flags:
+            sanitized_tokens.append(token)
+            mask_next = True
+            continue
+
+        if "=" in token:
+            key, _ = token.split("=", 1)
+            if key.lower() in sensitive_assign_keys:
+                sanitized_tokens.append(f"{key}=***")
+                continue
+
+        sanitized_tokens.append(token)
+
+    if mask_next:
+        sanitized_tokens.append("***")
+
+    return ' '.join(sanitized_tokens)
 
 
 class OutputWatcher:
@@ -981,11 +1015,9 @@ class ProxyServer:
         """从启动日志切换到运行阶段日志"""
         root_logger = logging.getLogger()
 
-        # 移除启动日志 handler（保留 stdout handler）
+        # 移除启动日志 handler（保留 stdout 和运行阶段日志 handler）
         for handler in root_logger.handlers[:]:
-            if isinstance(handler, logging.FileHandler) and \
-               not hasattr(handler, '_runtime_handler') and \
-               not hasattr(handler, '_debug_handler'):
+            if isinstance(handler, logging.FileHandler) and hasattr(handler, '_startup_handler'):
                 root_logger.removeHandler(handler)
 
         # 重定向 sys.stderr 到 ~/.remote-claude/server.error.log
@@ -993,7 +1025,7 @@ class ProxyServer:
         # 适用于：print(..., file=sys.stderr)、logging 的 StreamHandler 等
         # 不适用于：C 扩展模块直接写文件描述符 2、解释器崩溃等底层错误
         error_log_path = os.path.expanduser('~/.remote-claude/server.error.log')
-        sys.stderr = open(error_log_path, 'w', encoding='utf-8')
+        sys.stderr = open(error_log_path, 'a', encoding='utf-8')
         logger.info(f"已重定向 stderr 到 {error_log_path}")
 
         # 添加运行阶段日志文件
@@ -1071,7 +1103,8 @@ class ProxyServer:
         # 提前计算命令（fork 后父子进程共享，方便父进程打印和子进程执行）
         import shlex as _shlex
         _cmd_parts = _shlex.split(self._get_effective_cmd())
-        _full_cmd = ' '.join(_cmd_parts + self.cli_args)
+        _cmd_tokens = _cmd_parts + self.cli_args
+        _full_cmd = _sanitize_cmd_tokens_for_log(_cmd_tokens)
 
         try:
             pid, fd = pty.fork()
@@ -1375,6 +1408,13 @@ def run_server(session_name: str, cli_args: list = None,
                remote_host: str = "0.0.0.0",
                remote_port: int = 8765):
     """运行服务器"""
+    _cli_type = cli_type.value if isinstance(cli_type, CliType) else str(cli_type)
+    _cli_args = cli_args or []
+    logger.info(
+        "stage=run_server_enter session=%s cli_type=%s enable_remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
+        session_name, _cli_type, enable_remote, remote_host, remote_port, len(_cli_args),
+    )
+
     server = ProxyServer(session_name, cli_args,
                          cli_type=cli_type,
                          cli_command=cli_command,
@@ -1398,8 +1438,58 @@ def run_server(session_name: str, cli_args: list = None,
         pass
 
 
-if __name__ == "__main__":
+def _ensure_startup_logging():
+    """确保 startup 日志 handler 幂等挂载到 root logger"""
+    from utils.session import USER_DATA_DIR
+
+    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # 确保 stdout handler 存在
+    has_stdout_handler = any(
+        isinstance(handler, logging.StreamHandler) and getattr(handler, "stream", None) is sys.stdout
+        for handler in root_logger.handlers
+    )
+    if not has_stdout_handler:
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setFormatter(logging.Formatter(
+            "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        root_logger.addHandler(stdout_handler)
+
+    startup_log_path = USER_DATA_DIR / "startup.log"
+    startup_log_path_str = str(startup_log_path)
+
+    has_startup_handler = False
+    for handler in list(root_logger.handlers):
+        if not getattr(handler, "_startup_handler", False):
+            continue
+
+        if str(getattr(handler, "baseFilename", "")) == startup_log_path_str:
+            has_startup_handler = True
+            continue
+
+        root_logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    if not has_startup_handler:
+        startup_handler = logging.FileHandler(startup_log_path, encoding="utf-8")
+        startup_handler.setFormatter(logging.Formatter(
+            "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        startup_handler._startup_handler = True
+        root_logger.addHandler(startup_handler)
+
+
+def main(argv=None):
     import argparse
+
     parser = argparse.ArgumentParser(description="Remote Claude/Codex Server")
     parser.add_argument("session_name", help="会话名称")
     parser.add_argument("cli_args", nargs="*", help="传递给 CLI 的参数")
@@ -1411,30 +1501,29 @@ if __name__ == "__main__":
                         help="开启 pyte 屏幕快照调试日志（写入 _screen.log）")
     parser.add_argument("--debug-verbose", action="store_true",
                         help="debug 日志输出完整诊断信息（indicator、repr 等）")
-    args = parser.parse_args()
+    parser.add_argument("--remote", action="store_true",
+                        help="启用 WebSocket 远程连接")
+    parser.add_argument("--remote-host", default="0.0.0.0",
+                        help="WebSocket 监听地址（默认 0.0.0.0）")
+    parser.add_argument("--remote-port", type=int, default=8765,
+                        help="WebSocket 监听端口（默认 8765）")
+    args = parser.parse_args(argv)
 
-    # 配置日志：启动阶段输出到 stdout + startup.log
-    from utils.session import USER_DATA_DIR, _safe_filename
-    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_startup_logging()
 
-    # 先配置基本输出（stdout）
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[logging.StreamHandler(sys.stdout)],
+    logger.info(
+        "stage=server_bootstrap session=%s cli_type=%s enable_remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
+        args.session_name, args.cli_type, args.remote, args.remote_host, args.remote_port, len(args.cli_args),
     )
-
-    # 添加启动日志 handler
-    startup_handler = logging.FileHandler(USER_DATA_DIR / "startup.log", encoding="utf-8")
-    startup_handler.setFormatter(logging.Formatter(
-        "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    ))
-    startup_handler._startup_handler = True  # 标记为启动日志 handler
-    logging.getLogger().addHandler(startup_handler)
 
     run_server(args.session_name, args.cli_args,
                cli_type=args.cli_type,
                cli_command=args.cli_command,
-               debug_screen=args.debug_screen, debug_verbose=args.debug_verbose)
+               debug_screen=args.debug_screen, debug_verbose=args.debug_verbose,
+               enable_remote=args.remote,
+               remote_host=args.remote_host,
+               remote_port=args.remote_port)
+
+
+if __name__ == "__main__":
+    main()

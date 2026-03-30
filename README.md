@@ -238,6 +238,23 @@ remote-claude attach <session> --remote --host <host>:<port> --token <token>
 remote-claude attach --remote --host <host>:<port>/<session> --token <token>
 ```
 
+### 远程连接排障
+
+远程模式启动失败时，可优先查看启动日志：
+
+- 日志文件：`~/.remote-claude/startup.log`
+- 关键追溯字段：
+  - `stage=server_spawn`（启动参数摘要）
+  - `stage=server_start_failed`（失败阶段与原因）
+  - `server_cmd_sanitized=...`（脱敏后的完整 server 启动命令）
+
+其中 `server_cmd_sanitized` 会对敏感信息做脱敏（如 `token/password/secret`），便于排查参数传递问题而不泄露密钥。
+
+建议排查顺序：
+1. 先定位 `stage=server_start_failed` 的 `reason`
+2. 再对照 `stage=server_spawn` 中的 `remote_host/remote_port`
+3. 最后检查 `server_cmd_sanitized` 是否符合预期启动命令
+
 ### 保存远程连接配置
 
 避免每次输入 host、port、token：
