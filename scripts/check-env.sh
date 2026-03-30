@@ -39,10 +39,10 @@ if [ ! -f "$INSTALL_DIR/resources/defaults/.env.example" ]; then
         echo "飞书客户端未配置，跳过飞书启动。"
         echo "如需启用飞书客户端，请先配置 $HOME/.remote-claude/.env"
         echo ""
-        return 0
+        return 0 2>/dev/null || exit 0
     fi
     echo "错误: 无法定位安装目录模板文件: $INSTALL_DIR/resources/defaults/.env.example" >&2
-    return 1
+    return 1 2>/dev/null || exit 1
 fi
 
 ENV_FILE="$HOME/.remote-claude/.env"
@@ -76,7 +76,7 @@ if [ "$ENV_OK" = false ]; then
 
     if [ -z "$INPUT_APP_ID" ] || [ -z "$INPUT_APP_SECRET" ]; then
         echo "错误: APP_ID 和 APP_SECRET 不能为空"
-        return 1
+        return 1 2>/dev/null || exit 1
     fi
 
     cp "$INSTALL_DIR/resources/defaults/.env.example" "$ENV_FILE"
