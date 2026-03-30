@@ -188,9 +188,10 @@ echo "快速回归测试通过"
 
 | 场景 | 验证点 | 命令 |
 |------|--------|------|
+| check-env 目录参数废弃 | 向 `check-env.sh` 传目录参数时应显式失败（非 0） | `uv run pytest tests/test_entry_lazy_init.py::test_check_env_rejects_legacy_directory_argument -q` |
 | scripts 路径统一 | 所有 scripts 入口先定义 PROJECT_DIR 再 source `_common.sh` | `uv run pytest tests/test_entry_lazy_init.py::test_scripts_define_project_dir_before_common_source -q` |
 | symlink 执行稳定 | `check-env.sh` 在 symlink + 任意 cwd 下稳定 | `uv run pytest tests/test_entry_lazy_init.py::test_check_env_works_via_symlink_from_random_cwd -q` |
-| report_install 路径稳定 | `report_install.py` 不依赖 cwd 且支持 symlink 入口 | `uv run pytest tests/test_entry_lazy_init.py::test_report_install_symlink_entry_is_stable -q` |
+| completion source 稳定 | `completion.sh` 在随机 cwd 下可被 source 且不报路径错误 | `uv run pytest tests/test_entry_lazy_init.py::test_completion_script_can_be_sourced_from_random_cwd -q` |
 
 ### 安装可靠性回归
 

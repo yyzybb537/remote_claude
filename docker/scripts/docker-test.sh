@@ -344,7 +344,7 @@ EOF
 
     # 5-2：验证 check-env.sh 不再交互阻塞
     log_info "验证 check-env.sh 不阻塞..."
-    if timeout 5 bash scripts/check-env.sh . > "$RESULTS_DIR/check_env.log" 2>&1; then
+    if timeout 5 bash scripts/check-env.sh > "$RESULTS_DIR/check_env.log" 2>&1; then
         log_success "check-env.sh 在 5s 内正常返回（不阻塞）"
         report "✓ check-env.sh 不阻塞"
     else

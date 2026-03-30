@@ -1,6 +1,6 @@
 #!/bin/sh
 # 检查 .env 中 FEISHU_APP_ID/APP_SECRET 是否已配置，未配置则交互引导
-# 用法: . scripts/check-env.sh [项目根目录或安装目录参数]
+# 用法: . scripts/check-env.sh
 # POSIX sh 兼容，不使用 sed -i
 
 REQUIRE_FEISHU="${REMOTE_CLAUDE_REQUIRE_FEISHU:-1}"
@@ -10,10 +10,13 @@ is_valid_project_dir() {
     [ -n "$1" ] && [ -f "$1/scripts/_common.sh" ]
 }
 
+if [ "${1:+x}" = "x" ]; then
+    echo "错误: check-env.sh 目录参数已废弃，请直接调用 sh scripts/check-env.sh（或 source 时不传目录参数）" >&2
+    return 2 2>/dev/null || exit 2
+fi
+
 if is_valid_project_dir "${PROJECT_DIR:-}"; then
     PROJECT_DIR="$PROJECT_DIR"
-elif is_valid_project_dir "${1:-}"; then
-    PROJECT_DIR="$1"
 else
     SOURCE="$0"
     while [ -L "$SOURCE" ]; do
@@ -27,12 +30,10 @@ fi
 
 LAZY_INIT_DISABLE_AUTO_RUN=1
 export LAZY_INIT_DISABLE_AUTO_RUN
-if [ -f "$PROJECT_DIR/scripts/_common.sh" ]; then
-    . "$PROJECT_DIR/scripts/_common.sh"
-fi
+. "$PROJECT_DIR/scripts/_common.sh"
 unset LAZY_INIT_DISABLE_AUTO_RUN
 
-INSTALL_DIR="${1:-$PROJECT_DIR}"
+INSTALL_DIR="$PROJECT_DIR"
 if [ ! -f "$INSTALL_DIR/resources/defaults/.env.example" ]; then
     if [ "$REQUIRE_FEISHU" = "0" ]; then
         echo ""

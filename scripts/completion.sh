@@ -1,6 +1,26 @@
 #!/bin/sh
 # remote-claude shell 自动补全（支持 bash 和 zsh）
 
+SOURCE=""
+if [ -n "${BASH_SOURCE:-}" ]; then
+    SOURCE="$BASH_SOURCE"
+elif [ -n "${ZSH_VERSION:-}" ]; then
+    SOURCE="$(eval 'printf %s "${(%):-%N}"')"
+else
+    SOURCE="$0"
+fi
+while [ -L "$SOURCE" ]; do
+    BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in /*) ;; *) SOURCE="$BASE_DIR/$SOURCE" ;; esac
+done
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+LAZY_INIT_DISABLE_AUTO_RUN=1
+export LAZY_INIT_DISABLE_AUTO_RUN
+. "$PROJECT_DIR/scripts/_common.sh"
+unset LAZY_INIT_DISABLE_AUTO_RUN
+
 _remote_claude_get_sessions() {
     remote-claude list 2>/dev/null | awk 'NR>3 && NF>0 && !/^-/ && !/^共/ {print $1}'
 }

@@ -667,6 +667,7 @@ def test_check_env_allows_skip_when_feishu_not_required(tmp_path: Path):
 
     check_env = script_dir / "check-env.sh"
     check_env.write_text((REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
     (resources_dir / ".env.example").write_text("FEISHU_APP_ID=cli_xxxxx\nFEISHU_APP_SECRET=xxxxx\n", encoding="utf-8")
 
     shell_script = f"""#!/bin/sh
@@ -674,7 +675,8 @@ set -e
 export HOME='{tmp_path / 'home'}'
 mkdir -p "$HOME"
 export REMOTE_CLAUDE_REQUIRE_FEISHU=0
-. '{check_env}' '{project_dir}'
+PROJECT_DIR='{project_dir}'
+. '{check_env}'
 echo skip-ok
 """
     result = subprocess.run(["sh"], input=shell_script, text=True, capture_output=True, cwd=project_dir)
@@ -863,6 +865,7 @@ def test_scripts_define_project_dir_before_common_source():
         "scripts/npm-publish.sh",
         "scripts/test_lark_management.sh",
         "scripts/preinstall.sh",
+        "scripts/completion.sh",
     ]
     for rel in scripts:
         content = (REPO_ROOT / rel).read_text(encoding="utf-8")
@@ -884,12 +887,29 @@ set -e
 export HOME='{tmp_path / 'home'}'
 mkdir -p "$HOME"
 export REMOTE_CLAUDE_REQUIRE_FEISHU=0
-. '{link}' '{project_dir}'
+PROJECT_DIR='{project_dir}'
+. '{link}'
 echo ok
 """
     result = subprocess.run(["sh"], input=shell_script, text=True, capture_output=True, cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith("ok")
+
+
+def test_check_env_rejects_legacy_directory_argument(tmp_path: Path):
+    project_dir = REPO_ROOT
+    script = project_dir / "scripts" / "check-env.sh"
+
+    result = subprocess.run(
+        ["sh", str(script), str(project_dir)],
+        text=True,
+        capture_output=True,
+        cwd=project_dir,
+        env={**os.environ, "REMOTE_CLAUDE_REQUIRE_FEISHU": "0"},
+    )
+
+    assert result.returncode == 2
+    assert "目录参数已废弃" in (result.stderr + result.stdout)
 
 
 def _load_report_install_module(entry_path: Path):
@@ -959,7 +979,17 @@ fi
     assert result.stdout.strip().endswith("runtime:missing")
 
 
-def test_scripts_use_sh_shebang_for_all_shell_scripts():
+def test_completion_script_can_be_sourced_from_random_cwd(tmp_path: Path):
+    completion_script = REPO_ROOT / "scripts" / "completion.sh"
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", f"set -e; cd '{tmp_path}'; . '{completion_script}'; type _remote_claude_get_sessions >/dev/null"],
+        text=True,
+        capture_output=True,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stderr
+
+
     for rel in [
         "scripts/completion.sh",
         "scripts/npm-publish.sh",
