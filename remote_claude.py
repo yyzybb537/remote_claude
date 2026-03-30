@@ -1276,6 +1276,7 @@ def main():
 
     # lark 命令（带子命令）
     lark_parser = subparsers.add_parser("lark", help="飞书客户端管理")
+    lark_parser.set_defaults(func=cmd_lark)
     lark_subparsers = lark_parser.add_subparsers(dest="lark_command", help="飞书客户端操作")
 
     # lark start

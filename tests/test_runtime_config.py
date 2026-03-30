@@ -753,6 +753,19 @@ def test_config_reset_cleanup_scope_all():
         env.teardown()
 
 
+def test_main_lark_without_subcommand_uses_compat_handler(monkeypatch):
+    """测试 `remote-claude lark`（无子命令）不会因缺少 func 崩溃"""
+    import remote_claude
+    import utils.runtime_config as config_module
+
+    monkeypatch.setattr(config_module, "migrate_legacy_config", lambda: None)
+    monkeypatch.setattr(config_module, "migrate_legacy_notify_settings", lambda: None)
+    monkeypatch.setattr(remote_claude, "is_lark_running", lambda: False)
+    monkeypatch.setattr(sys, "argv", ["remote-claude", "lark"])
+
+    assert remote_claude.main() == 0
+
+
 # ============== uv_path 测试 ==============
 
 def test_uv_path_get_default():
