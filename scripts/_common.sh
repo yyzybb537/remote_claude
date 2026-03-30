@@ -590,8 +590,190 @@ _is_global_install() {
     return 1
 }
 
+# 计算文件 SHA-256 摘要
+_hash_file_sha256() {
+    local target_file output digest rc
+    target_file="$1"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        if output=$(sha256sum "$target_file" 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            printf '%s\n' "$1"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        if output=$(shasum -a 256 "$target_file" 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            printf '%s\n' "$1"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v openssl >/dev/null 2>&1; then
+        if output=$(openssl dgst -sha256 "$target_file" 2>/dev/null); then
+            digest=${output##* }
+            [ -n "$digest" ] || return 1
+            printf '%s\n' "$digest"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v cksum >/dev/null 2>&1; then
+        if output=$(cksum "$target_file" 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            [ -n "$2" ] || return 1
+            printf 'cksum:%s:%s\n' "$1" "$2"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    return 1
+}
+
+# 计算标准输入 SHA-256 摘要
+_hash_stdin_sha256() {
+    local output digest rc
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        if output=$(sha256sum 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            printf '%s\n' "$1"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        if output=$(shasum -a 256 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            printf '%s\n' "$1"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v openssl >/dev/null 2>&1; then
+        if output=$(openssl dgst -sha256 2>/dev/null); then
+            digest=${output##* }
+            [ -n "$digest" ] || return 1
+            printf '%s\n' "$digest"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v cksum >/dev/null 2>&1; then
+        if output=$(cksum 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            [ -n "$2" ] || return 1
+            printf 'cksum:%s:%s\n' "$1" "$2"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    return 1
+}
+
+# 获取依赖指纹文件路径
+_get_dependency_fingerprint_path() {
+    local project_dir
+    project_dir="$1"
+    printf '%s/.venv/.deps-fingerprint\n' "$project_dir"
+}
+
+# 计算依赖指纹（基于 pyproject.toml 与 uv.lock 内容）
+_compute_dependency_fingerprint() {
+    local project_dir pyproject_file lock_file pyproject_hash lock_hash manifest
+    project_dir="$1"
+    pyproject_file="$project_dir/pyproject.toml"
+    lock_file="$project_dir/uv.lock"
+
+    pyproject_hash="missing"
+    lock_hash="missing"
+
+    if [ -f "$pyproject_file" ]; then
+        pyproject_hash=$(_hash_file_sha256 "$pyproject_file") || return 1
+    fi
+
+    if [ -f "$lock_file" ]; then
+        lock_hash=$(_hash_file_sha256 "$lock_file") || return 1
+    fi
+
+    manifest=$(printf 'pyproject.toml=%s\nuv.lock=%s\n' "$pyproject_hash" "$lock_hash")
+    printf '%s' "$manifest" | _hash_stdin_sha256
+}
+
+# 比较依赖指纹是否一致
+_dependency_fingerprint_matches() {
+    local project_dir fingerprint_file current_fingerprint stored_fingerprint
+    project_dir="$1"
+    fingerprint_file=$(_get_dependency_fingerprint_path "$project_dir")
+
+    [ -f "$fingerprint_file" ] || return 1
+
+    current_fingerprint=$(_compute_dependency_fingerprint "$project_dir") || return 1
+    stored_fingerprint=$(tr -d '\r\n' < "$fingerprint_file" 2>/dev/null)
+
+    [ -n "$stored_fingerprint" ] || return 1
+    [ "$stored_fingerprint" = "$current_fingerprint" ]
+}
+
+# 写回依赖指纹
+_write_dependency_fingerprint() {
+    local project_dir venv_dir fingerprint_file current_fingerprint tmp_file
+    project_dir="$1"
+    venv_dir="$project_dir/.venv"
+    fingerprint_file=$(_get_dependency_fingerprint_path "$project_dir")
+
+    [ -d "$venv_dir" ] || return 1
+
+    current_fingerprint=$(_compute_dependency_fingerprint "$project_dir") || return 1
+
+    tmp_file=$(mktemp "$venv_dir/.deps-fingerprint.tmp.XXXXXX" 2>/dev/null || mktemp) || return 1
+    if ! printf '%s\n' "$current_fingerprint" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    if ! mv "$tmp_file" "$fingerprint_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    return 0
+}
+
 # 检查是否需要重新同步依赖
-# 条件：.venv 不存在，或 pyproject.toml/uv.lock 比 .venv 新
+# 条件：.venv 不存在，或依赖指纹变化
 # 返回: 0 需要同步, 1 不需要
 _needs_sync() {
     local venv_dir project_dir
@@ -609,19 +791,13 @@ _needs_sync() {
     # .venv 不存在，需要同步
     [ ! -d "$venv_dir" ] && return 0
 
-    # 检查 pyproject.toml 是否比 .venv 新
-    if [ -f "$project_dir/pyproject.toml" ] && \
-       [ "$project_dir/pyproject.toml" -nt "$venv_dir" ]; then
-        return 0
+    # 指纹一致，不需要同步
+    if _dependency_fingerprint_matches "$project_dir"; then
+        return 1
     fi
 
-    # 检查 uv.lock 是否比 .venv 新
-    if [ -f "$project_dir/uv.lock" ] && \
-       [ "$project_dir/uv.lock" -nt "$venv_dir" ]; then
-        return 0
-    fi
-
-    return 1
+    # 指纹不存在或变化，需要同步
+    return 0
 }
 
 # 延迟初始化失败时输出统一恢复命令并保持非 0 退出
@@ -659,7 +835,7 @@ handle_lazy_init_failure() {
 }
 
 # 延迟初始化：检测是否需要运行 setup.sh
-# 条件：.venv 不存在 或依赖文件更新 且不在缓存目录中
+# 条件：.venv 不存在 或依赖指纹变化 且不在缓存目录中
 _lazy_init() {
     _set_lazy_init_result_if_unset "pending"
 
@@ -722,6 +898,10 @@ _lazy_init() {
             return "$setup_rc"
         fi
         _set_lazy_init_result "sync-completed"
+        if ! _write_dependency_fingerprint "$project_dir"; then
+            print_warning "依赖指纹写入失败，后续启动可能触发重复同步"
+            _install_log "stage=lazy-init fingerprint-write-failed project=$project_dir"
+        fi
         return 0
     fi
 

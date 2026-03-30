@@ -160,7 +160,7 @@ check_tmux() {
         cleanup_tmpdir() {
             rm -rf "$TMPDIR"
         }
-        trap cleanup_tmpdir EXIT
+        trap 'cleanup_tmpdir' 0
 
         print_warning "下载 tmux-${TMUX_VERSION_TAG}.tar.gz..."
         if ! curl -fsSL "$TMUX_URL" -o "$TMPDIR/tmux.tar.gz"; then

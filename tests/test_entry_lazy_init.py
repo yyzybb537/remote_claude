@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -175,10 +176,18 @@ def test_lazy_init_if_needed_reports_noop_when_sync_not_needed(tmp_path: Path):
     venv_dir = project_dir / ".venv"
     script_dir.mkdir(parents=True)
     venv_dir.mkdir()
+    (project_dir / "pyproject.toml").write_text('[project]\nname="demo"\nversion="0.1.0"\n', encoding="utf-8")
+    (project_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+    setup_sh = script_dir / "setup.sh"
+    setup_sh.write_text("#!/bin/sh\ntouch \"$PROJECT_DIR/.sync-ran\"\nexit 0\n", encoding="utf-8")
+    setup_sh.chmod(0o755)
 
     result = run_common(f"""
 PROJECT_DIR='{project_dir}'
 SCRIPT_DIR='{script_dir}'
+_write_dependency_fingerprint "$PROJECT_DIR" || exit 1
+before_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")
 if _lazy_init; then
     status=$?
     echo "rc:$status result:${{LAZY_INIT_RESULT:-missing}}"
@@ -187,10 +196,15 @@ else
     echo "rc:$status result:${{LAZY_INIT_RESULT:-missing}}"
     exit 1
 fi
+after_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")
+[ -f "$PROJECT_DIR/.sync-ran" ] && echo sync-ran
+[ "$before_fp" = "$after_fp" ] && echo fp-stable
 """)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().endswith("rc:0 result:no-sync-needed")
+    assert result.stdout.strip().endswith("fp-stable")
+    assert "rc:0 result:no-sync-needed" in result.stdout
+    assert "sync-ran" not in result.stdout
 
 
 def test_needs_sync_skips_cache_without_lockfiles():
@@ -519,6 +533,170 @@ def test_setup_install_dependencies_uses_uv_retry_helper_instead_of_curl_probe()
     assert 'curl -sSf --connect-timeout 3' not in content
 
 
+def test_shell_scripts_keep_posix_compat_static_guards():
+    setup_content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    uninstall_content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+    completion_content = (REPO_ROOT / "scripts" / "completion.sh").read_text(encoding="utf-8")
+
+    assert "trap cleanup_tmpdir EXIT" not in setup_content
+    assert "trap 'cleanup_tmpdir' 0" in setup_content
+    assert "local " not in uninstall_content
+
+    bash_branch_match = re.search(
+        r'elif \[ -n "\$\{BASH_VERSION:-\}" \]; then\n(?P<body>.*?)(?=\nfi\n?)',
+        completion_content,
+        re.S,
+    )
+    assert bash_branch_match, "应能定位 completion.sh 的 bash 分支"
+    bash_branch = bash_branch_match.group("body")
+    assert "local " not in bash_branch
+
+
+def test_dependency_fingerprint_write_fails_when_hash_command_errors(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    script_dir = project_dir / "scripts"
+    venv_dir = project_dir / ".venv"
+    script_dir.mkdir(parents=True)
+    venv_dir.mkdir()
+    (project_dir / "pyproject.toml").write_text('[project]\nname="demo"\nversion="0.1.0"\n', encoding="utf-8")
+
+    result = run_common(f"""
+PROJECT_DIR='{project_dir}'
+SCRIPT_DIR='{script_dir}'
+sha256sum() {{ return 2; }}
+if _write_dependency_fingerprint "$PROJECT_DIR"; then
+    echo "unexpected-success"
+    exit 1
+else
+    write_rc=$?
+    echo "write-failed:$write_rc"
+fi
+if _needs_sync; then
+    echo "needs-sync"
+else
+    echo "unexpected-no-sync"
+    exit 1
+fi
+if [ -f "$PROJECT_DIR/.venv/.deps-fingerprint" ]; then
+    echo "fingerprint-exists"
+fi
+""")
+
+    assert result.returncode == 0, result.stderr
+    assert "write-failed:1" in result.stdout
+    assert "needs-sync" in result.stdout
+    assert "unexpected-success" not in result.stdout
+    assert "unexpected-no-sync" not in result.stdout
+    assert "fingerprint-exists" not in result.stdout
+
+
+def test_dependency_fingerprint_falls_back_when_sha_tools_unavailable(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    script_dir = project_dir / "scripts"
+    venv_dir = project_dir / ".venv"
+    script_dir.mkdir(parents=True)
+    venv_dir.mkdir()
+    (project_dir / "pyproject.toml").write_text('[project]\nname="demo"\nversion="0.1.0"\n', encoding="utf-8")
+    (project_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+    result = run_common(f"""
+PROJECT_DIR='{project_dir}'
+SCRIPT_DIR='{script_dir}'
+sha256sum() {{ return 127; }}
+shasum() {{ return 127; }}
+openssl() {{ return 127; }}
+_write_dependency_fingerprint "$PROJECT_DIR" || {{
+    echo "write-failed"
+    exit 1
+}}
+fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")
+echo "fp:$fp"
+if _needs_sync; then
+    echo "needs-sync"
+    exit 1
+else
+    echo "no-sync"
+fi
+""")
+
+    assert result.returncode == 0, result.stderr
+    assert "write-failed" not in result.stdout
+    assert "no-sync" in result.stdout
+    assert "fp:" in result.stdout
+    assert "fp:\n" not in result.stdout
+
+
+def test_lazy_init_warns_when_dependency_fingerprint_write_fails(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    script_dir = project_dir / "scripts"
+    script_dir.mkdir(parents=True)
+
+    setup_sh = script_dir / "setup.sh"
+    setup_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    setup_sh.chmod(0o755)
+
+    result = run_common(f"""
+PROJECT_DIR='{project_dir}'
+SCRIPT_DIR='{script_dir}'
+_write_dependency_fingerprint() {{
+    return 1
+}}
+if _lazy_init; then
+    status=$?
+    echo "rc:$status result:${{LAZY_INIT_RESULT:-missing}}"
+else
+    status=$?
+    echo "rc:$status result:${{LAZY_INIT_RESULT:-missing}}"
+    exit 1
+fi
+""")
+
+    assert result.returncode == 0, result.stderr
+    assert "rc:0" in result.stdout
+    assert "result:sync-completed" in result.stdout
+    assert "依赖指纹写入失败" in result.stdout
+
+
+
+def test_lazy_init_if_needed_triggers_sync_when_dependency_fingerprint_changes(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    script_dir = project_dir / "scripts"
+    venv_dir = project_dir / ".venv"
+    script_dir.mkdir(parents=True)
+    venv_dir.mkdir()
+    (project_dir / "pyproject.toml").write_text('[project]\nname="demo"\nversion="0.1.0"\n', encoding="utf-8")
+    (project_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+    setup_sh = script_dir / "setup.sh"
+    setup_sh.write_text("#!/bin/sh\ntouch \"$PROJECT_DIR/.sync-ran\"\nexit 0\n", encoding="utf-8")
+    setup_sh.chmod(0o755)
+
+    result = run_common(f"""
+PROJECT_DIR='{project_dir}'
+SCRIPT_DIR='{script_dir}'
+_write_dependency_fingerprint "$PROJECT_DIR" || exit 1
+before_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")
+printf '\n# changed\n' >> "$PROJECT_DIR/uv.lock"
+if _lazy_init; then
+    status=$?
+    echo "rc:$status result:${{LAZY_INIT_RESULT:-missing}}"
+else
+    status=$?
+    echo "rc:$status result:${{LAZY_INIT_RESULT:-missing}}"
+    exit 1
+fi
+after_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")
+[ -f "$PROJECT_DIR/.sync-ran" ] && echo sync-ran
+[ "$before_fp" != "$after_fp" ] && echo fp-updated
+""")
+
+    assert result.returncode == 0, result.stderr
+    assert "rc:0" in result.stdout
+    assert "result:sync-completed" in result.stdout
+    assert "sync-ran" in result.stdout
+    assert "fp-updated" in result.stdout
+    assert (project_dir / ".sync-ran").exists()
+
 
 def test_lazy_init_if_needed_reports_setup_success_after_trigger(tmp_path: Path):
     project_dir = tmp_path / "project"
@@ -728,6 +906,8 @@ def test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_option
 
     (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
     (script_dir / "check-env.sh").write_text((REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "setup.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (script_dir / "setup.sh").chmod(0o755)
 
     home = tmp_path / "home"
     (home / ".remote-claude").mkdir(parents=True)
@@ -990,6 +1170,7 @@ def test_completion_script_can_be_sourced_from_random_cwd(tmp_path: Path):
     assert result.returncode == 0, result.stderr
 
 
+def test_scripts_use_sh_shebang_for_all_shell_scripts():
     for rel in [
         "scripts/completion.sh",
         "scripts/npm-publish.sh",
@@ -1093,7 +1274,8 @@ def test_install_sh_does_not_skip_pnpm_global_install_in_cache(tmp_path: Path):
     )
 
     assert result.returncode == 21
-    assert "执行 setup.sh 进行完整初始化..." in result.stdout
+    assert "setup.sh" in result.stdout
+    assert "初始化" in result.stdout
     assert install_log_path.exists()
     log_content = install_log_path.read_text(encoding="utf-8")
     assert "[script-fail]" in log_content

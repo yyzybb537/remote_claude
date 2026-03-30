@@ -178,43 +178,52 @@ echo "快速回归测试通过"
 
 | 场景 | 验证点 | 命令 |
 |------|--------|------|
-| rc 自适应选择 | zsh/bash/unknown shell 选择正确 rc | `uv run pytest tests/test_entry_lazy_init.py::test_get_shell_rc_prefers_zsh_when_shell_is_zsh -q` |
-| init 幂等 | 重复执行不重复写块 | `uv run pytest tests/test_entry_lazy_init.py::test_upsert_rc_block_is_idempotent -q` |
-| 脚本 shebang 统一 | 目标脚本均为 `#!/bin/sh` | `uv run pytest tests/test_entry_lazy_init.py::test_scripts_use_sh_shebang_for_all_shell_scripts -q` |
-| 无 bash-only 语法残留 | `[[` 与 `#!/bin/bash` 被清理 | `uv run pytest tests/test_entry_lazy_init.py::test_shell_scripts_do_not_contain_bash_only_constructs -q` |
-| 无显式 bash 内部调用 | 脚本互调不依赖 `bash` | `uv run pytest tests/test_entry_lazy_init.py::test_scripts_no_explicit_bash_invocation_for_internal_calls -q` |
+| rc 自适应选择 | zsh/bash/unknown shell 选择正确 rc | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_get_shell_rc_prefers_zsh_when_shell_is_zsh -q` |
+| init 幂等 | 重复执行不重复写块 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_upsert_rc_block_is_idempotent -q` |
+| 脚本 shebang 统一 | 目标脚本均为 `#!/bin/sh`（独立测试，避免与 completion source 职责耦合） | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_scripts_use_sh_shebang_for_all_shell_scripts -q` |
+| 无 bash-only 语法残留 | `[[` 与 `#!/bin/bash` 被清理 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_shell_scripts_do_not_contain_bash_only_constructs -q` |
+| 无显式 bash 内部调用 | 脚本互调不依赖 `bash` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_scripts_no_explicit_bash_invocation_for_internal_calls -q` |
 
 ### scripts 路径统一回归
 
 | 场景 | 验证点 | 命令 |
 |------|--------|------|
-| check-env 目录参数废弃 | 向 `check-env.sh` 传目录参数时应显式失败（非 0） | `uv run pytest tests/test_entry_lazy_init.py::test_check_env_rejects_legacy_directory_argument -q` |
-| scripts 路径统一 | 所有 scripts 入口先定义 PROJECT_DIR 再 source `_common.sh` | `uv run pytest tests/test_entry_lazy_init.py::test_scripts_define_project_dir_before_common_source -q` |
-| symlink 执行稳定 | `check-env.sh` 在 symlink + 任意 cwd 下稳定 | `uv run pytest tests/test_entry_lazy_init.py::test_check_env_works_via_symlink_from_random_cwd -q` |
-| completion source 稳定 | `completion.sh` 在随机 cwd 下可被 source 且不报路径错误 | `uv run pytest tests/test_entry_lazy_init.py::test_completion_script_can_be_sourced_from_random_cwd -q` |
+| check-env 目录参数废弃 | 向 `check-env.sh` 传目录参数时应显式失败（非 0） | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_rejects_legacy_directory_argument -q` |
+| scripts 路径统一 | 所有 scripts 入口先定义 PROJECT_DIR 再 source `_common.sh` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_scripts_define_project_dir_before_common_source -q` |
+| symlink 执行稳定 | `check-env.sh` 在 symlink + 任意 cwd 下稳定 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_works_via_symlink_from_random_cwd -q` |
+| completion source 稳定 | `completion.sh` 在随机 cwd 下可被 source 且不报路径错误 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_completion_script_can_be_sourced_from_random_cwd -q` |
+
+### 依赖指纹与 shell 兼容回归
+
+| 场景 | 验证点 | 命令 |
+|------|--------|------|
+| 指纹一致不触发 sync | 写入指纹后再次 lazy init 返回 `no-sync-needed`，且不会执行 setup.sh | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_if_needed_reports_noop_when_sync_not_needed -q` |
+| 指纹变化触发 sync | 修改 `uv.lock` 后 lazy init 触发 setup.sh 并写回新指纹 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_if_needed_triggers_sync_when_dependency_fingerprint_changes -q` |
+| 指纹写回失败路径 | 哈希命令异常时写回失败、`_needs_sync` 仍返回需要同步且不生成指纹文件 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_dependency_fingerprint_write_fails_when_hash_command_errors -q` |
+| setup trap 新写法静态约束 | setup 使用 `trap 'cleanup_tmpdir' 0`，且不出现旧写法；同时校验 uninstall/completion 无 `local` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_shell_scripts_keep_posix_compat_static_guards -q` |
 
 ### 安装可靠性回归
 
 | 场景 | 验证点 | 命令 |
 |------|--------|------|
-| 安装失败日志落盘 | 失败后提示并可在 `/tmp/remote-claude-install.log` 定位阶段 | `uv run pytest tests/test_entry_lazy_init.py::test_install_sh_initializes_install_log_helpers -q` |
-| pip 升级前置 | 安装 uv 前会先对最终选中的 pip 执行 `install --upgrade pip --user` | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_upgrades_pip_before_uv_install -q` |
-| uv 安装源顺序 | `install_uv_multi_source` 按官方 → 阿里 → 清华顺序尝试 PyPI 源 | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_official_then_aliyun_then_tuna_order -q` |
-| uv sync 多源回退 | `_run_uv_with_pypi_sources` / `install_dependencies` 按官方 → 阿里 → 清华依次回退，并附加 host trust 参数 | `uv run pytest tests/test_entry_lazy_init.py::test_run_uv_with_pypi_sources_uses_index_and_trusted_host_for_each_attempt -q` |
-| 镜像与 trusted-host 一致性 | pip 升级与 uv/pip 安装共用内置镜像回退并附带 `--trusted-host` | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_trusted_host_for_all_pip_attempts -q` |
-| 全部 PyPI 源失败后继续 fallback | pip 多源失败后仍继续官方脚本等后续安装兜底 | `uv run pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_keeps_fallback_after_all_pypi_sources_fail -q` |
-| 失败日志字段粒度（install-fail） | 安装步骤失败日志含 `stage/source/cmd/exit_code` 摘要 | `uv run pytest tests/test_entry_lazy_init.py::test_common_install_fail_summary_contains_required_fields -q` |
-| 失败日志字段粒度（script-fail） | 脚本步骤失败日志含 `stage/source/cmd/exit_code` 摘要（含新加 script-fail 字段用例） | `uv run pytest tests/test_entry_lazy_init.py::test_common_script_fail_summary_contains_required_fields -q` |
-| 补全路径一致 | setup 写入补全路径为 `scripts/completion.sh` | `uv run pytest tests/test_entry_lazy_init.py::test_setup_completion_uses_scripts_path -q` |
-| runtime 成功时创建 | runtime 初始化逻辑位于成功主流程 | `uv run pytest tests/test_entry_lazy_init.py::test_setup_runtime_creation_stays_in_success_flow -q` |
+| 安装失败日志落盘 | 失败后提示并可在 `/tmp/remote-claude-install.log` 定位阶段 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_sh_initializes_install_log_helpers -q` |
+| pip 升级前置 | 安装 uv 前会先对最终选中的 pip 执行 `install --upgrade pip --user` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_upgrades_pip_before_uv_install -q` |
+| uv 安装源顺序 | `install_uv_multi_source` 按官方 → 阿里 → 清华顺序尝试 PyPI 源 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_official_then_aliyun_then_tuna_order -q` |
+| uv sync 多源回退 | `_run_uv_with_pypi_sources` / `install_dependencies` 按官方 → 阿里 → 清华依次回退，并附加 host trust 参数 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_run_uv_with_pypi_sources_uses_index_and_trusted_host_for_each_attempt -q` |
+| 镜像与 trusted-host 一致性 | pip 升级与 uv/pip 安装共用内置镜像回退并附带 `--trusted-host` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_trusted_host_for_all_pip_attempts -q` |
+| 全部 PyPI 源失败后继续 fallback | pip 多源失败后仍继续官方脚本等后续安装兜底 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_keeps_fallback_after_all_pypi_sources_fail -q` |
+| 失败日志字段粒度（install-fail） | 安装步骤失败日志含 `stage/source/cmd/exit_code` 摘要 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_common_install_fail_summary_contains_required_fields -q` |
+| 失败日志字段粒度（script-fail） | 脚本步骤失败日志含 `stage/source/cmd/exit_code` 摘要（含新加 script-fail 字段用例） | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_common_script_fail_summary_contains_required_fields -q` |
+| 补全路径一致 | setup 写入补全路径为 `scripts/completion.sh` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_setup_completion_uses_scripts_path -q` |
+| runtime 成功时创建 | runtime 初始化逻辑位于成功主流程 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_setup_runtime_creation_stays_in_success_flow -q` |
 
 ### 启动链路与飞书解耦回归
 
 | 场景 | 验证点 | 命令 |
 |------|--------|------|
-| 飞书未配置时允许本地启动 | `cla/cl/cx/cdx` 不因飞书缺失阻塞本地会话启动 | `uv run pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q` |
-| 显式跳过飞书配置检查 | `REMOTE_CLAUDE_REQUIRE_FEISHU=0` 时 `check-env.sh` 直接返回成功 | `uv run pytest tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required -q` |
-| lazy init 失败信息可见 | 失败时 stderr 保留 setup 错误细节并提示安装日志路径 | `uv run pytest tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details -q` |
+| 飞书未配置时允许本地启动 | `cla/cl/cx/cdx` 不因飞书缺失阻塞本地会话启动 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q` |
+| 显式跳过飞书配置检查 | `REMOTE_CLAUDE_REQUIRE_FEISHU=0` 时 `check-env.sh` 直接返回成功 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required -q` |
+| lazy init 失败信息可见 | 失败时 stderr 保留 setup 错误细节并提示安装日志路径 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details -q` |
 
 ---
 

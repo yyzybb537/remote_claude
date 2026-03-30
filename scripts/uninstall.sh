@@ -37,7 +37,7 @@ _is_npm_context() {
 cleanup_symlinks() {
     print_info "清理快捷命令符号链接..."
 
-    local found=0
+    found=0
     # 扩展的 bin 目录列表（覆盖常见安装路径）
     for dir in /usr/local/bin /usr/bin "$HOME/bin" "$HOME/.local/bin" \
                /opt/homebrew/bin /usr/local/Cellar/node/*/bin \
@@ -73,8 +73,9 @@ cleanup_symlinks() {
 cleanup_shell_config() {
     print_info "清理 shell 配置..."
 
-    local cleaned=0
-    local rc tmp_file
+    cleaned=0
+    rc=
+    tmp_file=
     for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do
         [ -f "$rc" ] || continue
 
@@ -123,7 +124,7 @@ cleanup_virtual_env() {
 cleanup_runtime_files() {
     print_info "清理运行时文件..."
 
-    local cleaned=0
+    cleaned=0
 
     # 停止 lark 客户端
     pid_file="/tmp/remote-claude/lark.pid"
@@ -210,7 +211,7 @@ cleanup_uv_cache() {
         return
     fi
 
-    local cache_size
+    cache_size=
     cache_size=$(uv cache dir 2>/dev/null | head -1)
     if [ -z "$cache_size" ]; then
         print_detail "无法获取缓存信息"
@@ -252,7 +253,7 @@ cleanup_config_files() {
     fi
 
     # 列出所有相关文件
-    local all_files=""
+    all_files=""
     for file in config.json runtime.json .env lark_chat_bindings.json; do
         [ -f "$DATA_DIR/$file" ] && all_files="$all_files $file"
     done
