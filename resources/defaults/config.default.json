@@ -28,6 +28,11 @@
     "card_expiry": {
       "enabled": true,
       "expiry_seconds": 3600
+    },
+    "operation_panel": {
+      "show_builtin_keys": true,
+      "show_custom_commands": true,
+      "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
     }
   }
 }

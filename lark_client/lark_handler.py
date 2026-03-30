@@ -667,16 +667,12 @@ class LarkHandler:
             if cid in self._chat_bindings
         }
 
-        # 获取自动应答状态
-        from utils.runtime_config import get_session_auto_answer_enabled
-        auto_answer_enabled = get_session_auto_answer_enabled(current) if current else False
-
+        # 自动应答开关已迁移到会话卡片，不再在 /menu 卡片展示
         card = build_menu_card(
             sessions, current_session=current, session_groups=session_groups, page=page,
             notify_enabled=get_notify_ready_enabled(),
             urgent_enabled=get_notify_urgent_enabled(),
             bypass_enabled=get_bypass_enabled(),
-            auto_answer_enabled=auto_answer_enabled,
             user_config=self._user_config
         )
         await self._send_or_update_card(chat_id, card, message_id)
@@ -703,8 +699,9 @@ class LarkHandler:
         await self._cmd_menu(user_id, chat_id, message_id=message_id)
 
     async def _cmd_toggle_auto_answer(self, user_id: str, chat_id: str,
-                                       message_id: Optional[str] = None):
-        """切换自动应答开关并刷新菜单卡片"""
+                                       message_id: Optional[str] = None,
+                                       refresh_stream: bool = False):
+        """切换自动应答开关并刷新卡片"""
         session_name = self._chat_sessions.get(chat_id)
         if not session_name:
             await card_service.send_text(chat_id, "当前未连接到任何会话")
@@ -725,6 +722,30 @@ class LarkHandler:
                 tracker.pending_auto_answer = None
 
         logger.info(f"自动应答开关切换: session={session_name}, enabled={new_value}")
+
+        if refresh_stream:
+            card_id = self._poller.get_active_card_id(chat_id)
+            snapshot = self._poller.read_snapshot(chat_id) if card_id else None
+            if snapshot:
+                card = build_stream_card(
+                    blocks=snapshot.get("blocks", []),
+                    status_line=snapshot.get("status_line"),
+                    bottom_bar=snapshot.get("bottom_bar"),
+                    agent_panel=snapshot.get("agent_panel"),
+                    option_block=snapshot.get("option_block"),
+                    session_name=session_name,
+                    cli_type=snapshot.get("cli_type", "claude"),
+                    user_config=self._user_config,
+                )
+                if card_id:
+                    try:
+                        await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, card)
+                        return
+                    except Exception as e:
+                        logger.warning(f"刷新会话卡片失败（fallback 到 message_id）: {e}")
+                if message_id:
+                    await self._send_or_update_card(chat_id, card, message_id)
+                    return
 
         # 刷新菜单卡片
         await self._cmd_menu(user_id, chat_id, message_id=message_id)

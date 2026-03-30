@@ -26,6 +26,7 @@ from utils.runtime_config import (
     UserConfig,
     QuickCommand,
     QuickCommandsConfig,
+    OperationPanelSettings,
     UISettings,
     load_runtime_config,
     save_runtime_config,
@@ -593,6 +594,58 @@ def test_commands_exactly_20():
     assert config.is_visible(), "20 条命令应该可见"
     assert len(config.commands) == 20
     print("✓ commands 恰好 20 条正常显示")
+
+
+# ============== operation_panel 配置测试 ==============
+
+
+def test_operation_panel_defaults():
+    """测试 operation_panel 默认值"""
+    settings = OperationPanelSettings()
+    assert settings.show_builtin_keys is True
+    assert settings.show_custom_commands is True
+    assert settings.enabled_keys == ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
+    print("✓ operation_panel 默认值")
+
+
+def test_operation_panel_roundtrip_serialization():
+    """测试 operation_panel 序列化/反序列化 roundtrip"""
+    config = UserConfig(
+        ui_settings=UISettings(
+            operation_panel=OperationPanelSettings(
+                show_builtin_keys=False,
+                show_custom_commands=False,
+                enabled_keys=["esc", "ctrl_o", "up"],
+            )
+        )
+    )
+
+    data = config.to_dict()
+    loaded = UserConfig.from_dict(data)
+
+    assert loaded.ui_settings.operation_panel.show_builtin_keys is False
+    assert loaded.ui_settings.operation_panel.show_custom_commands is False
+    assert loaded.ui_settings.operation_panel.enabled_keys == ["esc", "ctrl_o", "up"]
+    print("✓ operation_panel roundtrip")
+
+
+def test_operation_panel_invalid_keys_filtered():
+    """测试 operation_panel 非法键过滤"""
+    settings = OperationPanelSettings.from_dict({
+        "enabled_keys": ["up", "invalid", "ctrl_o", "bad", "shift_tab_x3"]
+    })
+    assert settings.enabled_keys == ["up", "ctrl_o", "shift_tab_x3"]
+    print("✓ operation_panel 非法键过滤")
+
+
+def test_operation_panel_empty_or_all_invalid_fallback_default_keys():
+    """测试 operation_panel enabled_keys 为空或全非法时回退默认键集"""
+    settings_empty = OperationPanelSettings.from_dict({"enabled_keys": []})
+    assert settings_empty.enabled_keys == ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
+
+    settings_all_invalid = OperationPanelSettings.from_dict({"enabled_keys": ["foo", "bar"]})
+    assert settings_all_invalid.enabled_keys == ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
+    print("✓ operation_panel 空/全非法回退默认键集")
 
 
 def test_save_config_permission_error():

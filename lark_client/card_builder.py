@@ -281,24 +281,69 @@ def _build_quick_command_selector(quick_commands: List[Any]) -> Dict[str, Any]:
     }
 
 
-def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False, is_loading: bool = False, disabled_buttons: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """底部快捷菜单按钮行，用于流式卡片
+def _build_operation_selector(user_config: Optional["UserConfig"]) -> Optional[Dict[str, Any]]:
+    """构建会话页操作下拉（快捷键 + 自定义命令）"""
+    options: List[Dict[str, Any]] = []
 
-    - 连接状态（session_name 有值, disconnected=False）:
-      返回 [form, collapsible]，form 包含：⚡菜单 + 🔌断开 + spacer + Enter↵，下方输入框；collapsible 包含快捷键
-    - 断开状态（disconnected=True）:
-      返回 [column_set: ⚡菜单 + 🔗重新连接]，无输入框/Enter/快捷键
-    - 无 session_name：保持原逻辑（只有 ⚡菜单 + spacer + Enter↵）
+    # 默认配置（无 user_config 时使用）
+    show_builtin_keys = True
+    show_custom_commands = True
+    enabled_keys = {"up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"}
 
-    Args:
-        session_name: 会话名
-        disconnected: 是否断开连接
-        is_loading: 是否处于 loading 状态
-        disabled_buttons: 需要禁用的按钮动作列表
-    """
+    if user_config:
+        panel_cfg = user_config.ui_settings.operation_panel
+        show_builtin_keys = panel_cfg.show_builtin_keys
+        show_custom_commands = panel_cfg.show_custom_commands
+        enabled_keys = set(panel_cfg.enabled_keys)
+
+    if show_builtin_keys:
+        key_map = [
+            ("↑", "up"),
+            ("↓", "down"),
+            ("Ctrl+O", "ctrl_o"),
+            ("Shift+Tab", "shift_tab"),
+            ("ESC", "esc"),
+            ("(↹)×3", "shift_tab_x3"),
+        ]
+        for label, key_name in key_map:
+            if key_name in enabled_keys:
+                options.append({
+                    "text": {"tag": "plain_text", "content": label},
+                    "value": f"key:{key_name}",
+                })
+
+    if (
+        show_custom_commands
+        and user_config
+        and user_config.ui_settings.custom_commands.is_visible()
+    ):
+        for cmd in user_config.ui_settings.custom_commands.commands:
+            options.append({
+                "text": {"tag": "plain_text", "content": f"{cmd.name}: {cmd.command}"},
+                "value": f"cmd:{cmd.command}",
+            })
+
+    if not options:
+        return None
+
+    if len(options) > 20:
+        _cb_logger.warning(f"操作下拉选项数量 {len(options)} 超过 20，已截断")
+        options = options[:20]
+
+    return {
+        "tag": "action",
+        "actions": [{
+            "tag": "select_static",
+            "placeholder": {"tag": "plain_text", "content": "操作"},
+            "options": options,
+        }]
+    }
+
+
+def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False, is_loading: bool = False, disabled_buttons: Optional[List[str]] = None, user_config: Optional["UserConfig"] = None) -> List[Dict[str, Any]]:
+    """底部快捷菜单按钮行，用于流式卡片"""
     disabled_set = set(disabled_buttons or [])
 
-    # loading 状态时禁用所有按钮
     if is_loading:
         disabled_set.add("all")
 
@@ -329,9 +374,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
         ]
         return [{"tag": "column_set", "flex_mode": "none", "columns": cols}]
 
-    # 构建菜单行的 columns
     def _make_menu_button(text: str, btn_type: str, action: str, extra_value: Optional[dict] = None) -> dict:
-        """构建菜单按钮，支持禁用状态"""
         btn: Dict[str, Any] = {
             "tag": "button",
             "text": {"tag": "plain_text", "content": text},
@@ -370,7 +413,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "elements": [{
                     "tag": "button",
                     "name": "enter_submit",
-                    "text": {"tag": "plain_text", "content": "Enter ↵"},
+                    "text": {"tag": "plain_text", "content": "发送"},
                     "type": "primary",
                     "action_type": "form_submit",
                     **({"disabled": True} if "all" in disabled_set else {})
@@ -396,7 +439,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "elements": [{
                     "tag": "button",
                     "name": "enter_submit",
-                    "text": {"tag": "plain_text", "content": "Enter ↵"},
+                    "text": {"tag": "plain_text", "content": "发送"},
                     "type": "primary",
                     "action_type": "form_submit",
                     **({"disabled": True} if "all" in disabled_set else {})
@@ -406,80 +449,53 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
 
     menu_enter_row = {"tag": "column_set", "flex_mode": "none", "columns": menu_columns}
 
-    # T062: 单行输入框支持回车自动提交
-    input_box = {
-        "tag": "input",
+    input_box: Dict[str, Any] = {
+        "tag": "textarea",
         "name": "command",
         "placeholder": {"tag": "plain_text", "content": "输入消息..."},
-        "width": "fill",
-        # 回车自动提交（与点击 Enter ↵ 按钮效果相同）
-        "enter_key_action": {
-            "tag": "action",
-            "actions": [{
-                "tag": "button",
-                "name": "enter_submit",
-                "text": {"tag": "plain_text", "content": "发送"},
-                "type": "primary",
-                "action_type": "form_submit",
-            }]
-        }
     }
+    if "all" in disabled_set:
+        input_box["disabled"] = True
 
-    shortcut_keys = [
-        ("↑", {"action": "send_key", "key": "up"}),
-        ("↓", {"action": "send_key", "key": "down"}),
-        ("Ctrl+O", {"action": "send_key", "key": "ctrl_o"}),
-        ("Shift+Tab", {"action": "send_key", "key": "shift_tab"}),
-        ("ESC", {"action": "send_key", "key": "esc"}),
-        ("(↹)×3", {"action": "send_key", "key": "shift_tab", "times": 3}),
-    ]
+    form_elements: List[Dict[str, Any]] = [menu_enter_row, input_box]
 
-    def _make_key_column(label, value):
-        action = value.get("action", "")
-        btn: Dict[str, Any] = {
+    action_items: List[Dict[str, Any]] = []
+    operation_selector = _build_operation_selector(user_config)
+    if operation_selector:
+        selector_action = dict(operation_selector["actions"][0])
+        if "all" in disabled_set:
+            selector_action["disabled"] = True
+        action_items.append(selector_action)
+
+    if session_name:
+        from utils.runtime_config import get_auto_answer_delay, get_session_auto_answer_enabled
+
+        auto_answer_enabled = get_session_auto_answer_enabled(session_name)
+        delay_seconds = get_auto_answer_delay()
+        auto_answer_label = (
+            f"🤖 自动应答: 开 ({delay_seconds}秒)"
+            if auto_answer_enabled
+            else f"🤖 自动应答: 关 ({delay_seconds}秒)"
+        )
+        auto_answer_btn: Dict[str, Any] = {
             "tag": "button",
-            "text": {"tag": "plain_text", "content": label},
-            "type": "default",
-            "width": "fill",
+            "text": {"tag": "plain_text", "content": auto_answer_label},
+            "type": "primary" if auto_answer_enabled else "default",
+            "behaviors": [{"type": "callback", "value": {"action": "stream_toggle_auto_answer"}}],
         }
-        if "all" in disabled_set or action in disabled_set:
-            btn["disabled"] = True
-        else:
-            btn["behaviors"] = [{"type": "callback", "value": value}]
-        return {
-            "tag": "column",
-            "width": "weighted",
-            "weight": 1,
-            "elements": [btn]
-        }
+        if "all" in disabled_set:
+            auto_answer_btn.pop("behaviors", None)
+            auto_answer_btn["disabled"] = True
+        action_items.append(auto_answer_btn)
 
-    row1 = {
-        "tag": "column_set",
-        "flex_mode": "none",
-        "columns": [_make_key_column(l, v) for l, v in shortcut_keys[:3]],
-    }
-    row2 = {
-        "tag": "column_set",
-        "flex_mode": "none",
-        "columns": [_make_key_column(l, v) for l, v in shortcut_keys[3:]],
-    }
+    if action_items:
+        form_elements.append({"tag": "action", "actions": action_items})
 
-    collapsible = {
-        "tag": "collapsible_panel",
-        "expanded": False,
-        "header": {
-            "title": {"tag": "plain_text", "content": "⌨️ 快捷键"},
-        },
-        "elements": [row1, row2],
-    }
-
-    form = {
+    return [{
         "tag": "form",
         "name": "claude_input",
-        "elements": [menu_enter_row, input_box],
-    }
-
-    return [form, collapsible]
+        "elements": form_elements,
+    }]
 
 
 def _build_menu_button_only() -> Dict[str, Any]:
@@ -941,20 +957,14 @@ def build_stream_card(
             }],
         })
 
-    # 快捷命令选择器（仅连接状态且配置启用时显示）
-    quick_command_elements = []
-    if not disconnected and user_config and user_config.is_quick_commands_visible():
-        quick_commands = user_config.get_quick_commands()
-        if quick_commands:
-            quick_command_elements.append(_build_quick_command_selector(quick_commands))
-
+    # 操作入口统一在 _build_menu_button_row 内的“操作”下拉，不再单独展示快捷命令选择器
     menu_elements = _build_menu_button_row(
         session_name=session_name,
         disconnected=disconnected,
         is_loading=is_loading,
-        disabled_buttons=disabled_buttons
+        disabled_buttons=disabled_buttons,
+        user_config=user_config,
     )
-    elements.extend(quick_command_elements)
     elements.extend(menu_elements)
 
     _cb_logger.debug(
@@ -1486,7 +1496,7 @@ def build_expired_card(session_name: Optional[str] = None) -> Dict[str, Any]:
 def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     session_groups: Optional[Dict[str, str]] = None, page: int = 0,
                     notify_enabled: bool = True, urgent_enabled: bool = False,
-                    bypass_enabled: bool = False, auto_answer_enabled: bool = False,
+                    bypass_enabled: bool = False,
                     user_config: Optional["UserConfig"] = None) -> Dict[str, Any]:
     """构建快捷操作菜单卡片（/menu 和 /list 共用）：内嵌会话列表 + 快捷操作"""
     elements = []
@@ -1594,21 +1604,7 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
         "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_bypass"}}]
     })
 
-    # 自动应答按钮（延迟导入避免循环依赖）
-    from utils.runtime_config import get_auto_answer_delay
-    delay_seconds = get_auto_answer_delay()
-    if auto_answer_enabled:
-        auto_answer_label = f"🤖 自动应答: 开 ({delay_seconds}秒延迟)"
-        auto_answer_type = "primary"
-    else:
-        auto_answer_label = f"🤖 自动应答: 关 ({delay_seconds}秒延迟)"
-        auto_answer_type = "default"
-    elements.append({
-        "tag": "button",
-        "text": {"tag": "plain_text", "content": auto_answer_label},
-        "type": auto_answer_type,
-        "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_auto_answer"}}]
-    })
+    # 自动应答按钮已迁移到会话流式卡片操作区（stream_toggle_auto_answer）
 
     # 自定义命令配置显示
     elements.append({"tag": "hr"})

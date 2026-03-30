@@ -8,6 +8,7 @@ Remote Claude 飞书客户端
 import asyncio
 import json
 import logging
+import logging
 import os
 import signal
 import sys
@@ -77,6 +78,8 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 
 from . import config
 from .lark_handler import handler
+
+logger = logging.getLogger(__name__)
 
 
 async def _graceful_shutdown() -> None:
@@ -183,9 +186,41 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         action_type = action_value.get("action", "") if isinstance(action_value, dict) else ""
 
         # 处理快捷命令选择器回调（select_static 返回的 value 是命令字符串，如 "/clear"）
-        if isinstance(action_value, str) and action_value.startswith("/"):
-            print(f"[Lark] 快捷命令选择: command={action_value}")
-            asyncio.create_task(handler.handle_quick_command(user_id, chat_id, action_value))
+        if isinstance(action_value, str):
+            if action_value.startswith("key:"):
+                key_name = action_value.split(":", 1)[1]
+                allowed = set(handler._user_config.ui_settings.operation_panel.enabled_keys) if handler._user_config else {
+                    "up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"
+                }
+                if key_name not in allowed:
+                    logger.warning("忽略未启用的 key 动作: %s", key_name)
+                    return None
+
+                print(f"[Lark] 操作下拉快捷键: key={key_name}")
+
+                async def _multi_send():
+                    if key_name == "shift_tab_x3":
+                        for _ in range(3):
+                            await handler.send_raw_key(user_id, chat_id, "shift_tab")
+                            await asyncio.sleep(0.15)
+                    else:
+                        await handler.send_raw_key(user_id, chat_id, key_name)
+
+                asyncio.create_task(_multi_send())
+                return None
+
+            if action_value.startswith("cmd:"):
+                command = action_value.split(":", 1)[1]
+                print(f"[Lark] 操作下拉自定义命令: command={command}")
+                asyncio.create_task(handler.handle_quick_command(user_id, chat_id, command))
+                return None
+
+            if action_value.startswith("/"):
+                print(f"[Lark] 快捷命令选择: command={action_value}")
+                asyncio.create_task(handler.handle_quick_command(user_id, chat_id, action_value))
+                return None
+
+            logger.warning("忽略未知字符串动作: %s", action_value)
             return None
 
         # 处理选项选择动作
@@ -331,6 +366,10 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
 
         if action_type == "menu_toggle_auto_answer":
             asyncio.create_task(handler._cmd_toggle_auto_answer(user_id, chat_id, message_id=message_id))
+            return None
+
+        if action_type == "stream_toggle_auto_answer":
+            asyncio.create_task(handler._cmd_toggle_auto_answer(user_id, chat_id, message_id=message_id, refresh_stream=True))
             return None
 
         # 各卡片底部菜单按钮：辅助卡片就地→菜单，流式卡片降级新卡

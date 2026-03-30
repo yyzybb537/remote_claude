@@ -268,5 +268,48 @@ class TestStreamDetachLoading(unittest.TestCase):
             self.assertTrue(len(loading_calls) > 0, "应该有断开连接的 loading 状态卡片构建")
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+
+def test_stream_card_has_textarea_and_action_selector():
+    from lark_client.card_builder import build_stream_card
+    from utils.runtime_config import UserConfig
+
+    config = UserConfig()
+    card = build_stream_card(blocks=[], session_name="s1", user_config=config)
+    body_text = str(card["body"]["elements"])
+
+    assert "textarea" in body_text
+    assert "操作" in body_text
+    assert "key:up" in body_text
+
+
+def test_menu_card_not_contains_auto_answer_button():
+    from lark_client.card_builder import build_menu_card
+
+    card = build_menu_card([], None, {}, 0, True, False, False, None)
+    assert "menu_toggle_auto_answer" not in str(card)
+
+
+def test_stream_card_contains_stream_toggle_auto_answer_button():
+    from lark_client.card_builder import build_stream_card
+
+    card = build_stream_card(blocks=[], session_name="s1")
+    assert "stream_toggle_auto_answer" in str(card)
+
+
+@patch("lark_client.main.asyncio.create_task")
+def test_main_routes_prefixed_action_values(mock_create_task):
+    from lark_client import main
+
+    mock_create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+
+    event = MagicMock()
+    event.event.action.form_value = None
+    event.event.action.value = "key:up"
+    event.event.operator.open_id = "u1"
+    event.event.context.open_chat_id = "c1"
+    event.event.context.open_message_id = "m1"
+
+    main.handle_card_action(event)
+
+    assert mock_create_task.called

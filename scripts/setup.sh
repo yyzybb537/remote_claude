@@ -760,6 +760,9 @@ main() {
         check_uv || { rc=$?; _log_script_fail "setup-lazy-precheck" "check_uv" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
         _install_stage "setup-lazy-deps"
         install_dependencies || { rc=$?; _log_script_fail "setup-lazy-deps" "install_dependencies" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+        _install_stage "setup-lazy-config"
+        create_directories || { rc=$?; _log_script_fail "setup-lazy-config" "create_directories" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+        init_config_files || { rc=$?; _log_script_fail "setup-lazy-config" "init_config_files" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
         _install_stage "setup-lazy-done"
         print_success "Python 环境初始化完成"
         return 0

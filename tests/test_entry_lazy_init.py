@@ -1458,6 +1458,119 @@ def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
     assert data_dir.exists()
     assert "[y/N]" in result.stdout
     assert "是否删除配置文件和数据" in result.stdout
+
+
+def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    scripts_dir = project_dir / "scripts"
+    defaults_dir = project_dir / "resources" / "defaults"
+
+    scripts_dir.mkdir(parents=True)
+    defaults_dir.mkdir(parents=True)
+
+    setup_sh = scripts_dir / "setup.sh"
+    setup_sh.write_text((REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    setup_sh.chmod(0o755)
+
+    common_sh = scripts_dir / "_common.sh"
+    common_sh.write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+
+    (project_dir / "pyproject.toml").write_text(
+        "[project]\nname='demo'\nversion='0.0.0'\nrequires-python='>=3.11'\n",
+        encoding="utf-8",
+    )
+    (defaults_dir / "config.default.json").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
+    (defaults_dir / "runtime.default.json").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
+
+    uv_stub = tmp_path / "uv"
+    uv_stub.write_text(
+        "#!/bin/sh\n"
+        "cmd=\"$1\"\n"
+        "shift || true\n"
+        "case \"$cmd\" in\n"
+        "  --version) echo 'uv 0.test'; exit 0 ;;\n"
+        "  sync) exit 0 ;;\n"
+        "  run) exit 0 ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    uv_stub.chmod(0o755)
+
+    home_dir = tmp_path / "home"
+    home_dir.mkdir(parents=True)
+
+    result = subprocess.run(
+        ["sh", str(setup_sh), "--lazy"],
+        capture_output=True,
+        text=True,
+        cwd=project_dir,
+        env={**os.environ, "HOME": str(home_dir), "PATH": f"{tmp_path}:/usr/bin:/bin:/usr/sbin:/sbin"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (home_dir / ".remote-claude" / "config.json").exists()
+    assert (home_dir / ".remote-claude" / "runtime.json").exists()
+
+
+def test_setup_lazy_does_not_overwrite_existing_config_files(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    scripts_dir = project_dir / "scripts"
+    defaults_dir = project_dir / "resources" / "defaults"
+
+    scripts_dir.mkdir(parents=True)
+    defaults_dir.mkdir(parents=True)
+
+    setup_sh = scripts_dir / "setup.sh"
+    setup_sh.write_text((REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    setup_sh.chmod(0o755)
+
+    common_sh = scripts_dir / "_common.sh"
+    common_sh.write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+
+    (project_dir / "pyproject.toml").write_text(
+        "[project]\nname='demo'\nversion='0.0.0'\nrequires-python='>=3.11'\n",
+        encoding="utf-8",
+    )
+    (defaults_dir / "config.default.json").write_text('{"version":"from-default"}\n', encoding="utf-8")
+    (defaults_dir / "runtime.default.json").write_text('{"version":"from-default"}\n', encoding="utf-8")
+
+    uv_stub = tmp_path / "uv"
+    uv_stub.write_text(
+        "#!/bin/sh\n"
+        "cmd=\"$1\"\n"
+        "shift || true\n"
+        "case \"$cmd\" in\n"
+        "  --version) echo 'uv 0.test'; exit 0 ;;\n"
+        "  sync) exit 0 ;;\n"
+        "  run) exit 0 ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    uv_stub.chmod(0o755)
+
+    home_dir = tmp_path / "home"
+    data_dir = home_dir / ".remote-claude"
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.json").write_text('{"version":"existing-config"}\n', encoding="utf-8")
+    (data_dir / "runtime.json").write_text('{"version":"existing-runtime"}\n', encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh", str(setup_sh), "--lazy"],
+        capture_output=True,
+        text=True,
+        cwd=project_dir,
+        env={**os.environ, "HOME": str(home_dir), "PATH": f"{tmp_path}:/usr/bin:/bin:/usr/sbin:/sbin"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (data_dir / "config.json").read_text(encoding="utf-8").strip() == '{"version":"existing-config"}'
+
+    runtime_data = json.loads((data_dir / "runtime.json").read_text(encoding="utf-8"))
+    assert runtime_data.get("version") == "existing-runtime"
+
+
 def test_entry_init_failure_shows_manual_recovery_command(tmp_path: Path):
     project_dir = tmp_path / "project"
     bin_dir = project_dir / "bin"

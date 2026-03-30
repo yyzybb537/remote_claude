@@ -30,6 +30,8 @@ CURRENT_VERSION = "1.0"
 USER_CONFIG_VERSION = "1.0"
 MAX_SESSION_MAPPINGS = 500
 MAX_BACKUP_FILES = 2  # 保留最近 2 个备份文件
+OPERATION_PANEL_ALLOWED_KEYS = {"up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"}
+OPERATION_PANEL_DEFAULT_KEYS = ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
 
 
 class ConfigType:
@@ -399,6 +401,57 @@ class CardExpirySettings:
 
 
 @dataclass
+class OperationPanelSettings:
+    """操作面板设置"""
+    show_builtin_keys: bool = True
+    show_custom_commands: bool = True
+    enabled_keys: List[str] = field(default_factory=lambda: OPERATION_PANEL_DEFAULT_KEYS.copy())
+
+    @classmethod
+    def _normalize_enabled_keys(cls, keys: Any) -> List[str]:
+        if not isinstance(keys, list):
+            return OPERATION_PANEL_DEFAULT_KEYS.copy()
+
+        filtered: List[str] = []
+        invalid: List[Any] = []
+        for key in keys:
+            if not isinstance(key, str):
+                invalid.append(key)
+                continue
+            if key in OPERATION_PANEL_ALLOWED_KEYS and key not in filtered:
+                filtered.append(key)
+            elif key not in OPERATION_PANEL_ALLOWED_KEYS:
+                invalid.append(key)
+
+        if invalid:
+            logger.warning(f"operation_panel.enabled_keys 包含非法键，已忽略: {invalid}")
+
+        if not filtered:
+            return OPERATION_PANEL_DEFAULT_KEYS.copy()
+        return filtered
+
+    def __post_init__(self):
+        self.enabled_keys = self._normalize_enabled_keys(self.enabled_keys)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "show_builtin_keys": self.show_builtin_keys,
+            "show_custom_commands": self.show_custom_commands,
+            "enabled_keys": self.enabled_keys,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OperationPanelSettings":
+        """从字典创建"""
+        return cls(
+            show_builtin_keys=data.get("show_builtin_keys", True),
+            show_custom_commands=data.get("show_custom_commands", True),
+            enabled_keys=cls._normalize_enabled_keys(data.get("enabled_keys", OPERATION_PANEL_DEFAULT_KEYS)),
+        )
+
+
+@dataclass
 class CustomCommand:
     """自定义 CLI 命令配置"""
     name: str           # 显示名称，如 "Claude"、"Aider"
@@ -511,6 +564,7 @@ class UISettings:
     custom_commands: CustomCommandsConfig = field(default_factory=lambda: CustomCommandsConfig())
     auto_answer: AutoAnswerSettings = field(default_factory=lambda: AutoAnswerSettings())
     card_expiry: CardExpirySettings = field(default_factory=lambda: CardExpirySettings())
+    operation_panel: OperationPanelSettings = field(default_factory=lambda: OperationPanelSettings())
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -521,6 +575,7 @@ class UISettings:
             "custom_commands": self.custom_commands.to_dict(),
             "auto_answer": self.auto_answer.to_dict(),
             "card_expiry": self.card_expiry.to_dict(),
+            "operation_panel": self.operation_panel.to_dict(),
         }
 
     @classmethod
@@ -531,6 +586,7 @@ class UISettings:
         cc_data = data.get("custom_commands", {})
         auto_answer_data = data.get("auto_answer", {})
         card_expiry_data = data.get("card_expiry", {})
+        operation_panel_data = data.get("operation_panel", {})
         return cls(
             quick_commands=QuickCommandsConfig.from_dict(qc_data),
             notify=NotifySettings.from_dict(notify_data),
@@ -538,6 +594,7 @@ class UISettings:
             custom_commands=CustomCommandsConfig.from_dict(cc_data),
             auto_answer=AutoAnswerSettings.from_dict(auto_answer_data),
             card_expiry=CardExpirySettings.from_dict(card_expiry_data),
+            operation_panel=OperationPanelSettings.from_dict(operation_panel_data),
         )
 
 
