@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -892,12 +893,16 @@ echo ok
 def test_report_install_version_resolution_not_depend_on_cwd(tmp_path: Path):
     script = REPO_ROOT / "scripts" / "report_install.py"
     result = subprocess.run(
-        ["uv", "run", "python3", str(script)],
+        [sys.executable, str(script)],
         cwd=tmp_path,
         text=True,
         capture_output=True,
     )
-    assert result.returncode == 0
+    assert result.returncode == 0, (
+        f"returncode={result.returncode}\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
 
 
 def test_check_and_install_uv_does_not_create_runtime_when_missing():
