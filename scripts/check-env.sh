@@ -3,6 +3,8 @@
 # 用法: . scripts/check-env.sh [项目根目录或安装目录]
 # POSIX sh 兼容，不使用 sed -i
 
+PROJECT_DIR="${PROJECT_DIR:-}"
+
 is_valid_project_dir() {
     [ -n "$1" ] && [ -f "$1/scripts/_common.sh" ]
 }
@@ -24,7 +26,9 @@ fi
 
 LAZY_INIT_DISABLE_AUTO_RUN=1
 export LAZY_INIT_DISABLE_AUTO_RUN
-. "$PROJECT_DIR/scripts/_common.sh"
+if [ -f "$PROJECT_DIR/scripts/_common.sh" ]; then
+    . "$PROJECT_DIR/scripts/_common.sh"
+fi
 unset LAZY_INIT_DISABLE_AUTO_RUN
 
 INSTALL_DIR="${1:-$PROJECT_DIR}"
