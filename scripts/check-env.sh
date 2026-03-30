@@ -50,7 +50,7 @@ mkdir -p "$HOME/.remote-claude"
 ENV_OK=false
 
 if [ "$REQUIRE_FEISHU" = "0" ]; then
-    return 0
+    return 0 2>/dev/null || exit 0
 fi
 
 if [ -f "$ENV_FILE" ]; then
