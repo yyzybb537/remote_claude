@@ -851,6 +851,55 @@ def test_entry_scripts_define_project_dir_before_sourcing_common():
         assert content.index("PROJECT_DIR=") < content.index("scripts/_common.sh")
 
 
+def test_scripts_define_project_dir_before_common_source():
+    scripts = [
+        "scripts/install.sh",
+        "scripts/setup.sh",
+        "scripts/uninstall.sh",
+        "scripts/check-env.sh",
+        "scripts/npm-publish.sh",
+        "scripts/test_lark_management.sh",
+        "scripts/preinstall.sh",
+    ]
+    for rel in scripts:
+        content = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert "PROJECT_DIR=" in content
+        assert "scripts/_common.sh" in content
+        assert content.index("PROJECT_DIR=") < content.index("scripts/_common.sh")
+
+
+def test_check_env_works_via_symlink_from_random_cwd(tmp_path: Path):
+    project_dir = REPO_ROOT
+    link_dir = tmp_path / "linkbin"
+    link_dir.mkdir(parents=True)
+    target = project_dir / "scripts" / "check-env.sh"
+    link = link_dir / "check-env"
+    link.symlink_to(target)
+
+    shell_script = f"""#!/bin/sh
+set -e
+export HOME='{tmp_path / 'home'}'
+mkdir -p "$HOME"
+export REMOTE_CLAUDE_REQUIRE_FEISHU=0
+. '{link}' '{project_dir}'
+echo ok
+"""
+    result = subprocess.run(["sh"], input=shell_script, text=True, capture_output=True, cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("ok")
+
+
+def test_report_install_version_resolution_not_depend_on_cwd(tmp_path: Path):
+    script = REPO_ROOT / "scripts" / "report_install.py"
+    result = subprocess.run(
+        ["uv", "run", "python3", str(script)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0
+
+
 def test_check_and_install_uv_does_not_create_runtime_when_missing():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
