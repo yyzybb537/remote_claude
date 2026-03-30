@@ -893,7 +893,24 @@ echo ok
 def test_report_install_version_resolution_not_depend_on_cwd(tmp_path: Path):
     script = REPO_ROOT / "scripts" / "report_install.py"
     result = subprocess.run(
-        [sys.executable, str(script)],
+        ["uv", "run", "python3", str(script)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, (
+        f"returncode={result.returncode}\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+
+
+def test_report_install_symlink_entry_is_stable(tmp_path: Path):
+    target = REPO_ROOT / "scripts" / "report_install.py"
+    link = tmp_path / "report_install"
+    link.symlink_to(target)
+    result = subprocess.run(
+        ["uv", "run", "python3", str(link)],
         cwd=tmp_path,
         text=True,
         capture_output=True,
