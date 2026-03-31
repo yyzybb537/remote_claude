@@ -133,28 +133,38 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 
 | 文件 | 用途 |
 |------|------|
-| `~/.remote-claude/config.json` | 用户可编辑配置（卡片设置、会话设置、行为设置） |
-| `~/.remote-claude/runtime.json` | 程序运行时状态（会话映射、群组绑定） |
+| `~/.remote-claude/settings.json` | 用户设置（启动器、卡片、会话等） |
+| `~/.remote-claude/state.json` | 运行时状态（会话映射、飞书绑定） |
+| `~/.remote-claude/.env` | 环境变量（飞书凭证等） |
 | `~/.remote-claude/tokens/<session>.json` | 会话 Token（远程模式，权限 0600） |
 | `~/.remote-claude/remote_connections.json` | 远程连接配置 |
 
-**config.json 配置结构（v1.0）：**
+**settings.json 配置结构（v1.1）：**
 
 ```json
 {
-  "version": "1.0",
+  "version": "1.1",
+  "launchers": [
+    {"name": "Claude", "cli_type": "claude", "command": "claude", "desc": "Claude Code CLI"}
+  ],
   "card": {
-    "quick_commands": { ... },
-    "expiry": { ... }
+    "quick_commands": [...],
+    "expiry_sec": 3600
   },
   "session": {
     "bypass": false,
-    "custom_commands": { ... }
+    "auto_answer_delay_sec": 10,
+    "auto_answer_vague_patterns": [...],
+    "auto_answer_vague_prompt": "..."
   },
-  "behavior": {
-    "auto_answer": { ... },
-    "notify": { ... },
-    "operation_panel": { ... }
+  "notify": {
+    "ready": true,
+    "urgent": false
+  },
+  "ui": {
+    "show_builtin_keys": true,
+    "show_launchers": ["Claude"],
+    "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc"]
   }
 }
 ```

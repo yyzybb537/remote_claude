@@ -6,26 +6,48 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 
 | 文件 | 用途 |
 |------|------|
-| `~/.remote-claude/config.json` | 用户配置（快捷命令、UI 设置、行为配置） |
-| `~/.remote-claude/runtime.json` | 运行时状态（会话映射、群组绑定） |
+| `~/.remote-claude/settings.json` | 用户设置（启动器、卡片、会话等） |
+| `~/.remote-claude/state.json` | 运行时状态（会话映射、飞书绑定） |
+| `~/.remote-claude/.env` | 环境变量（飞书凭证等） |
 | `~/.remote-claude/remote_connections.json` | 远程连接配置（host、port、token） |
 | `~/.remote-claude/tokens/<session>.json` | 会话 Token（远程模式，权限 0600） |
-| `~/.remote-claude/.env` | 环境变量（飞书凭证等） |
 
-## 配置文件结构（v2.0）
+## 配置文件结构（v1.1）
 
-配置采用扁平化结构，分为三大模块：
+配置采用扁平化结构，层级不大于 2：
 
 ```json
 {
-  "version": "2.0",
+  "version": "1.1",
+  "launchers": [...],
   "card": { ... },
   "session": { ... },
-  "behavior": { ... }
+  "notify": { ... },
+  "ui": { ... }
 }
 ```
 
-### card 模块 - 卡片展示配置
+### launchers - 启动器配置
+
+定义可用的 CLI 启动器，用于启动会话。
+
+```json
+{
+  "launchers": [
+    {"name": "Claude", "cli_type": "claude", "command": "claude", "desc": "Claude Code CLI"},
+    {"name": "Codex", "cli_type": "codex", "command": "codex", "desc": "OpenAI Codex CLI"}
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | 启动器名称，用于 `--launcher` 参数 |
+| `cli_type` | string | CLI 类型（claude/codex） |
+| `command` | string | 实际执行的命令 |
+| `desc` | string | 描述（可选） |
+
+### card - 卡片展示配置
 
 控制飞书卡片的展示行为。
 
@@ -34,57 +56,41 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 ```json
 {
   "card": {
-    "quick_commands": {
-      "enabled": true,
-      "commands": [
-        {"label": "清空对话", "value": "/clear", "icon": "🗑️"},
-        {"label": "压缩上下文", "value": "/consume", "icon": "📦"},
-        {"label": "退出会话", "value": "/exit", "icon": "🚪"},
-        {"label": "帮助", "value": "/help", "icon": "❓"}
-      ]
-    }
+    "quick_commands": [
+      {"label": "清空对话", "value": "/clear", "icon": "🗑️"},
+      {"label": "压缩上下文", "value": "/consume", "icon": "📦"},
+      {"label": "退出会话", "value": "/exit", "icon": "🚪"},
+      {"label": "帮助", "value": "/help", "icon": "❓"}
+    ],
+    "expiry_sec": 3600
   }
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `enabled` | boolean | 是否启用快捷命令按钮 |
-| `commands` | array | 命令列表 |
-| `commands[].label` | string | 按钮显示文本 |
-| `commands[].value` | string | 点击后发送的命令 |
-| `commands[].icon` | string | 按钮图标（emoji） |
-
-#### 卡片过期配置
-
-```json
-{
-  "card": {
-    "expiry": {
-      "enabled": true,
-      "expiry_seconds": 3600
-    }
-  }
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `enabled` | boolean | 是否启用卡片过期 |
-| `expiry_seconds` | number | 过期时间（秒），默认 3600（1小时） |
+| `quick_commands` | array | 快捷命令列表 |
+| `quick_commands[].label` | string | 按钮显示文本 |
+| `quick_commands[].value` | string | 点击后发送的命令（必须以 `/` 开头） |
+| `quick_commands[].icon` | string | 按钮图标（emoji） |
+| `expiry_sec` | number | 卡片过期时间（秒），默认 3600（1小时） |
 
 卡片过期后自动创建新卡片，避免飞书卡片内容过长。
 
-### session 模块 - 会话配置
+### session - 会话配置
 
 控制会话启动和行为。
-
-#### 权限绕过配置
 
 ```json
 {
   "session": {
-    "bypass": false
+    "bypass": false,
+    "auto_answer_delay_sec": 10,
+    "auto_answer_vague_patterns": [
+      "继续执行", "继续", "开始执行", "开始", "执行",
+      "continue", "确认", "OK"
+    ],
+    "auto_answer_vague_prompt": "[系统提示] 请使用工具执行下一步操作。"
   }
 }
 ```
@@ -92,93 +98,39 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `bypass` | boolean | 是否绕过权限确认（默认 false） |
-
-#### 自定义 CLI 命令
-
-```json
-{
-  "session": {
-    "custom_commands": {
-      "enabled": true,
-      "commands": [
-        {"name": "Claude", "cli_type": "claude", "command": "claude", "description": "Claude Code CLI"},
-        {"name": "Codex", "cli_type": "codex", "command": "codex", "description": "OpenAI Codex CLI"}
-      ]
-    }
-  }
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `enabled` | boolean | 是否启用自定义命令 |
-| `commands` | array | 自定义命令列表 |
-| `commands[].name` | string | 命令显示名称 |
-| `commands[].cli_type` | string | CLI 类型（claude/codex） |
-| `commands[].command` | string | 实际执行的命令 |
-| `commands[].description` | string | 命令描述 |
-
-### behavior 模块 - 行为配置
-
-控制自动应答、通知等行为。
-
-#### 自动应答配置
-
-```json
-{
-  "behavior": {
-    "auto_answer": {
-      "default_delay_seconds": 10,
-      "vague_commands": [
-        "继续执行", "继续", "开始执行", "开始", "执行",
-        "continue", "确认", "OK"
-      ],
-      "vague_command_prompt": "[系统提示] 请使用工具执行下一步操作。如果不确定下一步，请明确询问需要做什么。不要只返回状态确认。"
-    }
-  }
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `default_delay_seconds` | number | 自动应答延迟时间（秒） |
-| `vague_commands` | array | 模糊指令列表，触发时使用 vague_command_prompt |
-| `vague_command_prompt` | string | 模糊指令的系统提示 |
+| `auto_answer_delay_sec` | number | 自动应答延迟时间（秒） |
+| `auto_answer_vague_patterns` | array | 模糊指令列表，触发时使用 vague_prompt |
+| `auto_answer_vague_prompt` | string | 模糊指令的系统提示 |
 
 **自动应答策略：**
 1. 优先选择标记为 `(recommended)` 或 `推荐` 的选项
 2. 确认类选项回复"继续"
 3. 兜底选择第一项
 
-#### 通知配置
+### notify - 通知配置
 
 ```json
 {
-  "behavior": {
-    "notify": {
-      "ready_enabled": true,
-      "urgent_enabled": false
-    }
+  "notify": {
+    "ready": true,
+    "urgent": false
   }
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `ready_enabled` | boolean | 是否启用就绪通知 |
-| `urgent_enabled` | boolean | 是否启用紧急通知 |
+| `ready` | boolean | 是否启用就绪通知 |
+| `urgent` | boolean | 是否启用紧急通知 |
 
-#### 操作面板配置
+### ui - UI 配置
 
 ```json
 {
-  "behavior": {
-    "operation_panel": {
-      "show_builtin_keys": true,
-      "show_custom_commands": true,
-      "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"],
-      "random": false
-    }
+  "ui": {
+    "show_builtin_keys": true,
+    "show_launchers": ["Claude", "Codex"],
+    "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
   }
 }
 ```
@@ -186,28 +138,37 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `show_builtin_keys` | boolean | 是否显示内置快捷键 |
-| `show_custom_commands` | boolean | 是否显示自定义命令 |
+| `show_launchers` | array | 显示在操作面板的启动器名称列表 |
 | `enabled_keys` | array | 启用的快捷键列表 |
-| `random` | boolean | 是否随机排序（调试用） |
 
 ## 环境变量配置
 
 在 `~/.remote-claude/.env` 中配置：
 
 ```bash
-# 飞书应用凭证
+# === 必填 ===
 FEISHU_APP_ID=your_app_id
 FEISHU_APP_SECRET=your_app_secret
 
-# 日志级别（DEBUG/INFO/WARNING/ERROR）
-LARK_LOG_LEVEL=INFO
+# === 可选 ===
+USER_WHITELIST=user1,user2
+GROUP_PREFIX=Remote-Claude
+LOG_LEVEL=INFO
+STARTUP_TIMEOUT=5
+MAX_CARD_BLOCKS=50
+NO_PROXY=0
 ```
 
 | 配置项 | 说明 |
 |--------|------|
-| `FEISHU_APP_ID` | 飞书应用 ID |
-| `FEISHU_APP_SECRET` | 飞书应用密钥 |
-| `LARK_LOG_LEVEL` | 日志级别（DEBUG/INFO/WARNING/ERROR） |
+| `FEISHU_APP_ID` | 飞书应用 ID（必填） |
+| `FEISHU_APP_SECRET` | 飞书应用密钥（必填） |
+| `USER_WHITELIST` | 用户白名单（逗号分隔） |
+| `GROUP_PREFIX` | 群聊名称前缀 |
+| `LOG_LEVEL` | 日志级别（DEBUG/INFO/WARNING/ERROR） |
+| `STARTUP_TIMEOUT` | 启动超时时间（秒） |
+| `MAX_CARD_BLOCKS` | 卡片最大块数 |
+| `NO_PROXY` | 是否禁用代理（0/1） |
 
 ## 配置重置
 
@@ -219,88 +180,43 @@ remote-claude config reset
 remote-claude config reset --all
 ```
 
-## 配置迁移
-
-Remote Claude 支持从旧版配置格式自动迁移。首次启动新版本时，会自动将 `ui_settings` 结构转换为新的扁平化结构。
-
-### 旧版格式（v1.x）
-
-```json
-{
-  "ui_settings": {
-    "quick_commands": { ... },
-    "auto_answer": { ... },
-    "card_expiry": { ... }
-  }
-}
-```
-
-### 新版格式（v2.0）
-
-```json
-{
-  "version": "2.0",
-  "card": {
-    "quick_commands": { ... },
-    "expiry": { ... }
-  },
-  "session": { ... },
-  "behavior": {
-    "auto_answer": { ... }
-  }
-}
-```
-
 ## 配置示例
 
 ### 完整配置示例
 
 ```json
 {
-  "version": "2.0",
+  "version": "1.1",
+  "launchers": [
+    {"name": "Claude", "cli_type": "claude", "command": "claude", "desc": "Claude Code CLI"},
+    {"name": "Codex", "cli_type": "codex", "command": "codex", "desc": "OpenAI Codex CLI"}
+  ],
   "card": {
-    "quick_commands": {
-      "enabled": true,
-      "commands": [
-        {"label": "清空对话", "value": "/clear", "icon": "🗑️"},
-        {"label": "压缩上下文", "value": "/consume", "icon": "📦"},
-        {"label": "退出会话", "value": "/exit", "icon": "🚪"},
-        {"label": "帮助", "value": "/help", "icon": "❓"}
-      ]
-    },
-    "expiry": {
-      "enabled": true,
-      "expiry_seconds": 3600
-    }
+    "quick_commands": [
+      {"label": "清空对话", "value": "/clear", "icon": "🗑️"},
+      {"label": "压缩上下文", "value": "/consume", "icon": "📦"},
+      {"label": "退出会话", "value": "/exit", "icon": "🚪"},
+      {"label": "帮助", "value": "/help", "icon": "❓"}
+    ],
+    "expiry_sec": 3600
   },
   "session": {
     "bypass": false,
-    "custom_commands": {
-      "enabled": true,
-      "commands": [
-        {"name": "Claude", "cli_type": "claude", "command": "claude", "description": "Claude Code CLI"},
-        {"name": "Codex", "cli_type": "codex", "command": "codex", "description": "OpenAI Codex CLI"}
-      ]
-    }
+    "auto_answer_delay_sec": 10,
+    "auto_answer_vague_patterns": [
+      "继续执行", "继续", "开始执行", "开始", "执行",
+      "continue", "确认", "OK"
+    ],
+    "auto_answer_vague_prompt": "[系统提示] 请使用工具执行下一步操作。"
   },
-  "behavior": {
-    "auto_answer": {
-      "default_delay_seconds": 10,
-      "vague_commands": [
-        "继续执行", "继续", "开始执行", "开始", "执行",
-        "continue", "确认", "OK"
-      ],
-      "vague_command_prompt": "[系统提示] 请使用工具执行下一步操作。"
-    },
-    "notify": {
-      "ready_enabled": true,
-      "urgent_enabled": false
-    },
-    "operation_panel": {
-      "show_builtin_keys": true,
-      "show_custom_commands": true,
-      "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc"]
-    }
+  "notify": {
+    "ready": true,
+    "urgent": false
+  },
+  "ui": {
+    "show_builtin_keys": true,
+    "show_launchers": ["Claude", "Codex"],
+    "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc"]
   }
 }
 ```
@@ -309,17 +225,9 @@ Remote Claude 支持从旧版配置格式自动迁移。首次启动新版本时
 
 ```json
 {
-  "version": "2.0",
-  "card": {
-    "quick_commands": { "enabled": false },
-    "expiry": { "enabled": false }
-  },
-  "session": {
-    "bypass": false,
-    "custom_commands": { "enabled": false }
-  },
-  "behavior": {
-    "auto_answer": { "default_delay_seconds": 10 }
-  }
+  "version": "1.1",
+  "launchers": [
+    {"name": "Claude", "cli_type": "claude", "command": "claude"}
+  ]
 }
 ```
