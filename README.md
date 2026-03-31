@@ -360,6 +360,10 @@ remote-claude remote update <host>:<port>/<session> --token <token>
 ## 文档
 
 - [CLAUDE.md](CLAUDE.md) — 项目架构和开发说明
-- [lark_client/README.md](lark_client/README.md) — 飞书客户端指南
+- [docs/configuration.md](docs/configuration.md) — 完整配置说明
+- [docs/feishu-setup.md](docs/feishu-setup.md) — 飞书机器人配置教程
+- [docs/remote-connection.md](docs/remote-connection.md) — 远程连接详细说明
+- [docs/cli-reference.md](docs/cli-reference.md) — 完整 CLI 命令参考
+- [docs/feishu-client.md](docs/feishu-client.md) — 飞书客户端管理指南
+- [docs/docker-test.md](docs/docker-test.md) — Docker 测试说明
 - [tests/TEST_PLAN.md](tests/TEST_PLAN.md) — 测试计划
-- [docker/README.md](docker/README.md) — Docker 测试
