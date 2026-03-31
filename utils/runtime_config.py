@@ -28,6 +28,8 @@ logger = logging.getLogger('RuntimeConfig')
 # 常量
 RUNTIME_CURRENT_VERSION = "1.0"
 USER_CURRENT_VERSION = "1.0"
+SETTINGS_CURRENT_VERSION = "1.1"
+STATE_CURRENT_VERSION = "1.1"
 MAX_SESSION_MAPPINGS = 500
 MAX_BACKUP_FILES = 2  # 保留最近 2 个备份文件
 OPERATION_PANEL_ALLOWED_KEYS = {"up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"}
@@ -789,6 +791,321 @@ class UserConfig:
             card=CardConfig.from_dict(data.get("card", {})),
             session=SessionConfig.from_dict(data.get("session", {})),
             behavior=BehaviorConfig.from_dict(data.get("behavior", {})),
+        )
+
+
+# ============== 新版数据类（v1.1）==============
+
+def _normalize_enabled_keys(keys: Any) -> List[str]:
+    """规范化 enabled_keys 列表"""
+    if not isinstance(keys, list):
+        return OPERATION_PANEL_DEFAULT_KEYS.copy()
+
+    filtered: List[str] = []
+    invalid: List[Any] = []
+    for key in keys:
+        if not isinstance(key, str):
+            invalid.append(key)
+            continue
+        if key in OPERATION_PANEL_ALLOWED_KEYS and key not in filtered:
+            filtered.append(key)
+        elif key not in OPERATION_PANEL_ALLOWED_KEYS:
+            invalid.append(key)
+
+    if invalid:
+        logger.warning(f"ui.enabled_keys 包含非法键，已忽略: {invalid}")
+
+    if not filtered:
+        return OPERATION_PANEL_DEFAULT_KEYS.copy()
+    return filtered
+
+
+@dataclass
+class Launcher:
+    """启动器配置"""
+    name: str           # 名称，用于 CLI 参数映射
+    cli_type: str       # CLI 类型（claude/codex）
+    command: str        # 执行命令
+    desc: str = ""      # 描述
+
+    def __post_init__(self):
+        """验证启动器配置"""
+        if not self.name:
+            raise ValueError("启动器名称不能为空")
+        if not self.command:
+            raise ValueError("启动器命令不能为空")
+        if not self.cli_type:
+            raise ValueError("CLI 类型不能为空")
+        try:
+            CliType(self.cli_type)
+        except ValueError:
+            raise ValueError(f"CLI 类型必须是 {list(CliType)} 之一: {self.cli_type}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "cli_type": self.cli_type,
+            "command": self.command,
+            "desc": self.desc,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Launcher":
+        return cls(
+            name=data.get("name", ""),
+            cli_type=data.get("cli_type", ""),
+            command=data.get("command", ""),
+            desc=data.get("desc", ""),
+        )
+
+
+@dataclass
+class CardSettings:
+    """卡片设置"""
+    quick_commands: List[QuickCommand] = field(default_factory=list)
+    expiry_sec: int = 3600
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "quick_commands": [cmd.to_dict() for cmd in self.quick_commands],
+            "expiry_sec": self.expiry_sec,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CardSettings":
+        commands_data = data.get("quick_commands", [])
+        commands = []
+        for cmd_data in commands_data:
+            try:
+                commands.append(QuickCommand.from_dict(cmd_data))
+            except ValueError as e:
+                logger.warning(f"跳过无效快捷命令: {e}")
+        return cls(
+            quick_commands=commands,
+            expiry_sec=data.get("expiry_sec", 3600),
+        )
+
+
+@dataclass
+class SessionSettings:
+    """会话设置"""
+    bypass: bool = False
+    auto_answer_delay_sec: int = 10
+    auto_answer_vague_patterns: List[str] = field(default_factory=list)
+    auto_answer_vague_prompt: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "bypass": self.bypass,
+            "auto_answer_delay_sec": self.auto_answer_delay_sec,
+            "auto_answer_vague_patterns": self.auto_answer_vague_patterns,
+            "auto_answer_vague_prompt": self.auto_answer_vague_prompt,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SessionSettings":
+        default_patterns = [
+            "继续执行", "继续", "开始执行", "开始", "执行", "continue", "确认", "OK"
+        ]
+        default_prompt = (
+            "[系统提示] 请使用工具执行下一步操作。"
+            "如果不确定下一步，请明确询问需要做什么。"
+            "不要只返回状态确认。"
+        )
+        return cls(
+            bypass=data.get("bypass", False),
+            auto_answer_delay_sec=data.get("auto_answer_delay_sec", 10),
+            auto_answer_vague_patterns=data.get("auto_answer_vague_patterns", default_patterns),
+            auto_answer_vague_prompt=data.get("auto_answer_vague_prompt", default_prompt),
+        )
+
+
+@dataclass
+class NotifySettingsV11:
+    """通知设置（v1.1）"""
+    ready: bool = True
+    urgent: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "urgent": self.urgent,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "NotifySettingsV11":
+        return cls(
+            ready=data.get("ready", True),
+            urgent=data.get("urgent", False),
+        )
+
+
+@dataclass
+class UiSettings:
+    """UI 设置"""
+    show_builtin_keys: bool = True
+    show_launchers: List[str] = field(default_factory=list)
+    enabled_keys: List[str] = field(default_factory=lambda: OPERATION_PANEL_DEFAULT_KEYS.copy())
+
+    def __post_init__(self):
+        self.enabled_keys = _normalize_enabled_keys(self.enabled_keys)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "show_builtin_keys": self.show_builtin_keys,
+            "show_launchers": self.show_launchers,
+            "enabled_keys": self.enabled_keys,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UiSettings":
+        return cls(
+            show_builtin_keys=data.get("show_builtin_keys", True),
+            show_launchers=data.get("show_launchers", []),
+            enabled_keys=_normalize_enabled_keys(data.get("enabled_keys", OPERATION_PANEL_DEFAULT_KEYS)),
+        )
+
+
+@dataclass
+class Settings:
+    """用户设置"""
+    version: str = SETTINGS_CURRENT_VERSION
+    launchers: List[Launcher] = field(default_factory=list)
+    card: CardSettings = field(default_factory=lambda: CardSettings())
+    session: SessionSettings = field(default_factory=lambda: SessionSettings())
+    notify: NotifySettingsV11 = field(default_factory=lambda: NotifySettingsV11())
+    ui: UiSettings = field(default_factory=lambda: UiSettings())
+
+    def get_launcher(self, name: str) -> Optional[Launcher]:
+        """根据名称获取启动器"""
+        for launcher in self.launchers:
+            if launcher.name == name:
+                return launcher
+        return None
+
+    def get_default_launcher(self) -> Optional[Launcher]:
+        """获取默认启动器（第一个）"""
+        return self.launchers[0] if self.launchers else None
+
+    def is_quick_commands_visible(self) -> bool:
+        """判断快捷命令选择器是否应该显示"""
+        return len(self.card.quick_commands) > 0
+
+    def get_quick_commands(self) -> List[QuickCommand]:
+        """获取快捷命令列表"""
+        return self.card.quick_commands
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "version": self.version,
+            "launchers": [l.to_dict() for l in self.launchers],
+            "card": self.card.to_dict(),
+            "session": self.session.to_dict(),
+            "notify": self.notify.to_dict(),
+            "ui": self.ui.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Settings":
+        launchers_data = data.get("launchers", [])
+        launchers = []
+        for l_data in launchers_data:
+            try:
+                launchers.append(Launcher.from_dict(l_data))
+            except ValueError as e:
+                logger.warning(f"跳过无效启动器: {e}")
+
+        return cls(
+            version=data.get("version", SETTINGS_CURRENT_VERSION),
+            launchers=launchers,
+            card=CardSettings.from_dict(data.get("card", {})),
+            session=SessionSettings.from_dict(data.get("session", {})),
+            notify=NotifySettingsV11.from_dict(data.get("notify", {})),
+            ui=UiSettings.from_dict(data.get("ui", {})),
+        )
+
+
+@dataclass
+class SessionState:
+    """会话状态"""
+    path: str
+    lark_chat_id: Optional[str] = None
+    auto_answer_enabled: bool = False
+    auto_answer_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "path": self.path,
+            "lark_chat_id": self.lark_chat_id,
+            "auto_answer_enabled": self.auto_answer_enabled,
+            "auto_answer_count": self.auto_answer_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SessionState":
+        return cls(
+            path=data.get("path", ""),
+            lark_chat_id=data.get("lark_chat_id"),
+            auto_answer_enabled=data.get("auto_answer_enabled", False),
+            auto_answer_count=data.get("auto_answer_count", 0),
+        )
+
+
+@dataclass
+class State:
+    """运行时状态"""
+    version: str = STATE_CURRENT_VERSION
+    uv_path: Optional[str] = None
+    sessions: Dict[str, SessionState] = field(default_factory=dict)
+    ready_notify_count: int = 0
+
+    def get_session_path(self, session_name: str) -> Optional[str]:
+        """获取会话路径"""
+        state = self.sessions.get(session_name)
+        return state.path if state else None
+
+    def set_session_path(self, session_name: str, path: str) -> None:
+        """设置会话路径"""
+        if session_name not in self.sessions:
+            self.sessions[session_name] = SessionState(path=path)
+        else:
+            self.sessions[session_name].path = path
+
+    def remove_session(self, session_name: str) -> bool:
+        """删除会话状态"""
+        if session_name in self.sessions:
+            del self.sessions[session_name]
+            return True
+        return False
+
+    def get_lark_chat_id(self, session_name: str) -> Optional[str]:
+        """获取会话绑定的飞书群 ID"""
+        state = self.sessions.get(session_name)
+        return state.lark_chat_id if state else None
+
+    def set_lark_chat_id(self, session_name: str, chat_id: str) -> None:
+        """设置会话绑定的飞书群 ID"""
+        if session_name not in self.sessions:
+            self.sessions[session_name] = SessionState(path="")
+        self.sessions[session_name].lark_chat_id = chat_id
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "version": self.version,
+            "uv_path": self.uv_path,
+            "sessions": {k: v.to_dict() for k, v in self.sessions.items()},
+            "ready_notify_count": self.ready_notify_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "State":
+        sessions_data = data.get("sessions", {})
+        sessions = {k: SessionState.from_dict(v) for k, v in sessions_data.items()}
+        return cls(
+            version=data.get("version", STATE_CURRENT_VERSION),
+            uv_path=data.get("uv_path"),
+            sessions=sessions,
+            ready_notify_count=data.get("ready_notify_count", 0),
         )
 
 
