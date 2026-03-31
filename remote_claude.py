@@ -262,12 +262,31 @@ def cmd_start(args):
     """启动新会话"""
     original_session_name = args.name
 
+    # 加载配置
+    from utils.runtime_config import load_settings, load_state
+    settings = load_settings()
+    state = load_state()
+
+    # 解析 launcher
+    launcher_name = args.launcher
+    if launcher_name:
+        launcher = settings.get_launcher(launcher_name)
+        if not launcher:
+            print(f"错误: 未找到启动器 '{launcher_name}'")
+            print(f"可用的启动器: {[l.name for l in settings.launchers]}")
+            return 1
+    else:
+        launcher = settings.get_default_launcher()
+        if not launcher:
+            print("错误: 未配置启动器，请在 settings.json 中配置 launchers")
+            return 1
+
+    cli_type = launcher.cli_type
+    command = launcher.command
+
     # 使用 resolve_session_name() 处理名称截断和冲突
-    # 注意: resolve_session_name 内部已会调用 save_runtime_config，无需重复保存
-    from utils.runtime_config import load_runtime_config
-    config = load_runtime_config()
     from utils.session import resolve_session_name
-    session_name = resolve_session_name(original_session_name, config)
+    session_name = resolve_session_name(original_session_name, state)
 
     # 检查会话是否已存在
     if is_session_active(session_name):
@@ -303,7 +322,7 @@ def cmd_start(args):
     cli_args_str = " ".join(shlex.quote(arg) for arg in cli_args)
     debug_flag = " --debug-screen" if args.debug_screen else ""
     debug_verbose_flag = " --debug-verbose" if args.debug_verbose else ""
-    cli_type_flag = f" --cli-type {args.cli}"
+    cli_type_flag = f" --cli-type {cli_type}"
 
     # 捕获用户终端环境变量（tmux 会覆盖这些值，导致 Claude CLI 无法启用 kitty keyboard protocol）
     # 使用 shlex.quote 安全转义环境变量值
@@ -343,9 +362,10 @@ def cmd_start(args):
     start_time = datetime.now()
     _start_logger.info(f"启动会话: {session_name}")
     _start_logger.info(
-        "stage=server_spawn session=%s cli_type=%s remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
+        "stage=server_spawn session=%s cli_type=%s launcher=%s remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
         session_name,
-        args.cli,
+        cli_type,
+        launcher.name,
         args.remote,
         args.remote_host if args.remote else "",
         args.remote_port if args.remote else "",
@@ -1275,9 +1295,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  %(prog)s start mywork              启动名为 mywork 的会话
-  %(prog)s start mywork --cli codex  启动 codex 会话
-  %(prog)s attach mywork             连接到 mywork 会话
+  %(prog)s start mywork                  启动名为 mywork 的会话（使用默认启动器）
+  %(prog)s start mywork --launcher Codex 使用 Codex 启动器启动会话
+  %(prog)s start mywork -l Codex         同上（简写）
+  %(prog)s attach mywork                 连接到 mywork 会话
   %(prog)s list                      列出所有会话
   %(prog)s kill mywork               终止 mywork 会话
   %(prog)s status mywork             显示 mywork 会话状态
@@ -1342,10 +1363,9 @@ def main():
         help="debug 日志输出完整诊断信息（indicator、repr 等），默认只输出 ansi_render"
     )
     start_parser.add_argument(
-        "--cli",
-        default=CliType.CLAUDE,
-        choices=[CliType.CLAUDE, CliType.CODEX],
-        help="后端 CLI 类型（默认 claude）"
+        "--launcher", "-l",
+        default=None,
+        help="启动器名称（对应 settings.launchers[].name），不指定则使用第一个"
     )
     start_parser.add_argument(
         "--remote",
