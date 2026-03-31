@@ -272,10 +272,10 @@ class TestStreamDetachLoading(unittest.TestCase):
 
 def test_stream_card_has_textarea_and_action_selector():
     from lark_client.card_builder import build_stream_card
-    from utils.runtime_config import UserConfig
+    from utils.runtime_config import Settings
 
-    config = UserConfig()
-    card = build_stream_card(blocks=[], session_name="s1", user_config=config)
+    settings = Settings()
+    card = build_stream_card(blocks=[], session_name="s1", settings=settings)
     body_text = str(card["body"]["elements"])
 
     assert "textarea" in body_text

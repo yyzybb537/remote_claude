@@ -575,8 +575,8 @@ def cmd_list(args):
         return 0
 
     # 加载运行时配置获取会话映射
-    from utils.runtime_config import load_runtime_config
-    config = load_runtime_config()
+    from utils.runtime_config import load_state
+    state = load_state()
 
     # ANSI 颜色码
     YELLOW = "\033[33m"
@@ -594,7 +594,7 @@ def cmd_list(args):
 
     # 计算路径列最大宽度
     def get_path(s):
-        return _normalize_original_path(config.get_session_mapping(s['name']))
+        return _normalize_original_path(state.get_session_path(s['name']))
 
     if show_full:
         path_col_width = max(len(get_path(s)) for s in sessions)
@@ -1161,8 +1161,8 @@ def cmd_config_reset(args):
             print("已取消")
             return 0
 
-    config_template = SCRIPT_DIR / "resources" / "defaults" / "config.default.json"
-    runtime_template = SCRIPT_DIR / "resources" / "defaults" / "runtime.default.json"
+    config_template = SCRIPT_DIR / "resources" / "defaults" / "settings.json.example"
+    runtime_template = SCRIPT_DIR / "resources" / "defaults" / "state.json.example"
 
     if not config_template.exists():
         print(f"✗ 未找到配置模板: {config_template}")
@@ -1573,11 +1573,6 @@ def main():
     if args.command is None:
         parser.print_help()
         return 0
-
-    # 执行旧配置迁移（在执行命令前）
-    from utils.runtime_config import migrate_legacy_config, migrate_legacy_notify_settings
-    migrate_legacy_config()
-    migrate_legacy_notify_settings()
 
     # 将剩余参数合并到 cli_args（支持 cx/cdx 脚本中使用 -- 分隔符）
     if args.command == "start" and hasattr(args, 'cli_args'):

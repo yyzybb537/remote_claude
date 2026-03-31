@@ -571,8 +571,8 @@ check_file_integrity() {
         "scripts/completion.sh"
         "pyproject.toml"
         "resources/defaults/.env.example"
-        "resources/defaults/config.default.json"
-        "resources/defaults/runtime.default.json"
+        "resources/defaults/settings.json.example"
+        "resources/defaults/state.json.example"
     )
 
     local missing_files=()

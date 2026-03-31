@@ -1498,8 +1498,8 @@ def test_setup_configure_shell_writes_completion_via_init_block(tmp_path: Path):
 
     defaults_dir = project_dir / "resources" / "defaults"
     defaults_dir.mkdir(parents=True)
-    (defaults_dir / "config.default.json").write_text('{"ui_settings": {"notify": {}, "custom_commands": {"commands": [{}]}}}\n', encoding="utf-8")
-    (defaults_dir / "runtime.default.json").write_text('{"lark_group_mappings": {}}\n', encoding="utf-8")
+    (defaults_dir / "settings.json.example").write_text('{"ui_settings": {"notify": {}, "custom_commands": {"commands": [{}]}}}\n', encoding="utf-8")
+    (defaults_dir / "state.json.example").write_text('{"lark_group_mappings": {}}\n', encoding="utf-8")
 
     (project_dir / ".venv").mkdir()
     (project_dir / "remote_claude.py").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -1700,7 +1700,7 @@ def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
         "[project]\nname='demo'\nversion='0.0.0'\nrequires-python='>=3.11'\n",
         encoding="utf-8",
     )
-    (defaults_dir / "config.default.json").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
+    (defaults_dir / "settings.json.example").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
     (defaults_dir / "runtime.default.json").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
 
     uv_stub = tmp_path / "uv"
@@ -1754,7 +1754,7 @@ def test_setup_lazy_writes_full_init_block_with_completion(tmp_path: Path):
         "[project]\nname='demo'\nversion='0.0.0'\nrequires-python='>=3.11'\n",
         encoding="utf-8",
     )
-    (defaults_dir / "config.default.json").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
+    (defaults_dir / "settings.json.example").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
     (defaults_dir / "runtime.default.json").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
 
     uv_stub = tmp_path / "uv"
@@ -1813,7 +1813,7 @@ def test_setup_lazy_does_not_overwrite_existing_config_files(tmp_path: Path):
         "[project]\nname='demo'\nversion='0.0.0'\nrequires-python='>=3.11'\n",
         encoding="utf-8",
     )
-    (defaults_dir / "config.default.json").write_text('{"version":"from-default"}\n', encoding="utf-8")
+    (defaults_dir / "settings.json.example").write_text('{"version":"from-default"}\n', encoding="utf-8")
     (defaults_dir / "runtime.default.json").write_text('{"version":"from-default"}\n', encoding="utf-8")
 
     uv_stub = tmp_path / "uv"

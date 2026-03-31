@@ -27,7 +27,7 @@ from utils.runtime_config import (
     SessionState,
     CardSettings,
     SessionSettings,
-    NotifySettingsV11,
+    NotifySettings,
     UiSettings,
     QuickCommand,
     load_settings,

@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 import remote_claude
+from utils.runtime_config import Settings, Launcher
 
 
 def _build_args(**overrides):
@@ -12,12 +13,20 @@ def _build_args(**overrides):
         "debug_screen": False,
         "debug_verbose": False,
         "cli": "claude",
+        "launcher": "Claude",
         "remote": True,
         "remote_port": 9999,
         "remote_host": "0.0.0.0",
     }
     data.update(overrides)
     return SimpleNamespace(**data)
+
+
+def _mock_settings():
+    """返回包含默认 Launcher 的 Settings"""
+    return Settings(
+        launchers=[Launcher(name="Claude", cli_type="claude", command="claude")]
+    )
 
 
 def test_cmd_start_logs_trace_fields_and_sanitized_command_on_timeout(monkeypatch, tmp_path):
@@ -58,7 +67,8 @@ def test_cmd_start_logs_trace_fields_and_sanitized_command_on_timeout(monkeypatc
     import utils.runtime_config as runtime_config_module
     import utils.session as session_module
 
-    monkeypatch.setattr(runtime_config_module, "load_runtime_config", lambda: _DummyConfig())
+    monkeypatch.setattr(runtime_config_module, "load_state", lambda: _DummyConfig())
+    monkeypatch.setattr(runtime_config_module, "load_settings", _mock_settings)
     monkeypatch.setattr(session_module, "resolve_session_name", lambda original, _cfg: original)
 
     try:
@@ -124,7 +134,8 @@ def test_cmd_start_kills_session_when_socket_missing_after_spawn(monkeypatch, tm
     import utils.session as session_module
     import client as client_module
 
-    monkeypatch.setattr(runtime_config_module, "load_runtime_config", lambda: _DummyConfig())
+    monkeypatch.setattr(runtime_config_module, "load_state", lambda: _DummyConfig())
+    monkeypatch.setattr(runtime_config_module, "load_settings", _mock_settings)
     monkeypatch.setattr(session_module, "resolve_session_name", lambda original, _cfg: original)
     monkeypatch.setattr(client_module, "run_client", lambda _s: 99)
 
@@ -149,7 +160,8 @@ def test_cmd_start_rejects_help_like_cli_args_before_spawning_session(monkeypatc
     import utils.runtime_config as runtime_config_module
     import utils.session as session_module
 
-    monkeypatch.setattr(runtime_config_module, "load_runtime_config", lambda: _DummyConfig())
+    monkeypatch.setattr(runtime_config_module, "load_state", lambda: _DummyConfig())
+    monkeypatch.setattr(runtime_config_module, "load_settings", _mock_settings)
     monkeypatch.setattr(session_module, "resolve_session_name", lambda original, _cfg: original)
 
     rc = remote_claude.cmd_start(_build_args(name="help-session", remote=False, remote_host="127.0.0.1", remote_port=8765, cli_args=["--help"]))

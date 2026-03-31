@@ -574,11 +574,11 @@ migrate_claude_command() {
 init_config_files() {
     print_header "初始化配置文件"
 
-    CONFIG_FILE="$USER_DATA_DIR/config.json"
-    RUNTIME_FILE="$USER_DATA_DIR/runtime.json"
+    CONFIG_FILE="$USER_DATA_DIR/settings.json"
+    RUNTIME_FILE="$USER_DATA_DIR/state.json"
     LEGACY_FILE="$USER_DATA_DIR/lark_group_mapping.json"
-    CONFIG_TEMPLATE="$PROJECT_DIR/resources/defaults/config.default.json"
-    RUNTIME_TEMPLATE="$PROJECT_DIR/resources/defaults/runtime.default.json"
+    CONFIG_TEMPLATE="$PROJECT_DIR/resources/defaults/settings.json.example"
+    RUNTIME_TEMPLATE="$PROJECT_DIR/resources/defaults/state.json.example"
 
     if [ ! -f "$CONFIG_TEMPLATE" ]; then
         print_error "未找到配置模板: $CONFIG_TEMPLATE"

@@ -23,11 +23,12 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from utils.runtime_config import (
-    RuntimeConfig,
-    load_runtime_config,
-    save_runtime_config,
+    State,
+    SessionState,
+    load_state,
+    save_state,
     USER_DATA_DIR,
-    RUNTIME_CONFIG_FILE,
+    STATE_FILE,
 )
 
 
@@ -48,12 +49,12 @@ class _TestEnv:
         import utils.runtime_config as config_module
         self.old_env = {
             'USER_DATA_DIR': config_module.USER_DATA_DIR,
-            'RUNTIME_CONFIG_FILE': config_module.RUNTIME_CONFIG_FILE,
+            'STATE_FILE': config_module.STATE_FILE,
         }
 
         # 临时替换路径
         config_module.USER_DATA_DIR = self.temp_dir
-        config_module.RUNTIME_CONFIG_FILE = self.temp_dir / "runtime.json"
+        config_module.STATE_FILE = self.temp_dir / "state.json"
 
     def teardown(self):
         """清理测试环境"""
@@ -61,7 +62,7 @@ class _TestEnv:
 
         # 恢复原始环境
         config_module.USER_DATA_DIR = self.old_env['USER_DATA_DIR']
-        config_module.RUNTIME_CONFIG_FILE = self.old_env['RUNTIME_CONFIG_FILE']
+        config_module.STATE_FILE = self.old_env['STATE_FILE']
 
         # 清理临时目录
         if self.temp_dir and self.temp_dir.exists():
@@ -91,22 +92,22 @@ def test_list_display_with_mapping():
     env = _TestEnv()
     env.setup()
     try:
-        # 创建配置，包含映射
-        config = RuntimeConfig()
-        config.session_mappings["myapp_src"] = "/Users/dev/projects/myapp/src"
-        config.session_mappings["test_session"] = "/path/to/test/project"
-        save_runtime_config(config)
+        # 创建状态，包含会话路径
+        state = State()
+        state.set_session_path("myapp_src", "/Users/dev/projects/myapp/src")
+        state.set_session_path("test_session", "/path/to/test/project")
+        save_state(state)
 
-        # 重新加载配置
-        loaded = load_runtime_config()
+        # 重新加载状态
+        loaded = load_state()
 
-        # 验证映射存在
-        assert loaded.get_session_mapping("myapp_src") == "/Users/dev/projects/myapp/src", \
-            f"映射应正确存储，期望: /Users/dev/projects/myapp/src，实际: {loaded.get_session_mapping('myapp_src')}"
-        assert loaded.get_session_mapping("test_session") == "/path/to/test/project", \
-            f"映射应正确存储，期望: /path/to/test/project，实际: {loaded.get_session_mapping('test_session')}"
+        # 验证路径存在
+        assert loaded.get_session_path("myapp_src") == "/Users/dev/projects/myapp/src", \
+            f"路径应正确存储，期望: /Users/dev/projects/myapp/src，实际: {loaded.get_session_path('myapp_src')}"
+        assert loaded.get_session_path("test_session") == "/path/to/test/project", \
+            f"路径应正确存储，期望: /path/to/test/project，实际: {loaded.get_session_path('test_session')}"
 
-        print("✓ List 展示：映射正确存储和读取")
+        print("OK List 展示：映射正确存储和读取")
     finally:
         env.teardown()
 
@@ -116,15 +117,15 @@ def test_list_display_no_mapping():
     env = _TestEnv()
     env.setup()
     try:
-        # 创建空配置
-        config = RuntimeConfig()
-        save_runtime_config(config)
+        # 创建空状态
+        state = State()
+        save_state(state)
 
-        # 重新加载配置
-        loaded = load_runtime_config()
+        # 重新加载状态
+        loaded = load_state()
 
         # 验证无映射时返回 None（显示时应转为 '-'）
-        result = loaded.get_session_mapping("unknown_session")
+        result = loaded.get_session_path("unknown_session")
         assert result is None, \
             f"无映射时应返回 None，实际: {result}"
 
@@ -133,7 +134,7 @@ def test_list_display_no_mapping():
         assert display_path == "-", \
             f"无映射时应显示 '-'，实际: {display_path}"
 
-        print("✓ List 展示：无映射时显示 '-'")
+        print("OK List 展示：无映射时显示 '-'")
     finally:
         env.teardown()
 
@@ -143,18 +144,18 @@ def test_list_display_empty_mapping_shows_dash():
     env = _TestEnv()
     env.setup()
     try:
-        config = RuntimeConfig()
-        config.session_mappings["empty_session"] = ""
-        save_runtime_config(config)
+        state = State()
+        state.set_session_path("empty_session", "")
+        save_state(state)
 
-        loaded = load_runtime_config()
-        result = loaded.get_session_mapping("empty_session")
+        loaded = load_state()
+        result = loaded.get_session_path("empty_session")
         assert result == "", f"空字符串映射应保留原值，实际: {result!r}"
 
         display_path = result or "-"
         assert display_path == "-", f"空字符串映射应显示 '-'，实际: {display_path}"
 
-        print("✓ List 展示：空字符串映射时显示 '-'")
+        print("OK List 展示：空字符串映射时显示 '-'")
     finally:
         env.teardown()
 
@@ -164,19 +165,19 @@ def test_list_display_whitespace_mapping_shows_dash():
     env = _TestEnv()
     env.setup()
     try:
-        config = RuntimeConfig()
-        config.session_mappings["blank_session"] = "   "
-        save_runtime_config(config)
+        state = State()
+        state.set_session_path("blank_session", "   ")
+        save_state(state)
 
-        loaded = load_runtime_config()
-        result = loaded.get_session_mapping("blank_session")
+        loaded = load_state()
+        result = loaded.get_session_path("blank_session")
         assert result == "   ", f"空白字符串映射应保留原值，实际: {result!r}"
 
         display_path = result.strip() if isinstance(result, str) else result
         display_path = display_path or "-"
         assert display_path == "-", f"空白字符串映射应显示 '-'，实际: {display_path!r}"
 
-        print("✓ List 展示：空白字符串映射时显示 '-'")
+        print("OK List 展示：空白字符串映射时显示 '-'")
     finally:
         env.teardown()
 
@@ -190,15 +191,15 @@ def test_list_display_long_names():
         long_path = "/Users/dev/projects/very/long/path/to/myapp/src/components/utils/helpers/deep"
         truncated_name = "myapp_src_components_utils_h"
 
-        config = RuntimeConfig()
-        config.session_mappings[truncated_name] = long_path
-        save_runtime_config(config)
+        state = State()
+        state.set_session_path(truncated_name, long_path)
+        save_state(state)
 
-        # 重新加载配置
-        loaded = load_runtime_config()
+        # 重新加载状态
+        loaded = load_state()
 
         # 验证长路径映射
-        result = loaded.get_session_mapping(truncated_name)
+        result = loaded.get_session_path(truncated_name)
         assert result == long_path, \
             f"长路径映射应正确存储，期望: {long_path}，实际: {result}"
 
@@ -211,7 +212,7 @@ def test_list_display_long_names():
         assert len(path_display) <= 52, \
             f"截断后路径长度应 <= 52，实际: {len(path_display)}"
 
-        print("✓ List 展示：长名称和长路径截断显示正确")
+        print("OK List 展示：长名称和长路径截断显示正确")
     finally:
         env.teardown()
 
@@ -225,19 +226,19 @@ def test_list_display_special_characters():
         special_path = "/Users/dev/projects/my-app/src/components.test"
         truncated_name = "my_app_src_components_test"
 
-        config = RuntimeConfig()
-        config.session_mappings[truncated_name] = special_path
-        save_runtime_config(config)
+        state = State()
+        state.set_session_path(truncated_name, special_path)
+        save_state(state)
 
-        # 重新加载配置
-        loaded = load_runtime_config()
+        # 重新加载状态
+        loaded = load_state()
 
         # 验证特殊字符路径映射
-        result = loaded.get_session_mapping(truncated_name)
+        result = loaded.get_session_path(truncated_name)
         assert result == special_path, \
             f"特殊字符路径映射应正确存储，期望: {special_path}，实际: {result}"
 
-        print("✓ List 展示：特殊字符路径正确展示")
+        print("OK List 展示：特殊字符路径正确展示")
     finally:
         env.teardown()
 
@@ -248,54 +249,54 @@ def test_list_display_multiple_sessions():
     env.setup()
     try:
         # 创建多个会话映射
-        config = RuntimeConfig()
-        config.session_mappings["session1"] = "/path/to/session1"
-        config.session_mappings["session2"] = "/path/to/session2"
-        config.session_mappings["session3"] = "/path/to/session3"
-        save_runtime_config(config)
+        state = State()
+        state.set_session_path("session1", "/path/to/session1")
+        state.set_session_path("session2", "/path/to/session2")
+        state.set_session_path("session3", "/path/to/session3")
+        save_state(state)
 
-        # 重新加载配置
-        loaded = load_runtime_config()
+        # 重新加载状态
+        loaded = load_state()
 
         # 验证所有映射
-        assert len(loaded.session_mappings) == 3, \
-            f"应有 3 个映射，实际: {len(loaded.session_mappings)}"
+        assert len(loaded.sessions) == 3, \
+            f"应有 3 个会话，实际: {len(loaded.sessions)}"
 
         for name, path in [
             ("session1", "/path/to/session1"),
             ("session2", "/path/to/session2"),
             ("session3", "/path/to/session3"),
         ]:
-            result = loaded.get_session_mapping(name)
+            result = loaded.get_session_path(name)
             assert result == path, \
                 f"映射 {name} 应为 {path}，实际: {result}"
 
-        print("✓ List 展示：多会话列表正确展示")
+        print("OK List 展示：多会话列表正确展示")
     finally:
         env.teardown()
 
 
-def test_list_display_with_lark_group_mappings():
-    """测试 session_mappings 和 lark_group_mappings 共存"""
+def test_list_display_with_lark_chat_id():
+    """测试会话路径和飞书群 ID 共存"""
     env = _TestEnv()
     env.setup()
     try:
-        # 创建配置，包含两种映射
-        config = RuntimeConfig()
-        config.session_mappings["myapp_src"] = "/Users/dev/projects/myapp/src"
-        config.lark_group_mappings["oc_xxx"] = "myapp_src"
-        config.lark_group_mappings["oc_yyy"] = "other_session"
-        save_runtime_config(config)
+        # 创建状态，包含路径和飞书群绑定
+        state = State()
+        state.set_session_path("myapp_src", "/Users/dev/projects/myapp/src")
+        state.set_lark_chat_id("myapp_src", "oc_xxx")
+        state.set_lark_chat_id("other_session", "oc_yyy")
+        save_state(state)
 
-        # 重新加载配置
-        loaded = load_runtime_config()
+        # 重新加载状态
+        loaded = load_state()
 
-        # 验证两种映射都存在
-        assert loaded.get_session_mapping("myapp_src") == "/Users/dev/projects/myapp/src"
-        assert loaded.lark_group_mappings.get("oc_xxx") == "myapp_src"
-        assert loaded.lark_group_mappings.get("oc_yyy") == "other_session"
+        # 验证路径和飞书群绑定都存在
+        assert loaded.get_session_path("myapp_src") == "/Users/dev/projects/myapp/src"
+        assert loaded.get_lark_chat_id("myapp_src") == "oc_xxx"
+        assert loaded.get_lark_chat_id("other_session") == "oc_yyy"
 
-        print("✓ List 展示：session_mappings 和 lark_group_mappings 共存正确")
+        print("OK List 展示：会话路径和飞书群绑定共存正确")
     finally:
         env.teardown()
 
@@ -309,7 +310,7 @@ if __name__ == "__main__":
         test_list_display_long_names,
         test_list_display_special_characters,
         test_list_display_multiple_sessions,
-        test_list_display_with_lark_group_mappings,
+        test_list_display_with_lark_chat_id,
     ]
 
     passed = 0
@@ -320,10 +321,10 @@ if __name__ == "__main__":
             test()
             passed += 1
         except AssertionError as e:
-            print(f"✗ {test.__name__}: {e}")
+            print(f"[FAIL] {test.__name__}: {e}")
             failed += 1
         except Exception as e:
-            print(f"✗ {test.__name__}: 意外错误 - {e}")
+            print(f"[FAIL] {test.__name__}: 意外错误 - {e}")
             failed += 1
 
     print("-" * 50)

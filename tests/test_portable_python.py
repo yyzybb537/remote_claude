@@ -87,7 +87,7 @@ def test_core_imports():
     result = subprocess.run(
         ["python3", "-c",
              "from utils.session import resolve_session_name, _safe_filename; "
-             "from utils.runtime_config import load_runtime_config; "
+             "from utils.runtime_config import load_state; "
              "print('核心模块导入成功')"],
         capture_output=True,
         text=True
