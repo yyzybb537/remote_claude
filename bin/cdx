@@ -20,10 +20,12 @@ REMOTE_CLAUDE_REQUIRE_FEISHU=0
 export REMOTE_CLAUDE_REQUIRE_FEISHU
 sh "$PROJECT_DIR/scripts/check-env.sh"
 
-# help 参数应显示 start 用法，而不是启动会话
+# help 参数应显示快捷命令概览
 case "${1:-}" in
     -h|--help)
-        exec "$PROJECT_DIR/bin/remote-claude" start --help --cli codex
+        . "$PROJECT_DIR/scripts/_help.sh"
+        _print_quick_help
+        exit 0
         ;;
 esac
 
