@@ -217,7 +217,7 @@ remote-claude lark status        # 查看状态
 |------|------|
 | `~/.remote-claude/runtime.json` | 运行时状态（会话映射、群组绑定） |
 | `~/.remote-claude/remote_connections.json` | 远程连接配置（host、port、token） |
-| `~/.remote-claude/<session>_token.json` | 会话 Token（远程模式，权限 0600） |
+| `~/.remote-claude/tokens/<session>.json` | 会话 Token（远程模式，权限 0600） |
 
 ## 远程连接
 
@@ -232,7 +232,7 @@ remote-claude start <session> --remote [--remote-port 8765] [--remote-host 0.0.0
 启动后会生成一个 Token，用于远程连接认证。
 
 **Token 存储**：
-- 存储位置：`~/.remote-claude/<session>_token.json`
+- 存储位置：`~/.remote-claude/tokens/<session>.json`
 - 文件权限：0600（仅所有者可读写）
 - 支持 SHA-256 完整性验证
 

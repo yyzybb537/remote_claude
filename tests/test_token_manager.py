@@ -64,7 +64,7 @@ class TestTokenManager:
         manager = TokenManager("test-session", data_dir=tmp_path)
         manager.get_or_create_token()
 
-        token_file = tmp_path / "test-session_token.json"
+        token_file = tmp_path / "tokens" / "test-session.json"
         stat_info = os.stat(token_file)
         assert (stat_info.st_mode & 0o777) == 0o600
 
@@ -74,7 +74,7 @@ class TestTokenManager:
         token = manager.get_or_create_token()
 
         # 篡改文件
-        token_file = tmp_path / "test-session_token.json"
+        token_file = tmp_path / "tokens" / "test-session.json"
         with open(token_file, 'r') as f:
             content = json.load(f)
         content['token'] = 'tampered-token'
@@ -90,7 +90,7 @@ class TestTokenManager:
         manager = TokenManager("test-session", data_dir=tmp_path)
         manager.get_or_create_token()
 
-        token_file = tmp_path / "test-session_token.json"
+        token_file = tmp_path / "tokens" / "test-session.json"
         assert token_file.exists()
 
         assert manager.delete_token_file() is True
@@ -101,4 +101,4 @@ class TestTokenManager:
         manager = TokenManager("test-session", data_dir=tmp_path)
 
         assert manager.delete_token_file() is True
-        assert (tmp_path / "test-session_token.json").exists() is False
+        assert (tmp_path / "tokens" / "test-session.json").exists() is False

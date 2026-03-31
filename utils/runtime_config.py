@@ -749,6 +749,50 @@ class UserConfig:
 
 # ============== 配置加载/保存函数 ==============
 
+def _update_config_with_lock(
+        config_file: Path,
+        lock_path: Path,
+        load_func: callable,
+        config_class: type,
+        mutator: callable,
+) -> Any:
+    """原子更新配置：持锁读取 → 修改 → 写回 → 释放
+
+    用于多进程安全地修改配置文件，避免"读-改-写"竞态条件。
+
+    Args:
+        config_file: 配置文件路径
+        lock_path: 锁文件路径
+        load_func: 加载函数，返回配置对象
+        config_class: 配置类（用于 to_dict）
+        mutator: 修改函数，接收配置对象，返回修改后的对象或任意值
+
+    Returns:
+        mutator 的返回值
+    """
+    ensure_user_data_dir()
+    _ensure_filesystem_checked()
+
+    try:
+        with open(lock_path, 'a+', encoding="utf-8") as lock_fd:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+            try:
+                # 在锁保护下读取最新配置
+                config = load_func()
+                # 应用修改
+                result = mutator(config)
+                # 直接写回文件（不再调用 save_func 避免死锁）
+                content = json.dumps(config.to_dict(), indent=2, ensure_ascii=False)
+                with open(config_file, 'w', encoding="utf-8") as f:
+                    f.write(content)
+                return result
+            finally:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+    except PermissionError:
+        logger.warning("配置目录权限不足，配置将仅在内存中保留")
+        raise
+
+
 def _save_config_with_lock(
         config_obj: Any,
         config_file: Path,
@@ -832,13 +876,23 @@ def save_runtime_config(config: RuntimeConfig) -> None:
 def remove_session_mapping(truncated_name: str) -> None:
     """删除会话映射（会话退出时调用）
 
+    使用原子更新避免多进程竞态条件。
+
     Args:
         truncated_name: 截断后的会话名称
     """
-    config = load_runtime_config()
-    if config.remove_session_mapping(truncated_name):
-        save_runtime_config(config)
-        logger.info(f"已删除会话映射: {truncated_name}")
+    def mutator(config: RuntimeConfig):
+        if config.remove_session_mapping(truncated_name):
+            logger.info(f"已删除会话映射: {truncated_name}")
+        return None
+
+    _update_config_with_lock(
+        RUNTIME_CONFIG_FILE,
+        RUNTIME_LOCK_FILE,
+        load_runtime_config,
+        RuntimeConfig,
+        mutator,
+    )
 
 
 def get_uv_path() -> Optional[str]:
@@ -852,15 +906,23 @@ def get_uv_path() -> Optional[str]:
 
 
 def set_uv_path(path: str) -> None:
-    """写入 uv 路径到 runtime.json
+    """写入 uv 路径到 runtime.json（原子更新）
 
     Args:
         path: uv 可执行文件的绝对路径
     """
-    config = load_runtime_config()
-    config.uv_path = path
-    save_runtime_config(config)
-    logger.info(f"已记录 uv 路径: {path}")
+    def mutator(config: RuntimeConfig):
+        config.uv_path = path
+        logger.info(f"已记录 uv 路径: {path}")
+        return None
+
+    _update_config_with_lock(
+        RUNTIME_CONFIG_FILE,
+        RUNTIME_LOCK_FILE,
+        load_runtime_config,
+        RuntimeConfig,
+        mutator,
+    )
 
 
 def validate_uv_path(path: str) -> tuple[bool, str]:
@@ -1075,11 +1137,19 @@ def get_notify_ready_enabled() -> bool:
 
 
 def set_notify_ready_enabled(enabled: bool) -> None:
-    """设置就绪通知开关状态"""
-    config = load_user_config()
-    config.ui_settings.notify.ready_enabled = enabled
-    save_user_config(config)
-    logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
+    """设置就绪通知开关状态（原子更新）"""
+    def mutator(config: UserConfig):
+        config.ui_settings.notify.ready_enabled = enabled
+        logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
+        return None
+
+    _update_config_with_lock(
+        USER_CONFIG_FILE,
+        USER_CONFIG_LOCK_FILE,
+        load_user_config,
+        UserConfig,
+        mutator,
+    )
 
 
 def get_notify_urgent_enabled() -> bool:
@@ -1089,11 +1159,19 @@ def get_notify_urgent_enabled() -> bool:
 
 
 def set_notify_urgent_enabled(enabled: bool) -> None:
-    """设置加急通知开关状态"""
-    config = load_user_config()
-    config.ui_settings.notify.urgent_enabled = enabled
-    save_user_config(config)
-    logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
+    """设置加急通知开关状态（原子更新）"""
+    def mutator(config: UserConfig):
+        config.ui_settings.notify.urgent_enabled = enabled
+        logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
+        return None
+
+    _update_config_with_lock(
+        USER_CONFIG_FILE,
+        USER_CONFIG_LOCK_FILE,
+        load_user_config,
+        UserConfig,
+        mutator,
+    )
 
 
 def get_bypass_enabled() -> bool:
@@ -1103,11 +1181,19 @@ def get_bypass_enabled() -> bool:
 
 
 def set_bypass_enabled(enabled: bool) -> None:
-    """设置新会话 bypass 开关状态"""
-    config = load_user_config()
-    config.ui_settings.bypass_enabled = enabled
-    save_user_config(config)
-    logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
+    """设置新会话 bypass 开关状态（原子更新）"""
+    def mutator(config: UserConfig):
+        config.ui_settings.bypass_enabled = enabled
+        logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
+        return None
+
+    _update_config_with_lock(
+        USER_CONFIG_FILE,
+        USER_CONFIG_LOCK_FILE,
+        load_user_config,
+        UserConfig,
+        mutator,
+    )
 
 
 def get_ready_notify_count() -> int:
@@ -1118,10 +1204,17 @@ def get_ready_notify_count() -> int:
 
 def increment_ready_notify_count() -> int:
     """原子递增就绪通知计数器，返回新值"""
-    config = load_runtime_config()
-    config.ready_notify_count += 1
-    save_runtime_config(config)
-    return config.ready_notify_count
+    def mutator(config: RuntimeConfig):
+        config.ready_notify_count += 1
+        return config.ready_notify_count
+
+    return _update_config_with_lock(
+        RUNTIME_CONFIG_FILE,
+        RUNTIME_LOCK_FILE,
+        load_runtime_config,
+        RuntimeConfig,
+        mutator,
+    )
 
 
 # ============== 自动应答配置访问函数 ==============
@@ -1187,11 +1280,19 @@ def get_cli_command(cli_type: str) -> str:
 
 
 def set_custom_commands(commands: List[CustomCommand]) -> None:
-    """设置自定义命令列表"""
-    config = load_user_config()
-    config.ui_settings.custom_commands.commands = commands
-    save_user_config(config)
-    logger.info(f"已保存 {len(commands)} 个自定义命令")
+    """设置自定义命令列表（原子更新）"""
+    def mutator(config: UserConfig):
+        config.ui_settings.custom_commands.commands = commands
+        logger.info(f"已保存 {len(commands)} 个自定义命令")
+        return None
+
+    _update_config_with_lock(
+        USER_CONFIG_FILE,
+        USER_CONFIG_LOCK_FILE,
+        load_user_config,
+        UserConfig,
+        mutator,
+    )
 
 
 def is_custom_commands_enabled() -> bool:
@@ -1209,10 +1310,18 @@ def load_session_auto_answer() -> Dict[str, dict]:
 
 
 def save_session_auto_answer(states: Dict[str, dict]) -> None:
-    """保存所有 session 的自动应答状态"""
-    config = load_runtime_config()
-    config.session_auto_answer = states
-    save_runtime_config(config)
+    """保存所有 session 的自动应答状态（原子更新）"""
+    def mutator(config: RuntimeConfig):
+        config.session_auto_answer = states
+        return None
+
+    _update_config_with_lock(
+        RUNTIME_CONFIG_FILE,
+        RUNTIME_LOCK_FILE,
+        load_runtime_config,
+        RuntimeConfig,
+        mutator,
+    )
 
 
 def get_session_auto_answer_enabled(session_name: str) -> bool:
@@ -1222,10 +1331,18 @@ def get_session_auto_answer_enabled(session_name: str) -> bool:
 
 
 def set_session_auto_answer_enabled(session_name: str, enabled: bool, enabled_by: str = "") -> None:
-    """设置指定 session 的自动应答开关状态"""
-    states = load_session_auto_answer()
-    if enabled:
-        states[session_name] = {"enabled": True, "enabled_by": enabled_by}
-    else:
-        states.pop(session_name, None)
-    save_session_auto_answer(states)
+    """设置指定 session 的自动应答开关状态（原子更新）"""
+    def mutator(config: RuntimeConfig):
+        if enabled:
+            config.session_auto_answer[session_name] = {"enabled": True, "enabled_by": enabled_by}
+        else:
+            config.session_auto_answer.pop(session_name, None)
+        return None
+
+    _update_config_with_lock(
+        RUNTIME_CONFIG_FILE,
+        RUNTIME_LOCK_FILE,
+        load_runtime_config,
+        RuntimeConfig,
+        mutator,
+    )

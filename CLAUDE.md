@@ -102,53 +102,11 @@ remote_claude/
 └── resources/defaults/         # 配置模板
 ```
 
-## 常用命令
-
-```bash
-# 启动会话
-uv run python3 remote_claude.py start <会话名>
-
-# 连接/管理会话
-uv run python3 remote_claude.py attach <会话名>
-uv run python3 remote_claude.py list
-uv run python3 remote_claude.py kill <会话名>
-
-# 飞书客户端管理
-uv run python3 remote_claude.py lark start
-uv run python3 remote_claude.py lark stop
-uv run python3 remote_claude.py lark status
-
-# 远程连接
-remote-claude start <session> --remote [--remote-port 8765]
-remote-claude attach <session> --remote --host <host> --token <token>
-
-# 保存远程连接配置
-remote-claude attach <session> --remote --host <host> --token <token> --save
-remote-claude attach <session> --remote --host <host> --token <token> --save --config-name myserver
-
-# 使用保存的配置连接
-remote-claude attach --remote  # 使用默认配置
-remote-claude attach --remote --config-name myserver  # 使用指定配置
-
-# 管理保存的连接配置
-remote-claude connection list
-remote-claude connection show <name>
-remote-claude connection set-default <name>
-remote-claude connection delete <name>
-
-# 远程控制命令
-remote-claude token <session> --remote --host <host> --token <token>
-remote-claude regenerate-token <session> --remote --host <host> --token <token>
-remote-claude kill <session> --remote --host <host> --token <token>
-remote-claude lark start/stop/status --remote --host <host> --token <token>
-```
-
 ## 测试
 
 ```bash
 # 核心单元测试
-uv run python3 tests/test_session_truncate.py
-uv run python3 tests/test_runtime_config.py
+uv run python3 -m pytest tests/test_runtime_config.py tests/test_token_manager.py -v
 
 # 运行所有 Docker 测试
 docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
@@ -156,91 +114,33 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 
 详细测试计划见 [`tests/TEST_PLAN.md`](./tests/TEST_PLAN.md)。
 
-## 变更同步规则
-
-**每当做事规则或需求发生变更时，必须同步更新：**
-- `CLAUDE.md` — 架构说明、开发须知
-- `tests/TEST_PLAN.md` — 测试场景
-
 ## 开发须知
 
-- **系统要求：** macOS/Linux，需已安装 `tmux` 和 `claude` CLI；npm/pnpm 安装场景下不假设 lifecycle scripts 一定执行成功，也不要求用户预装 `uv`
-- **飞书配置：** 复制 `resources/defaults/.env.example` 为 `~/.remote-claude/.env`
+- **系统要求：** macOS/Linux，需已安装 `tmux` 和 `claude` CLI
 - **Socket 路径：** `/tmp/remote-claude/<name>.sock`
 - **tmux 会话前缀：** `rc-`
 - **语言：** 代码注释和用户交互均使用中文
-- **初始化机制：** `cla` / `cl` / `cx` / `cdx` / `remote-claude` 在首次运行时自动检查并初始化 Python 环境，命令可用性不依赖 `postinstall`
-- **pip 升级前置：** 安装 `uv` 前，先对最终选中的 `pip` 执行 `install --upgrade pip --user`
-- **镜像策略：** `pip` 升级、`uv/pip` 安装与 `uv sync` 统一使用内置镜像回退策略；顺序为官方 → 阿里 → 清华，并附加 host trust 参数
-- **安装日志：** 安装链路统一写入 `/tmp/remote-claude-install.log`（每次安装覆盖最近一次日志）
-- **失败日志粒度：** 任一步骤失败都必须写入安装日志，包含 `stage/source/cmd/exit_code` 摘要
-- **runtime 初始化语义：** `runtime.json` 仅在安装成功路径执行初始化，失败路径不创建
-- **目录变量约定：** 路径真相源仅 `PROJECT_DIR/SCRIPT_DIR`，并由 `scripts/_common.sh` 统一收敛
-- **脚本入口约定：** `scripts/*.sh` 必须使用统一入口模板（先解析脚本真实路径并定义 `PROJECT_DIR`，再 source `scripts/_common.sh`）
-- **bin 启动入口约定：** `bin/remote-claude`、`bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx` 在完成 `scripts/_common.sh` 的 lazy init 后，统一通过 `_remote_claude_python` 进入 `remote_claude.py`；脚本内部不要再次触发 `uv run`
-- **check-env 调用约定：** 严禁向 `scripts/check-env.sh` 传目录参数；历史传参必须显式报错退出
-- **uv 安装策略：** 优先使用 `pip --user` 安装；若失败则按多来源 fallback（官方脚本、conda/mamba、brew）自动恢复
 
-### 循环依赖处理
+### 关键约束
 
-`utils/session.py` 和 `utils/runtime_config.py` 之间存在循环依赖。`session.py` 的 `resolve_session_name()` 使用延迟导入避免循环依赖。
+| 约束 | 说明 |
+|------|------|
+| server.py 职责 | 保证写入共享内存的输出完整、准确；ANSI 解析、终端状态还原 |
+| lark_client/ 职责 | 从共享内存到飞书卡片渲染的纯展示流程；**严禁**对内容做字符串修复、ANSI 清理 |
+| 配置修改原子性 | `utils/runtime_config.py` 的修改型接口使用持锁读改写，避免多进程竞态 |
 
-### 配置文件架构
+### 配置文件
 
 | 文件 | 用途 |
 |------|------|
 | `~/.remote-claude/config.json` | 用户可编辑配置（快捷命令、UI 设置） |
 | `~/.remote-claude/runtime.json` | 程序运行时状态（会话映射、群组绑定） |
+| `~/.remote-claude/tokens/<session>.json` | 会话 Token（远程模式，权限 0600） |
+| `~/.remote-claude/remote_connections.json` | 远程连接配置 |
 
-**config.json 关键配置：**
-- `ui_settings.quick_commands` — 快捷命令配置
-- `ui_settings.custom_commands` — 自定义 CLI 命令
-- `ui_settings.notify` — 就绪通知配置
-- `ui_settings.auto_answer` — 自动应答配置
-- `ui_settings.card_expiry` — 卡片过期配置
+### 循环依赖处理
 
-### 配置迁移
-
-启动时自动迁移旧配置文件：
-- `lark_group_mapping.json` → `runtime.json`
-- `ready_notify_count`/`ready_notify_enabled`/`urgent_notify_enabled`/`bypass_enabled` → `config.json` + `runtime.json`
-
-迁移函数定义在 `utils/runtime_config.py`：
-- `migrate_legacy_config()` — 迁移 lark_group_mapping
-- `migrate_legacy_notify_settings()` — 迁移旧开关文件
-
-### 远程连接配置存储
-
-**Token 存储**（服务端）：
-- 文件：`~/.remote-claude/<session>_token.json`
-- 内容：session、token、created_at、last_used_at、file_hash
-- 权限：0600（仅所有者可读写）
-- 完整性：SHA-256 hash 验证
-
-**连接配置存储**（客户端）：
-- 文件：`~/.remote-claude/remote_connections.json`
-- 内容：name、host、port、token、session、description、is_default
-- 用途：保存常用远程连接，避免重复输入参数
-
-**自动应答策略：**
-1. 推荐选项优先：选择标记为 `(recommended)` 或 `推荐` 的选项
-2. 无明确语义时回复"继续"：确认类选项时发送"继续"
-3. 兜底选择第一项
-
-### 终端解析规则要点
-
-**组件分类：**
-- **累积型 Block**：OutputBlock、UserInput、PlanBlock、SystemBlock（随对话增长，历史保留）
-- **状态型组件**：StatusLine、BottomBar、AgentPanelBlock、OptionBlock（全局唯一，每帧覆盖）
-
-**执行状态判断：**
-- Block 首行首列字符 **blink=true** → 正在执行（is_streaming=True）
-- Block 首行首列字符 **blink=false** → 已完成
-
-**Codex 与 Claude 差异：**
-- Codex 用背景色区域识别输入区（无分割线）
-- Codex 提示符为 `›` (U+203A)，Claude 为 `❯` (U+276F)
-- Codex 用圆点 + blink 区分 StatusLine/OutputBlock，Claude 用不同字符
+`utils/session.py` 和 `utils/runtime_config.py` 之间存在循环依赖。`session.py` 的 `resolve_session_name()` 使用延迟导入避免循环依赖。
 
 ### 飞书卡片 API 参考
 

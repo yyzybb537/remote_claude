@@ -32,6 +32,7 @@ class TokenManager:
     """
 
     TOKEN_FILE_MODE = 0o600  # 仅所有者可读写
+    TOKEN_DIR_NAME = "tokens"  # token 子目录名
 
     def __init__(self, session_name: str, data_dir: Path = None):
         """初始化 Token 管理器
@@ -42,7 +43,8 @@ class TokenManager:
         """
         self.session_name = session_name
         self.data_dir = data_dir or Path.home() / ".remote-claude"
-        self.token_file = self.data_dir / f"{session_name}_token.json"
+        self.token_dir = self.data_dir / self.TOKEN_DIR_NAME
+        self.token_file = self.token_dir / f"{session_name}.json"
         self._token: Optional[str] = None
         self._file_hash: Optional[str] = None
 
@@ -148,7 +150,7 @@ class TokenManager:
         Args:
             token: token 字符串
         """
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.token_dir.mkdir(parents=True, exist_ok=True)
 
         now = datetime.now(timezone.utc).isoformat()
         data = {
