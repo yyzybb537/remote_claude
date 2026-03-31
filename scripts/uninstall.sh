@@ -20,17 +20,32 @@ export LAZY_INIT_DISABLE_AUTO_RUN
 unset LAZY_INIT_DISABLE_AUTO_RUN
 
 # 检测是否在 npm/pnpm 的 uninstall hook 上下文中
-# 仅在存在 lifecycle event 且事件名包含 uninstall 时判定为真
+# 判定条件：
+# 1) npm 生命周期事件包含 uninstall
+# 2) pnpm 全局 remove/rm/uninstall（部分场景不会注入 npm_lifecycle_event）
 # 返回: 0 在 uninstall hook 上下文, 1 不在
 _is_npm_context() {
     case "$npm_lifecycle_event" in
         *uninstall*)
             return 0
             ;;
-        *)
-            return 1
+    esac
+
+    case "${npm_config_user_agent:-}" in
+        pnpm/*)
+            case "${npm_command:-}" in
+                remove|rm|uninstall)
+                    case "${npm_config_global:-}" in
+                        true|1)
+                            return 0
+                            ;;
+                    esac
+                    ;;
+            esac
             ;;
     esac
+
+    return 1
 }
 
 # 1. 清理符号链接

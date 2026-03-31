@@ -859,6 +859,69 @@ handle_lazy_init_failure() {
     exit "$exit_code"
 }
 
+_remote_claude_python() {
+    local project_dir
+    project_dir="${PROJECT_DIR:-}"
+    if [ -z "$project_dir" ]; then
+        case "$SCRIPT_DIR" in
+            */scripts)
+                project_dir=$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)
+                ;;
+            *)
+                project_dir="$SCRIPT_DIR"
+                ;;
+        esac
+    fi
+
+    if [ -z "$project_dir" ]; then
+        print_error "无法确定项目目录，不能执行 Python 入口"
+        return 1
+    fi
+
+    if [ ! -x "$project_dir/.venv/bin/python3" ]; then
+        print_error "项目虚拟环境未就绪: $project_dir/.venv/bin/python3"
+        return 1
+    fi
+
+    "$project_dir/.venv/bin/python3" "$project_dir/remote_claude.py" "$@"
+}
+
+_run_project_python() {
+    local project_dir
+    project_dir="${PROJECT_DIR:-}"
+    if [ -z "$project_dir" ]; then
+        case "$SCRIPT_DIR" in
+            */scripts)
+                project_dir=$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)
+                ;;
+            *)
+                project_dir="$SCRIPT_DIR"
+                ;;
+        esac
+    fi
+
+    if [ -z "$project_dir" ]; then
+        print_error "无法确定项目目录，不能执行 Python 脚本"
+        return 1
+    fi
+
+    if [ ! -x "$project_dir/.venv/bin/python3" ]; then
+        print_error "项目虚拟环境未就绪: $project_dir/.venv/bin/python3"
+        return 1
+    fi
+
+    "$project_dir/.venv/bin/python3" "$@"
+}
+
+_assert_not_nested_uv_run() {
+    if [ "${REMOTE_CLAUDE_TOPLEVEL_UV_RUN:-0}" = "1" ] && [ "${REMOTE_CLAUDE_ALLOW_NESTED_UV_RUN:-0}" != "1" ]; then
+        print_error "检测到内层再次触发 uv 入口，已阻止以避免递归调用"
+        print_info "请改为调用脚本内的 Python 入口或 _remote_claude_python/_run_project_python"
+        return 1
+    fi
+    return 0
+}
+
 # 延迟初始化：检测是否需要运行 setup.sh
 # 条件：.venv 不存在 或依赖指纹变化 且不在缓存目录中
 _lazy_init() {

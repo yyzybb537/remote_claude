@@ -38,9 +38,19 @@ print_warnings() {
     fi
 }
 
+# 构建完整 shell 初始化块（PATH + 自动补全）
+_build_shell_init_block() {
+    printf '%s' "export PATH=\"\$HOME/.local/bin:\$PATH\"; . \"$PROJECT_DIR/scripts/completion.sh\""
+}
+
+# 确保 shell 初始化块始终写入完整数据
+_ensure_full_shell_init_block() {
+    upsert_remote_claude_init_block "$(_build_shell_init_block)"
+}
+
 # 确保 ~/.local/bin 在 PATH 中
 setup_path() {
-    upsert_remote_claude_init_block 'export PATH="$HOME/.local/bin:$PATH"'
+    _ensure_full_shell_init_block
     export PATH="$HOME/.local/bin:$PATH"
 }
 
@@ -65,7 +75,7 @@ check_uv() {
     if check_and_install_uv; then
         UV_VERSION=$(uv --version)
         print_success "$UV_VERSION 已安装"
-        upsert_remote_claude_init_block 'export PATH="$HOME/.local/bin:$PATH"'
+        _ensure_full_shell_init_block
         print_success "已确保 \$HOME/.local/bin 写入 shell 初始化配置"
     else
         print_error "uv 安装失败，请手动安装："
@@ -195,7 +205,7 @@ check_tmux() {
                 *":$HOME/.local/bin:"*) ;;
                 *)
                     export PATH="$HOME/.local/bin:$PATH"
-                    upsert_remote_claude_init_block 'export PATH="$HOME/.local/bin:$PATH"'
+                    _ensure_full_shell_init_block
                     print_success "已自动将 \$HOME/.local/bin 加入 PATH 并写入 shell 初始化配置"
                     ;;
             esac
@@ -321,8 +331,8 @@ install_dependencies() {
     print_success "依赖安装完成"
 
     # 上报 init_install 事件（后台执行，不阻塞，失败静默）
-    # 使用 uv run 确保使用项目虚拟环境中的 Python
-    uv run python3 scripts/report_install.py >/dev/null 2>&1 &
+    # 使用项目虚拟环境中的 Python，避免再次进入 uv 入口
+    _run_project_python scripts/report_install.py >/dev/null 2>&1 &
 }
 
 # 配置飞书环境
@@ -657,7 +667,7 @@ configure_shell() {
             BIN_DIR="$HOME/.local/bin"
             # 自动写入 PATH 到 shell 配置文件
             export PATH="$BIN_DIR:$PATH"
-            upsert_remote_claude_init_block 'export PATH="$HOME/.local/bin:$PATH"'
+            _ensure_full_shell_init_block
             print_success "已自动将 \$HOME/.local/bin 加入 PATH 并写入 shell 初始化配置"
         fi
         mkdir -p "$BIN_DIR"
@@ -680,10 +690,8 @@ configure_shell() {
     print_info "  cdx           - 同 cx，但需确认权限"
     print_info "  remote-claude - Remote Claude 主命令（start/attach/list/kill/lark）"
 
-    # 安装 shell 自动补全
-    COMPLETION_LINE=". \"$PROJECT_DIR/scripts/completion.sh\""
-    BLOCK_CONTENT="export PATH=\"\$HOME/.local/bin:\$PATH\"; $COMPLETION_LINE"
-    upsert_remote_claude_init_block "$BLOCK_CONTENT"
+    # 安装 shell 自动补全（通过统一完整初始化块写入）
+    _ensure_full_shell_init_block
 
     SHELL_RC=$(get_shell_rc)
     print_success "已更新 shell 初始化配置到 $SHELL_RC（重新打开终端后生效）"
@@ -702,8 +710,8 @@ restart_lark_client() {
 
     print_info "正在重启飞书客户端..."
     cd "$PROJECT_DIR"
-    if ! uv run remote-claude lark restart; then
-        add_warning "飞书客户端重启失败，请手动运行: uv run remote-claude lark restart"
+    if ! _remote_claude_python lark restart; then
+        add_warning "飞书客户端重启失败，请手动运行: remote-claude lark restart"
         return
     fi
     print_success "飞书客户端已重启"

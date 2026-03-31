@@ -239,6 +239,9 @@ def validate_remote_args(args, session_fallback: str = None) -> tuple:
     """
     host, port, session, token = parse_host_session(args)
 
+    if host is None and port is None and session is None and token is None:
+        return None
+
     if not host:
         print("错误: 远程模式需要 --host 参数")
         return None
@@ -278,6 +281,11 @@ def cmd_start(args):
         print("请先使用 'remote-claude kill {session_name}' 清理")
         return 1
 
+    cli_args = args.cli_args if args.cli_args else []
+    if any(arg in ("-h", "--help") for arg in cli_args):
+        print("错误: start 子命令不支持透传帮助参数，请直接运行 remote-claude start --help 查看用法")
+        return 1
+
     ensure_socket_dir()
 
     # 将当前 shell 的完整环境变量保存到快照文件（权限 0600 防止密钥泄露）
@@ -290,7 +298,6 @@ def cmd_start(args):
 
     # 构建 server 命令
     server_script = SCRIPT_DIR / "server" / "server.py"
-    cli_args = args.cli_args if args.cli_args else []
     # 使用 shlex.quote 安全转义参数，防止命令注入
     cli_args_str = " ".join(shlex.quote(arg) for arg in cli_args)
     debug_flag = " --debug-screen" if args.debug_screen else ""
@@ -436,6 +443,19 @@ def cmd_start(args):
 
     print(f"会话已启动: rc-{session_name}")
     print(f"正在连接...")
+
+    # 再次确认 socket 仍然存在，避免 server 刚启动即退出时继续进入 attach 分支
+    if not socket_path.exists():
+        _start_logger.error(
+            "stage=server_start_failed reason=socket_missing_after_spawn session=%s remote=%s remote_host=%s remote_port=%s",
+            session_name,
+            args.remote,
+            args.remote_host if args.remote else "",
+            args.remote_port if args.remote else "",
+        )
+        print("错误: Server 已退出（socket 已丢失）")
+        tmux_kill_session(session_name)
+        return 1
 
     # 直接在前台运行 client（不走 tmux），让终端能力协商序列
     # （如 kitty keyboard protocol）直接在 Claude CLI ↔ 用户终端之间流通，

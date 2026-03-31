@@ -1,21 +1,55 @@
 #!/bin/sh
 # remote-claude shell 自动补全（支持 bash 和 zsh）
 
-SOURCE=""
-if [ -n "${BASH_SOURCE:-}" ]; then
-    SOURCE="$BASH_SOURCE"
-elif [ -n "${ZSH_VERSION:-}" ]; then
-    SOURCE="$(eval 'printf %s "${(%):-%N}"')"
-else
-    SOURCE="$0"
+PROJECT_DIR=""
+_resolve_symlink_path() {
+    _path="$1"
+    while [ -L "$_path" ]; do
+        _base_dir="$(cd -P "$(dirname "$_path")" && pwd)"
+        _path="$(readlink "$_path")"
+        case "$_path" in /*) ;; *) _path="$_base_dir/$_path" ;; esac
+    done
+    printf '%s\n' "$_path"
+}
+
+_resolve_project_dir_from_remote_cmd() {
+    _remote_cmd="$(command -v remote-claude 2>/dev/null || true)"
+    [ -n "$_remote_cmd" ] || return 1
+
+    _remote_cmd="$(_resolve_symlink_path "$_remote_cmd")"
+    _cmd_dir="$(cd -P "$(dirname "$_remote_cmd")" && pwd)"
+    _project_dir="$(cd "$_cmd_dir/.." 2>/dev/null && pwd)"
+
+    [ -n "$_project_dir" ] || return 1
+    [ -f "$_project_dir/scripts/_common.sh" ] || return 1
+
+    printf '%s\n' "$_project_dir"
+}
+
+_resolve_project_dir_from_completion_source() {
+    _source=""
+    if [ -n "${BASH_SOURCE:-}" ]; then
+        _source="$BASH_SOURCE"
+    elif [ -n "${ZSH_VERSION:-}" ]; then
+        _source="$(eval 'printf %s "${(%):-%N}"')"
+    else
+        _source="$0"
+    fi
+
+    _source="$(_resolve_symlink_path "$_source")"
+    _self_dir="$(cd -P "$(dirname "$_source")" && pwd)"
+    _project_dir="$(cd "$_self_dir/.." 2>/dev/null && pwd)"
+
+    [ -n "$_project_dir" ] || return 1
+    [ -f "$_project_dir/scripts/_common.sh" ] || return 1
+
+    printf '%s\n' "$_project_dir"
+}
+
+PROJECT_DIR="$(_resolve_project_dir_from_remote_cmd 2>/dev/null || true)"
+if [ -z "$PROJECT_DIR" ]; then
+    PROJECT_DIR="$(_resolve_project_dir_from_completion_source)"
 fi
-while [ -L "$SOURCE" ]; do
-    BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-    SOURCE="$(readlink "$SOURCE")"
-    case "$SOURCE" in /*) ;; *) SOURCE="$BASE_DIR/$SOURCE" ;; esac
-done
-SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 LAZY_INIT_DISABLE_AUTO_RUN=1
 export LAZY_INIT_DISABLE_AUTO_RUN
 . "$PROJECT_DIR/scripts/_common.sh"

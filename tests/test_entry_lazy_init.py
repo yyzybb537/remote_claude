@@ -1154,6 +1154,25 @@ def test_entry_scripts_capture_and_use_startup_dir_consistently():
         assert '"${STARTUP_DIR}_$(date +%m%d_%H%M%S)"' in content
 
 
+def test_shortcut_entry_scripts_handle_help_without_starting_session(tmp_path: Path):
+    for rel in ("bin/cla", "bin/cl", "bin/cx", "bin/cdx"):
+        home_dir = tmp_path / rel.replace("/", "_")
+        remote_dir = home_dir / ".remote-claude"
+        remote_dir.mkdir(parents=True)
+
+        result = subprocess.run(
+            [str(REPO_ROOT / rel), "--help"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(home_dir)},
+        )
+
+        assert result.returncode == 0, (rel, result.stdout, result.stderr)
+        assert "usage: remote_claude.py start" in result.stdout, (rel, result.stdout)
+        assert "start 子命令不支持透传帮助参数" not in result.stdout, (rel, result.stdout)
+
+
 def test_scripts_define_project_dir_before_common_source():
     scripts = [
         "scripts/install.sh",

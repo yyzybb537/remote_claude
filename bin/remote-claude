@@ -56,11 +56,13 @@ if [ "$1" = "log" ]; then
     exec tail -50f "$LOG_FILE"
 fi
 
-# lark 子命令：检查 .env 配置
-if [ "$1" = "lark" ]; then
+# lark 子命令：仅在真实执行管理动作时检查 .env，help 不应触发交互配置
+if [ "$1" = "lark" ] && [ "${2:-}" != "--help" ] && [ "${2:-}" != "-h" ]; then
     sh "${PROJECT_DIR}/scripts/check-env.sh"
 fi
 
 # 在启动目录执行入口点，保持调用方 cwd
 cd "$STARTUP_DIR" || exit 1
-exec uv run remote-claude "$@"
+_assert_not_nested_uv_run || exit 1
+export REMOTE_CLAUDE_TOPLEVEL_UV_RUN=1
+exec uv run python3 "$PROJECT_DIR/remote_claude.py" "$@"

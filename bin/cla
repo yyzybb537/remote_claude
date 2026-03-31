@@ -20,9 +20,16 @@ REMOTE_CLAUDE_REQUIRE_FEISHU=0
 export REMOTE_CLAUDE_REQUIRE_FEISHU
 sh "$PROJECT_DIR/scripts/check-env.sh"
 
+# help 参数应显示 start 用法，而不是启动会话
+case "${1:-}" in
+    -h|--help)
+        exec "$PROJECT_DIR/bin/remote-claude" start --help
+        ;;
+esac
+
 # 在启动目录执行入口点，保持 session 名与 cwd 一致
 cd "$STARTUP_DIR" || exit 1
 if [ -f "$HOME/.remote-claude/.env" ]; then
-    uv run remote-claude lark start
+    _remote_claude_python lark start
 fi
-uv run remote-claude start "${STARTUP_DIR}_$(date +%m%d_%H%M%S)" -- "$@"
+_remote_claude_python start "${STARTUP_DIR}_$(date +%m%d_%H%M%S)" -- "$@"

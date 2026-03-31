@@ -2,13 +2,19 @@
 
 import io
 import logging
+import os
+import subprocess
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 import remote_claude
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_parse_host_session_keeps_positional_session_name():
@@ -48,6 +54,23 @@ def test_lark_help_exits_cleanly(capsys):
     assert "查看飞书客户端状态" in out
 
 
+def test_bin_remote_claude_lark_help_exits_cleanly_without_env_prompt(tmp_path):
+    home_dir = tmp_path / "lark_help_home"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(REPO_ROOT / "bin/remote-claude"), "lark", "--help"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home_dir)},
+    )
+
+    assert result.returncode == 0
+    assert "usage: remote_claude.py lark" in result.stdout
+    assert "飞书客户端尚未配置" not in result.stdout
+
+
 def test_lark_without_subcommand_prints_help_and_returns_zero():
     output = io.StringIO()
     with patch("sys.argv", ["remote_claude.py", "lark"]):
@@ -58,6 +81,83 @@ def test_lark_without_subcommand_prints_help_and_returns_zero():
     text = output.getvalue()
     assert "usage: remote_claude.py lark" in text
     assert "查看飞书客户端状态" in text
+
+
+def test_bin_remote_claude_help_exits_cleanly_without_spawning_session(tmp_path):
+    home_dir = tmp_path / "remote_help_home"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(REPO_ROOT / "bin/remote-claude"), "--help"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home_dir)},
+    )
+
+    assert result.returncode == 0
+    assert "Remote Claude - 双端共享 Claude CLI 工具" in result.stdout
+    assert "启动新会话" in result.stdout
+
+
+def test_management_subcommand_help_and_empty_invocation_do_not_create_side_effects(tmp_path):
+    commands = [
+        ["config", "--help"],
+        ["config"],
+        ["connection", "--help"],
+        ["connection"],
+        ["conn", "--help"],
+        ["connect", "--help"],
+        ["remote", "--help"],
+        ["token", "--help"],
+        ["regenerate-token", "--help"],
+        ["connection", "list", "--help"],
+        ["connection", "show", "--help"],
+        ["connection", "delete", "--help"],
+        ["connection", "set-default", "--help"],
+        ["config", "reset", "--help"],
+    ]
+
+    for command in commands:
+        home_dir = tmp_path / "_".join(command).replace("-", "_")
+        (home_dir / ".remote-claude").mkdir(parents=True)
+
+        before = {p.name for p in Path("/tmp/remote-claude").glob("*")}
+        result = subprocess.run(
+            [str(REPO_ROOT / "bin/remote-claude"), *command],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(home_dir)},
+        )
+        after = {p.name for p in Path("/tmp/remote-claude").glob("*")}
+
+        assert result.returncode == 0, (command, result.stdout, result.stderr)
+        assert "飞书客户端尚未配置" not in result.stdout, (command, result.stdout)
+        assert not any(name.startswith(home_dir.name) for name in after - before), (command, sorted(after - before))
+
+
+def test_shortcut_help_commands_exit_cleanly_without_spawn_error(tmp_path):
+    for rel in ("bin/cla", "bin/cl", "bin/cx", "bin/cdx"):
+        home_dir = tmp_path / rel.replace("/", "_")
+        remote_home = home_dir / ".remote-claude"
+        remote_home.mkdir(parents=True)
+
+        before = {p.name for p in Path("/tmp/remote-claude").glob("*")}
+        result = subprocess.run(
+            [str(REPO_ROOT / rel), "--help"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(home_dir)},
+        )
+        after = {p.name for p in Path("/tmp/remote-claude").glob("*")}
+
+        assert result.returncode == 0, (rel, result.stdout, result.stderr)
+        assert "usage: remote_claude.py start" in result.stdout, (rel, result.stdout)
+        assert "start 子命令不支持透传帮助参数" not in result.stdout, (rel, result.stdout)
+        assert "飞书客户端尚未配置" not in result.stdout, (rel, result.stdout)
+        assert not any(name.startswith(home_dir.name) for name in after - before), (rel, sorted(after - before))
 
 
 def test_cmd_attach_remote_logs_tracing(monkeypatch, caplog):
@@ -102,6 +202,14 @@ def test_validate_remote_args_requires_session_when_fallback_missing(capsys):
     args = SimpleNamespace(host="10.0.0.1", port=10000, token="t", name="")
     assert remote_claude.validate_remote_args(args) is None
     assert "错误: 请指定会话名称" in capsys.readouterr().out
+
+
+def test_validate_remote_args_returns_parse_error_without_duplicate_host_message(capsys):
+    args = SimpleNamespace(host="10.0.0.1:bad/demo", port=10000, token="t", name="demo")
+    assert remote_claude.validate_remote_args(args) is None
+    out = capsys.readouterr().out
+    assert "错误: 端口格式无效: bad" in out
+    assert "错误: 远程模式需要 --host 参数" not in out
 
 
 def test_cmd_kill_remote_logs_tracing(monkeypatch, caplog):
