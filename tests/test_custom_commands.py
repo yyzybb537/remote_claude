@@ -21,7 +21,7 @@ from utils.runtime_config import (
     CustomCommand,
     CustomCommandsConfig,
     UserConfig,
-    UISettings,
+    SessionConfig,
     get_custom_commands,
     get_cli_command,
     load_user_config,
@@ -176,14 +176,14 @@ class TestCustomCommandsConfigDataClass:
 
 
 class TestCustomCommandsIntegration:
-    """测试自定义命令与 UI 配置集成"""
+    """测试自定义命令与 SessionConfig 集成"""
 
-    def test_uisettings_contains_custom_commands(self):
-        """测试 UISettings 包含 custom_commands"""
-        ui = UISettings()
-        assert hasattr(ui, "custom_commands")
-        assert isinstance(ui.custom_commands, CustomCommandsConfig)
-        assert ui.custom_commands.enabled is False
+    def test_session_config_contains_custom_commands(self):
+        """测试 SessionConfig 包含 custom_commands"""
+        session = SessionConfig()
+        assert hasattr(session, "custom_commands")
+        assert isinstance(session.custom_commands, CustomCommandsConfig)
+        assert session.custom_commands.enabled is False
 
     def test_user_config_roundtrip(self):
         """测试 UserConfig 完整序列化/反序列化"""
@@ -192,8 +192,8 @@ class TestCustomCommandsIntegration:
             temp_config = Path(temp_dir) / "test_config.json"
 
             config = UserConfig()
-            config.ui_settings.custom_commands.enabled = True
-            config.ui_settings.custom_commands.commands = [
+            config.session.custom_commands.enabled = True
+            config.session.custom_commands.commands = [
                 CustomCommand("claude", "claude", "/opt/claude", "Custom Claude"),
                 CustomCommand("codex", "codex", "/opt/codex", "Custom Codex"),
             ]
@@ -202,11 +202,11 @@ class TestCustomCommandsIntegration:
             # 加载
             with patch("utils.runtime_config.USER_CONFIG_FILE", temp_config):
                 loaded = load_user_config()
-                assert loaded.ui_settings.custom_commands.enabled is True
-                assert len(loaded.ui_settings.custom_commands.commands) == 2
-                assert loaded.ui_settings.custom_commands.commands[0].name == "claude"
-                assert loaded.ui_settings.custom_commands.commands[0].cli_type == "claude"
-                assert loaded.ui_settings.custom_commands.commands[0].command == "/opt/claude"
+                assert loaded.session.custom_commands.enabled is True
+                assert len(loaded.session.custom_commands.commands) == 2
+                assert loaded.session.custom_commands.commands[0].name == "claude"
+                assert loaded.session.custom_commands.commands[0].cli_type == "claude"
+                assert loaded.session.custom_commands.commands[0].command == "/opt/claude"
 
 
 class TestGetCliCommand:
@@ -219,8 +219,8 @@ class TestGetCliCommand:
 
             # 创建配置文件
             config_data = {
-                "version": "1.0",
-                "ui_settings": {
+                "version": "2.0",
+                "session": {
                     "custom_commands": {
                         "enabled": True,
                         "commands": [
@@ -244,8 +244,8 @@ class TestGetCliCommand:
             temp_config = Path(temp_dir) / "test_config.json"
 
             config_data = {
-                "version": "1.0",
-                "ui_settings": {
+                "version": "2.0",
+                "session": {
                     "custom_commands": {
                         "enabled": True,
                         "commands": []
@@ -308,8 +308,8 @@ class TestGetMatchingCommands:
         from unittest.mock import Mock
 
         user_config = Mock()
-        user_config.ui_settings.custom_commands.is_visible.return_value = True
-        user_config.ui_settings.custom_commands.commands = []
+        user_config.session.custom_commands.is_visible.return_value = True
+        user_config.session.custom_commands.commands = []
         result = _get_matching_commands(user_config)
         assert result == []
 
@@ -319,8 +319,8 @@ class TestGetMatchingCommands:
         from unittest.mock import Mock
 
         user_config = Mock()
-        user_config.ui_settings.custom_commands.is_visible.return_value = True
-        user_config.ui_settings.custom_commands.commands = [
+        user_config.session.custom_commands.is_visible.return_value = True
+        user_config.session.custom_commands.commands = [
             CustomCommand(name="Claude", cli_type="claude", command="claude"),
             CustomCommand(name="Aider", cli_type="claude", command="aider --model claude-sonnet-4"),
             CustomCommand(name="Codex", cli_type="codex", command="codex"),
@@ -337,8 +337,8 @@ class TestGetMatchingCommands:
         from unittest.mock import Mock
 
         user_config = Mock()
-        user_config.ui_settings.custom_commands.is_visible.return_value = False
-        user_config.ui_settings.custom_commands.commands = [
+        user_config.session.custom_commands.is_visible.return_value = False
+        user_config.session.custom_commands.commands = [
             CustomCommand(name="Claude", cli_type="claude", command="claude")
         ]
         result = _get_matching_commands(user_config)

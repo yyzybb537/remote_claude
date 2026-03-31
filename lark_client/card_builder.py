@@ -46,14 +46,14 @@ def _get_matching_commands(user_config: Optional["UserConfig"]) -> List[Dict[str
         命令列表，每个元素包含 name 和 command。
         如果未配置自定义命令，返回默认命令列表。
     """
-    if not user_config or not user_config.ui_settings.custom_commands.is_visible():
+    if not user_config or not user_config.session.custom_commands.is_visible():
         # 未配置自定义命令，返回默认命令列表（Claude 和 Codex）
         return [
             {"name": "Claude", "command": str(CliType.CLAUDE)},
             {"name": "Codex", "command": str(CliType.CODEX)},
         ]
 
-    commands = user_config.ui_settings.custom_commands.commands
+    commands = user_config.session.custom_commands.commands
     matched = [
         {"name": cmd.name, "command": cmd.command}
         for cmd in commands
@@ -290,7 +290,7 @@ def _build_operation_selector(user_config: Optional["UserConfig"]) -> Optional[D
 
     enabled_keys = set()
     if user_config:
-        panel_cfg = user_config.ui_settings.operation_panel
+        panel_cfg = user_config.behavior.operation_panel
         show_builtin_keys = panel_cfg.show_builtin_keys
         show_custom_commands = panel_cfg.show_custom_commands
         enabled_keys = set(panel_cfg.enabled_keys)
@@ -314,9 +314,9 @@ def _build_operation_selector(user_config: Optional["UserConfig"]) -> Optional[D
     if (
         show_custom_commands
         and user_config
-        and user_config.ui_settings.custom_commands.is_visible()
+        and user_config.session.custom_commands.is_visible()
     ):
-        for cmd in user_config.ui_settings.custom_commands.commands:
+        for cmd in user_config.session.custom_commands.commands:
             options.append({
                 "text": {"tag": "plain_text", "content": f"{cmd.name}: {cmd.command}"},
                 "value": f"cmd:{cmd.command}",
@@ -1609,8 +1609,8 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
     elements.append({"tag": "hr"})
     elements.append({"tag": "markdown", "content": "**自定义命令**"})
 
-    if user_config and user_config.ui_settings.custom_commands.is_visible():
-        custom_cmds = user_config.ui_settings.custom_commands.commands
+    if user_config and user_config.session.custom_commands.is_visible():
+        custom_cmds = user_config.session.custom_commands.commands
         for cmd in custom_cmds:
             # 格式: "claude → aider (AI pair programming)"
             desc = f" _{cmd.description}_" if cmd.description else ""
