@@ -27,7 +27,7 @@ logger = logging.getLogger('RuntimeConfig')
 
 # 常量
 CURRENT_VERSION = "1.0"
-USER_CONFIG_VERSION = "1.0"
+USER_CONFIG_VERSION = "2.0"
 MAX_SESSION_MAPPINGS = 500
 MAX_BACKUP_FILES = 2  # 保留最近 2 个备份文件
 OPERATION_PANEL_ALLOWED_KEYS = {"up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"}
@@ -573,45 +573,65 @@ class CustomCommandsConfig:
 
 
 @dataclass
-class UISettings:
-    """UI 设置"""
+class CardConfig:
+    """飞书卡片相关配置"""
     quick_commands: QuickCommandsConfig = field(default_factory=lambda: QuickCommandsConfig())
-    notify: NotifySettings = field(default_factory=lambda: NotifySettings())
-    bypass_enabled: bool = False  # 新会话 bypass 开关（默认关闭）
+    expiry: CardExpirySettings = field(default_factory=lambda: CardExpirySettings())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "quick_commands": self.quick_commands.to_dict(),
+            "expiry": self.expiry.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CardConfig":
+        return cls(
+            quick_commands=QuickCommandsConfig.from_dict(data.get("quick_commands", {})),
+            expiry=CardExpirySettings.from_dict(data.get("expiry", {})),
+        )
+
+
+@dataclass
+class SessionConfig:
+    """会话相关配置"""
+    bypass: bool = False
     custom_commands: CustomCommandsConfig = field(default_factory=lambda: CustomCommandsConfig())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "bypass": self.bypass,
+            "custom_commands": self.custom_commands.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SessionConfig":
+        return cls(
+            bypass=data.get("bypass", False),
+            custom_commands=CustomCommandsConfig.from_dict(data.get("custom_commands", {})),
+        )
+
+
+@dataclass
+class BehaviorConfig:
+    """运行时行为配置"""
     auto_answer: AutoAnswerSettings = field(default_factory=lambda: AutoAnswerSettings())
-    card_expiry: CardExpirySettings = field(default_factory=lambda: CardExpirySettings())
+    notify: NotifySettings = field(default_factory=lambda: NotifySettings())
     operation_panel: OperationPanelSettings = field(default_factory=lambda: OperationPanelSettings())
 
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
         return {
-            "quick_commands" : self.quick_commands.to_dict(),
-            "notify"         : self.notify.to_dict(),
-            "bypass_enabled" : self.bypass_enabled,
-            "custom_commands": self.custom_commands.to_dict(),
-            "auto_answer"    : self.auto_answer.to_dict(),
-            "card_expiry"    : self.card_expiry.to_dict(),
+            "auto_answer": self.auto_answer.to_dict(),
+            "notify": self.notify.to_dict(),
             "operation_panel": self.operation_panel.to_dict(),
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "UISettings":
-        """从字典创建"""
-        qc_data = data.get("quick_commands", {})
-        notify_data = data.get("notify", {})
-        cc_data = data.get("custom_commands", {})
-        auto_answer_data = data.get("auto_answer", {})
-        card_expiry_data = data.get("card_expiry", {})
-        operation_panel_data = data.get("operation_panel", {})
+    def from_dict(cls, data: Dict[str, Any]) -> "BehaviorConfig":
         return cls(
-            quick_commands=QuickCommandsConfig.from_dict(qc_data),
-            notify=NotifySettings.from_dict(notify_data),
-            bypass_enabled=data.get("bypass_enabled", False),
-            custom_commands=CustomCommandsConfig.from_dict(cc_data),
-            auto_answer=AutoAnswerSettings.from_dict(auto_answer_data),
-            card_expiry=CardExpirySettings.from_dict(card_expiry_data),
-            operation_panel=OperationPanelSettings.from_dict(operation_panel_data),
+            auto_answer=AutoAnswerSettings.from_dict(data.get("auto_answer", {})),
+            notify=NotifySettings.from_dict(data.get("notify", {})),
+            operation_panel=OperationPanelSettings.from_dict(data.get("operation_panel", {})),
         )
 
 
@@ -732,35 +752,51 @@ class RuntimeConfig:
 class UserConfig:
     """用户配置对象（存储于 config.json，用户可编辑）
 
-    包含用户可自定义的 UI 设置等配置项。
+    配置按功能域分组：
+    - card: 飞书卡片相关配置
+    - session: 会话相关配置
+    - behavior: 运行时行为配置
     """
-    version: str = USER_CONFIG_VERSION
-    ui_settings: UISettings = field(default_factory=lambda: UISettings())
+    version: str = "2.0"
+    card: CardConfig = field(default_factory=lambda: CardConfig())
+    session: SessionConfig = field(default_factory=lambda: SessionConfig())
+    behavior: BehaviorConfig = field(default_factory=lambda: BehaviorConfig())
 
     def is_quick_commands_visible(self) -> bool:
         """判断快捷命令选择器是否应该显示"""
-        return self.ui_settings.quick_commands.is_visible()
+        return self.card.quick_commands.is_visible()
 
     def get_quick_commands(self) -> List[QuickCommand]:
         """获取快捷命令列表"""
-        if self.ui_settings.quick_commands.enabled:
-            return self.ui_settings.quick_commands.commands
+        if self.card.quick_commands.enabled:
+            return self.card.quick_commands.commands
         return []
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "version"    : self.version,
-            "ui_settings": self.ui_settings.to_dict(),
+            "version": self.version,
+            "card": self.card.to_dict(),
+            "session": self.session.to_dict(),
+            "behavior": self.behavior.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "UserConfig":
         """从字典创建"""
-        ui_data = data.get("ui_settings", {})
+        # 检测旧版本配置并输出警告
+        if data.get("version") == "1.0" or "ui_settings" in data:
+            logger.warning(
+                "检测到旧版本配置格式 (v1.0)，请删除 ~/.remote-claude/config.json 后重新启动，"
+                "将自动生成新格式配置。"
+            )
+            return cls()  # 返回默认配置
+
         return cls(
-            version=data.get("version", USER_CONFIG_VERSION),
-            ui_settings=UISettings.from_dict(ui_data),
+            version=data.get("version", "2.0"),
+            card=CardConfig.from_dict(data.get("card", {})),
+            session=SessionConfig.from_dict(data.get("session", {})),
+            behavior=BehaviorConfig.from_dict(data.get("behavior", {})),
         )
 
 
@@ -1030,9 +1066,9 @@ def migrate_legacy_notify_settings() -> None:
 
     处理以下旧文件：
     - ready_notify_count -> runtime.json
-    - ready_notify_enabled -> config.json (ui_settings.notify.ready_enabled)
-    - urgent_notify_enabled -> config.json (ui_settings.notify.urgent_enabled)
-    - bypass_enabled -> config.json (ui_settings.bypass_enabled)
+    - ready_notify_enabled -> config.json (behavior.notify.ready_enabled)
+    - urgent_notify_enabled -> config.json (behavior.notify.urgent_enabled)
+    - bypass_enabled -> config.json (session.bypass)
 
     迁移完成后删除旧文件。
     """
@@ -1071,7 +1107,7 @@ def migrate_legacy_notify_settings() -> None:
     if LEGACY_NOTIFY_ENABLED_FILE.exists():
         try:
             val = LEGACY_NOTIFY_ENABLED_FILE.read_text().strip()
-            user_config.ui_settings.notify.ready_enabled = (val == "1")
+            user_config.behavior.notify.ready_enabled = (val == "1")
             LEGACY_NOTIFY_ENABLED_FILE.unlink()
             logger.info("[迁移] ready_notify_enabled -> config.json")
         except Exception as e:
@@ -1081,7 +1117,7 @@ def migrate_legacy_notify_settings() -> None:
     if LEGACY_URGENT_ENABLED_FILE.exists():
         try:
             val = LEGACY_URGENT_ENABLED_FILE.read_text().strip()
-            user_config.ui_settings.notify.urgent_enabled = (val == "1")
+            user_config.behavior.notify.urgent_enabled = (val == "1")
             LEGACY_URGENT_ENABLED_FILE.unlink()
             logger.info("[迁移] urgent_notify_enabled -> config.json")
         except Exception as e:
@@ -1091,7 +1127,7 @@ def migrate_legacy_notify_settings() -> None:
     if LEGACY_BYPASS_ENABLED_FILE.exists():
         try:
             val = LEGACY_BYPASS_ENABLED_FILE.read_text().strip()
-            user_config.ui_settings.bypass_enabled = (val == "1")
+            user_config.session.bypass = (val == "1")
             LEGACY_BYPASS_ENABLED_FILE.unlink()
             logger.info("[迁移] bypass_enabled -> config.json")
         except Exception as e:
@@ -1152,14 +1188,14 @@ def save_user_config(config: UserConfig) -> None:
 def get_notify_ready_enabled() -> bool:
     """获取就绪通知开关状态"""
     config = load_user_config()
-    return config.ui_settings.notify.ready_enabled
+    return config.behavior.notify.ready_enabled
 
 
 def set_notify_ready_enabled(enabled: bool) -> None:
     """设置就绪通知开关状态（原子更新）"""
 
     def mutator(config: UserConfig):
-        config.ui_settings.notify.ready_enabled = enabled
+        config.behavior.notify.ready_enabled = enabled
         logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
         return None
 
@@ -1175,14 +1211,14 @@ def set_notify_ready_enabled(enabled: bool) -> None:
 def get_notify_urgent_enabled() -> bool:
     """获取加急通知开关状态"""
     config = load_user_config()
-    return config.ui_settings.notify.urgent_enabled
+    return config.behavior.notify.urgent_enabled
 
 
 def set_notify_urgent_enabled(enabled: bool) -> None:
     """设置加急通知开关状态（原子更新）"""
 
     def mutator(config: UserConfig):
-        config.ui_settings.notify.urgent_enabled = enabled
+        config.behavior.notify.urgent_enabled = enabled
         logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
         return None
 
@@ -1198,14 +1234,14 @@ def set_notify_urgent_enabled(enabled: bool) -> None:
 def get_bypass_enabled() -> bool:
     """获取新会话 bypass 开关状态"""
     config = load_user_config()
-    return config.ui_settings.bypass_enabled
+    return config.session.bypass
 
 
 def set_bypass_enabled(enabled: bool) -> None:
     """设置新会话 bypass 开关状态（原子更新）"""
 
     def mutator(config: UserConfig):
-        config.ui_settings.bypass_enabled = enabled
+        config.session.bypass = enabled
         logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
         return None
 
@@ -1245,19 +1281,19 @@ def increment_ready_notify_count() -> int:
 def get_auto_answer_delay() -> int:
     """获取自动应答延迟时间（秒）"""
     config = load_user_config()
-    return config.ui_settings.auto_answer.default_delay_seconds
+    return config.behavior.auto_answer.default_delay_seconds
 
 
 def get_card_expiry_enabled() -> bool:
     """获取卡片过期功能是否启用"""
     config = load_user_config()
-    return config.ui_settings.card_expiry.enabled
+    return config.card.expiry.enabled
 
 
 def get_card_expiry_seconds() -> int:
     """获取卡片过期时间（秒）"""
     config = load_user_config()
-    return config.ui_settings.card_expiry.expiry_seconds
+    return config.card.expiry.expiry_seconds
 
 
 # ============== 自定义命令配置访问函数 ==============
@@ -1265,13 +1301,13 @@ def get_card_expiry_seconds() -> int:
 def get_custom_commands() -> List[CustomCommand]:
     """获取自定义命令列表"""
     config = load_user_config()
-    return config.ui_settings.custom_commands.commands
+    return config.session.custom_commands.commands
 
 
 def get_custom_command(name: str) -> Optional[str]:
     """根据名称获取自定义命令"""
     config = load_user_config()
-    return config.ui_settings.custom_commands.get_command(name)
+    return config.session.custom_commands.get_command(name)
 
 
 def get_cli_command(cli_type: str) -> str:
@@ -1289,7 +1325,7 @@ def get_cli_command(cli_type: str) -> str:
     config = load_user_config()
 
     # 优先从自定义命令配置获取（按 cli_type 匹配）
-    custom_cmd = config.ui_settings.custom_commands.get_command_by_cli_type(cli_type_str)
+    custom_cmd = config.session.custom_commands.get_command_by_cli_type(cli_type_str)
     if custom_cmd:
         logger.debug(f"使用自定义命令: {cli_type_str} -> {custom_cmd}")
         return custom_cmd
@@ -1306,7 +1342,7 @@ def set_custom_commands(commands: List[CustomCommand]) -> None:
     """设置自定义命令列表（原子更新）"""
 
     def mutator(config: UserConfig):
-        config.ui_settings.custom_commands.commands = commands
+        config.session.custom_commands.commands = commands
         logger.info(f"已保存 {len(commands)} 个自定义命令")
         return None
 
@@ -1322,7 +1358,7 @@ def set_custom_commands(commands: List[CustomCommand]) -> None:
 def is_custom_commands_enabled() -> bool:
     """检查自定义命令功能是否启用"""
     config = load_user_config()
-    return config.ui_settings.custom_commands.is_visible()
+    return config.session.custom_commands.is_visible()
 
 
 # ============== Session 自动应答状态管理 ==============
@@ -1383,5 +1419,5 @@ def get_vague_commands_config() -> tuple:
         tuple: (vague_commands: List[str], vague_command_prompt: str)
     """
     config = load_user_config()
-    auto_answer = config.ui_settings.auto_answer
+    auto_answer = config.behavior.auto_answer
     return auto_answer.vague_commands, auto_answer.vague_command_prompt

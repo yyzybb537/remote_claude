@@ -27,7 +27,9 @@ from utils.runtime_config import (
     QuickCommand,
     QuickCommandsConfig,
     OperationPanelSettings,
-    UISettings,
+    CardConfig,
+    SessionConfig,
+    BehaviorConfig,
     load_runtime_config,
     save_runtime_config,
     load_user_config,
@@ -243,8 +245,8 @@ def test_save_config_with_quick_commands():
         import utils.runtime_config as config_module
 
         config = UserConfig()
-        config.ui_settings.quick_commands.enabled = True
-        config.ui_settings.quick_commands.commands = [
+        config.card.quick_commands.enabled = True
+        config.card.quick_commands.commands = [
             QuickCommand("清空", "/clear", "🗑️"),
             QuickCommand("退出", "/exit", "🚪")
         ]
@@ -253,8 +255,8 @@ def test_save_config_with_quick_commands():
 
         # 验证快捷命令保存正确
         data = json.loads(config_module.USER_CONFIG_FILE.read_text(encoding="utf-8"))
-        assert data["ui_settings"]["quick_commands"]["enabled"] is True
-        assert len(data["ui_settings"]["quick_commands"]["commands"]) == 2
+        assert data["card"]["quick_commands"]["enabled"] is True
+        assert len(data["card"]["quick_commands"]["commands"]) == 2
         print("✓ 配置保存：快捷命令配置")
     finally:
         env.teardown()
@@ -267,10 +269,10 @@ def test_load_user_config_from_file():
     try:
         import utils.runtime_config as config_module
 
-        # 创建用户配置文件
+        # 创建用户配置文件 (v2.0 格式)
         data = {
-            "version": "1.0",
-            "ui_settings": {
+            "version": "2.0",
+            "card": {
                 "quick_commands": {
                     "enabled": True,
                     "commands": [
@@ -278,7 +280,9 @@ def test_load_user_config_from_file():
                         {"label": "清空", "value": "/clear", "icon": "🗑️"}
                     ]
                 }
-            }
+            },
+            "session": {},
+            "behavior": {}
         }
         config_module.USER_CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False))
 
@@ -468,7 +472,7 @@ def test_quick_commands_visibility_disabled():
 def test_quick_commands_visibility_enabled_no_commands():
     """测试启用但无命令时不可见"""
     config = UserConfig()
-    config.ui_settings.quick_commands.enabled = True
+    config.card.quick_commands.enabled = True
     assert not config.is_quick_commands_visible()
     print("✓ 快捷命令可见性：启用但无命令")
 
@@ -476,8 +480,8 @@ def test_quick_commands_visibility_enabled_no_commands():
 def test_quick_commands_visibility_enabled_with_commands():
     """测试启用且有命令时可见"""
     config = UserConfig()
-    config.ui_settings.quick_commands.enabled = True
-    config.ui_settings.quick_commands.commands = [
+    config.card.quick_commands.enabled = True
+    config.card.quick_commands.commands = [
         QuickCommand("清空", "/clear")
     ]
     assert config.is_quick_commands_visible()
@@ -487,8 +491,8 @@ def test_quick_commands_visibility_enabled_with_commands():
 def test_quick_commands_visibility_disabled_with_commands():
     """测试禁用但有命令时不可见"""
     config = UserConfig()
-    config.ui_settings.quick_commands.enabled = False
-    config.ui_settings.quick_commands.commands = [
+    config.card.quick_commands.enabled = False
+    config.card.quick_commands.commands = [
         QuickCommand("清空", "/clear")
     ]
     assert not config.is_quick_commands_visible()
@@ -498,8 +502,8 @@ def test_quick_commands_visibility_disabled_with_commands():
 def test_get_quick_commands():
     """测试获取快捷命令列表"""
     config = UserConfig()
-    config.ui_settings.quick_commands.enabled = True
-    config.ui_settings.quick_commands.commands = [
+    config.card.quick_commands.enabled = True
+    config.card.quick_commands.commands = [
         QuickCommand("清空", "/clear", "🗑️"),
         QuickCommand("退出", "/exit", "🚪")
     ]
@@ -514,8 +518,8 @@ def test_get_quick_commands():
 def test_get_quick_commands_disabled():
     """测试禁用时获取快捷命令返回空列表"""
     config = UserConfig()
-    config.ui_settings.quick_commands.enabled = False
-    config.ui_settings.quick_commands.commands = [
+    config.card.quick_commands.enabled = False
+    config.card.quick_commands.commands = [
         QuickCommand("清空", "/clear")
     ]
 
@@ -611,7 +615,7 @@ def test_operation_panel_defaults():
 def test_operation_panel_roundtrip_serialization():
     """测试 operation_panel 序列化/反序列化 roundtrip"""
     config = UserConfig(
-        ui_settings=UISettings(
+        behavior=BehaviorConfig(
             operation_panel=OperationPanelSettings(
                 show_builtin_keys=False,
                 show_custom_commands=False,
@@ -623,9 +627,9 @@ def test_operation_panel_roundtrip_serialization():
     data = config.to_dict()
     loaded = UserConfig.from_dict(data)
 
-    assert loaded.ui_settings.operation_panel.show_builtin_keys is False
-    assert loaded.ui_settings.operation_panel.show_custom_commands is False
-    assert loaded.ui_settings.operation_panel.enabled_keys == ["esc", "ctrl_o", "up"]
+    assert loaded.behavior.operation_panel.show_builtin_keys is False
+    assert loaded.behavior.operation_panel.show_custom_commands is False
+    assert loaded.behavior.operation_panel.enabled_keys == ["esc", "ctrl_o", "up"]
     print("✓ operation_panel roundtrip")
 
 
