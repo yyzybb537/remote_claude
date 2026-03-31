@@ -1191,7 +1191,7 @@ def test_shortcut_entry_scripts_handle_help_without_starting_session(tmp_path: P
         )
 
         assert result.returncode == 0, (rel, result.stdout, result.stderr)
-        assert "usage: remote_claude.py start" in result.stdout, (rel, result.stdout)
+        assert "Remote Claude 快捷命令" in result.stdout, (rel, result.stdout)
         assert "start 子命令不支持透传帮助参数" not in result.stdout, (rel, result.stdout)
 
 
