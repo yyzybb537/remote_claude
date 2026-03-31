@@ -38,8 +38,8 @@ from utils.runtime_config import (
     get_uv_path,
     set_uv_path,
     validate_uv_path,
-    CURRENT_VERSION,
-    USER_CONFIG_VERSION,
+    RUNTIME_CURRENT_VERSION,
+    USER_CURRENT_VERSION,
     MAX_SESSION_MAPPINGS,
     USER_DATA_DIR,
     RUNTIME_CONFIG_FILE,
@@ -106,7 +106,7 @@ def test_load_config_not_exists():
     env.setup()
     try:
         config = load_runtime_config()
-        assert config.version == CURRENT_VERSION
+        assert config.version == RUNTIME_CURRENT_VERSION
         assert config.session_mappings == {}
         assert config.lark_group_mappings == {}
         print("✓ 配置加载：文件不存在返回默认配置")
@@ -150,7 +150,7 @@ def test_load_config_corrupted():
         config = load_runtime_config()
 
         # 应返回默认配置
-        assert config.version == CURRENT_VERSION
+        assert config.version == RUNTIME_CURRENT_VERSION
         assert config.session_mappings == {}
 
         # 损坏文件应被备份（备份文件名格式: .json.bak.{timestamp}）
@@ -269,9 +269,9 @@ def test_load_user_config_from_file():
     try:
         import utils.runtime_config as config_module
 
-        # 创建用户配置文件 (v2.0 格式)
+        # 创建用户配置文件
         data = {
-            "version": "2.0",
+            "version": "1.0",
             "card": {
                 "quick_commands": {
                     "enabled": True,
@@ -308,7 +308,7 @@ def test_load_user_config_not_exists():
             config_module.USER_CONFIG_FILE.unlink()
 
         config = load_user_config()
-        assert config.version == USER_CONFIG_VERSION
+        assert config.version == USER_CURRENT_VERSION
         assert not config.is_quick_commands_visible()
         assert config.get_quick_commands() == []
         print("✓ 用户配置加载：文件不存在返回默认配置")

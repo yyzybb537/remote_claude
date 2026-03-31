@@ -133,10 +133,31 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 
 | 文件 | 用途 |
 |------|------|
-| `~/.remote-claude/config.json` | 用户可编辑配置（快捷命令、UI 设置） |
+| `~/.remote-claude/config.json` | 用户可编辑配置（卡片设置、会话设置、行为设置） |
 | `~/.remote-claude/runtime.json` | 程序运行时状态（会话映射、群组绑定） |
 | `~/.remote-claude/tokens/<session>.json` | 会话 Token（远程模式，权限 0600） |
 | `~/.remote-claude/remote_connections.json` | 远程连接配置 |
+
+**config.json 配置结构（v1.0）：**
+
+```json
+{
+  "version": "1.0",
+  "card": {
+    "quick_commands": { ... },
+    "expiry": { ... }
+  },
+  "session": {
+    "bypass": false,
+    "custom_commands": { ... }
+  },
+  "behavior": {
+    "auto_answer": { ... },
+    "notify": { ... },
+    "operation_panel": { ... }
+  }
+}
+```
 
 ### 循环依赖处理
 

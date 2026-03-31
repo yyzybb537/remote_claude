@@ -1,5 +1,5 @@
 {
-  "version": "2.0",
+  "version": "1.0",
   "card": {
     "quick_commands": {
       "enabled": false,
@@ -41,6 +41,7 @@
       "show_builtin_keys": true,
       "show_custom_commands": true,
       "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
+    },
     "random": false
   }
 }

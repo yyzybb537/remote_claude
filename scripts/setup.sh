@@ -431,10 +431,10 @@ migrate_legacy_notify_files() {
                 value=$(cat "$LEGACY_NOTIFY_ENABLED" 2>/dev/null | tr -d '[:space:]')
                 if [ "$value" = "1" ]; then
                     tmp_file=$(mktemp)
-                    jq '.ui_settings.notify.ready_enabled = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                    jq '.behavior.notify.ready_enabled = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
                 elif [ "$value" = "0" ]; then
                     tmp_file=$(mktemp)
-                    jq '.ui_settings.notify.ready_enabled = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                    jq '.behavior.notify.ready_enabled = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
                 fi
                 rm -f "$LEGACY_NOTIFY_ENABLED"
                 migrated_count=$((migrated_count + 1))
@@ -446,10 +446,10 @@ migrate_legacy_notify_files() {
                 value=$(cat "$LEGACY_URGENT_ENABLED" 2>/dev/null | tr -d '[:space:]')
                 if [ "$value" = "1" ]; then
                     tmp_file=$(mktemp)
-                    jq '.ui_settings.notify.urgent_enabled = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                    jq '.behavior.notify.urgent_enabled = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
                 elif [ "$value" = "0" ]; then
                     tmp_file=$(mktemp)
-                    jq '.ui_settings.notify.urgent_enabled = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                    jq '.behavior.notify.urgent_enabled = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
                 fi
                 rm -f "$LEGACY_URGENT_ENABLED"
                 migrated_count=$((migrated_count + 1))
@@ -461,10 +461,10 @@ migrate_legacy_notify_files() {
                 value=$(cat "$LEGACY_BYPASS_ENABLED" 2>/dev/null | tr -d '[:space:]')
                 if [ "$value" = "1" ]; then
                     tmp_file=$(mktemp)
-                    jq '.ui_settings.bypass_enabled = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                    jq '.session.bypass = true' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
                 elif [ "$value" = "0" ]; then
                     tmp_file=$(mktemp)
-                    jq '.ui_settings.bypass_enabled = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+                    jq '.session.bypass = false' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
                 fi
                 rm -f "$LEGACY_BYPASS_ENABLED"
                 migrated_count=$((migrated_count + 1))
@@ -544,7 +544,7 @@ migrate_claude_command() {
         fi
 
         # 检查 custom_commands 是否已配置
-        existing_cmd=$(jq -r '.ui_settings.custom_commands.commands[0].command // empty' "$CONFIG_FILE" 2>/dev/null)
+        existing_cmd=$(jq -r '.session.custom_commands.commands[0].command // empty' "$CONFIG_FILE" 2>/dev/null)
 
         if [ -n "$existing_cmd" ] && [ "$existing_cmd" != "claude" ]; then
             print_info "custom_commands 已配置命令: $existing_cmd，跳过迁移"
@@ -552,8 +552,8 @@ migrate_claude_command() {
             # 更新 custom_commands 配置
             tmp_file=$(mktemp)
             jq --arg cmd "$claude_cmd" '
-                .ui_settings.custom_commands.enabled = true |
-                .ui_settings.custom_commands.commands[0].command = $cmd
+                .session.custom_commands.enabled = true |
+                .session.custom_commands.commands[0].command = $cmd
             ' "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
             print_success "已迁移 CLAUDE_COMMAND='$claude_cmd' 到 custom_commands 配置"
         fi

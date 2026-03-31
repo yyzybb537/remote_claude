@@ -420,7 +420,7 @@ EOF
 
     local tmp_file=$(mktemp)
     # 设置 enabled=true，并将命令改为一个不存在的绝对路径
-    jq '.ui_settings.custom_commands.enabled = true | .ui_settings.custom_commands.commands = [{"name": "Invalid", "cli_type": "claude", "command": "/nonexistent/path/to/claude-invalid", "description": "Invalid command for testing"}]' \
+    jq '.session.custom_commands.enabled = true | .session.custom_commands.commands = [{"name": "Invalid", "cli_type": "claude", "command": "/nonexistent/path/to/claude-invalid", "description": "Invalid command for testing"}]' \
         "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
 
     local negative_session="docker-negative-test"

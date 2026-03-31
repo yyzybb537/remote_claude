@@ -26,8 +26,8 @@ from server.biz_enum import CliType
 logger = logging.getLogger('RuntimeConfig')
 
 # 常量
-CURRENT_VERSION = "1.0"
-USER_CONFIG_VERSION = "2.0"
+RUNTIME_CURRENT_VERSION = "1.0"
+USER_CURRENT_VERSION = "1.0"
 MAX_SESSION_MAPPINGS = 500
 MAX_BACKUP_FILES = 2  # 保留最近 2 个备份文件
 OPERATION_PANEL_ALLOWED_KEYS = {"up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"}
@@ -641,7 +641,7 @@ class RuntimeConfig:
 
     仅包含运行时状态，不包含用户可编辑配置。
     """
-    version: str = CURRENT_VERSION
+    version: str = RUNTIME_CURRENT_VERSION
     uv_path: Optional[str] = None  # uv 可执行文件路径
     session_mappings: Dict[str, str] = field(default_factory=dict)
     lark_group_mappings: Dict[str, str] = field(default_factory=dict)
@@ -737,7 +737,7 @@ class RuntimeConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "RuntimeConfig":
         """从字典创建"""
         return cls(
-            version=data.get("version", CURRENT_VERSION),
+            version=data.get("version", RUNTIME_CURRENT_VERSION),
             uv_path=data.get("uv_path"),
             session_mappings=data.get("session_mappings", {}),
             lark_group_mappings=data.get("lark_group_mappings", {}),
@@ -757,7 +757,7 @@ class UserConfig:
     - session: 会话相关配置
     - behavior: 运行时行为配置
     """
-    version: str = "2.0"
+    version: str = USER_CURRENT_VERSION
     card: CardConfig = field(default_factory=lambda: CardConfig())
     session: SessionConfig = field(default_factory=lambda: SessionConfig())
     behavior: BehaviorConfig = field(default_factory=lambda: BehaviorConfig())
@@ -784,16 +784,8 @@ class UserConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "UserConfig":
         """从字典创建"""
-        # 检测旧版本配置并输出警告
-        if data.get("version") == "1.0" or "ui_settings" in data:
-            logger.warning(
-                "检测到旧版本配置格式 (v1.0)，请删除 ~/.remote-claude/config.json 后重新启动，"
-                "将自动生成新格式配置。"
-            )
-            return cls()  # 返回默认配置
-
         return cls(
-            version=data.get("version", "2.0"),
+            version=data.get("version", "1.0"),
             card=CardConfig.from_dict(data.get("card", {})),
             session=SessionConfig.from_dict(data.get("session", {})),
             behavior=BehaviorConfig.from_dict(data.get("behavior", {})),
@@ -1136,6 +1128,33 @@ def migrate_legacy_notify_settings() -> None:
 
     save_user_config(user_config)
     logger.info("[迁移] 开关设置迁移完成")
+
+
+def migrate_user_config_version(config: UserConfig, from_version: str, to_version: str) -> UserConfig:
+    """迁移用户配置版本（占位函数）
+
+    当配置版本升级时，在此函数中实现数据迁移逻辑。
+
+    Args:
+        config: 当前配置对象
+        from_version: 源版本号
+        to_version: 目标版本号
+
+    Returns:
+        迁移后的配置对象
+
+    Example:
+        未来版本升级示例（v1.0 -> v2.0）：
+        if from_version == "1.0" and to_version == "2.0":
+            # 迁移逻辑：例如重命名字段、调整结构等
+            config.new_field = config.old_field
+            config.old_field = None
+            config.version = "2.0"
+            logger.info("[迁移] 配置已从 v1.0 升级到 v2.0")
+    """
+    # 当前版本为 1.0，无需迁移
+    # 未来版本升级时在此添加迁移逻辑
+    return config
 
 
 # ============== 用户配置加载/保存函数 ==============
