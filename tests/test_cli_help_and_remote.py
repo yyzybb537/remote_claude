@@ -225,3 +225,35 @@ def test_cmd_kill_remote_logs_tracing(monkeypatch, caplog):
         "stage=remote_args_parsed" in record.message and "command=kill" in record.message
         for record in caplog.records
     )
+
+
+def test_cmd_kill_deletes_token_file(monkeypatch, tmp_path):
+    args = SimpleNamespace(remote=False, name="demo")
+    token_file = tmp_path / "demo_token.json"
+    token_file.write_text("token")
+
+    monkeypatch.setattr(remote_claude, "is_session_active", lambda session_name: True)
+    monkeypatch.setattr(remote_claude, "tmux_session_exists", lambda session_name: False)
+    monkeypatch.setattr(remote_claude, "cleanup_session", lambda session_name: None)
+
+    class FakeTokenManager:
+        def __init__(self, session_name):
+            self.session_name = session_name
+
+        def delete_token_file(self):
+            token_file.unlink(missing_ok=True)
+            return True
+
+    monkeypatch.setattr("server.token_manager.TokenManager", FakeTokenManager)
+
+    removed_sessions = []
+    monkeypatch.setattr(
+        "utils.runtime_config.remove_session_mapping",
+        lambda session_name: removed_sessions.append(session_name),
+    )
+
+    result = remote_claude.cmd_kill(args)
+
+    assert result == 0
+    assert token_file.exists() is False
+    assert removed_sessions == ["demo"]

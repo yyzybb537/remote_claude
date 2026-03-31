@@ -487,10 +487,10 @@ test_basic_commands() {
     # 验证 cla 脚本中的关键逻辑
     log_info "验证 cla 脚本中的关键逻辑..."
 
-    if grep -q "uv run" "bin/cla"; then
-        log_success "cla 脚本包含 uv run"
+    if grep -q "_remote_claude_python" "bin/cla"; then
+        log_success "cla 脚本包含 _remote_claude_python"
     else
-        log_error "cla 脚本缺少 uv run"
+        log_error "cla 脚本缺少 _remote_claude_python"
         return 1
     fi
 
@@ -598,6 +598,7 @@ run_unit_tests() {
         "tests/test_base_client.py"
         "tests/test_local_client.py"
         "tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional"
+        "tests/test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently"
         "tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required"
         "tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details"
         "tests/test_entry_lazy_init.py"

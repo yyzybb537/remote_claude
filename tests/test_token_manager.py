@@ -84,3 +84,21 @@ class TestTokenManager:
         # 验证应失败
         manager2 = TokenManager("test-session", data_dir=tmp_path)
         assert manager2.verify_token(token) is False
+
+    def test_delete_token_file_removes_existing_file(self, tmp_path):
+        """测试删除已存在的 token 文件"""
+        manager = TokenManager("test-session", data_dir=tmp_path)
+        manager.get_or_create_token()
+
+        token_file = tmp_path / "test-session_token.json"
+        assert token_file.exists()
+
+        assert manager.delete_token_file() is True
+        assert token_file.exists() is False
+
+    def test_delete_token_file_is_idempotent_when_missing(self, tmp_path):
+        """测试删除不存在的 token 文件时保持幂等"""
+        manager = TokenManager("test-session", data_dir=tmp_path)
+
+        assert manager.delete_token_file() is True
+        assert (tmp_path / "test-session_token.json").exists() is False

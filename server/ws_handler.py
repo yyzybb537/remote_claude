@@ -258,6 +258,7 @@ class WebSocketHandler:
 
             # 清理文件
             cleanup_session(self.session_name)
+            self.token_manager.delete_token_file()
 
             # 设置关闭标志
             if hasattr(self.server, '_shutdown_event'):

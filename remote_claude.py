@@ -619,6 +619,9 @@ def cmd_kill(args):
 
     # 清理文件
     cleanup_session(session_name)
+
+    from server.token_manager import TokenManager
+    TokenManager(session_name).delete_token_file()
     print("  - 文件已清理")
 
     # 删除会话映射

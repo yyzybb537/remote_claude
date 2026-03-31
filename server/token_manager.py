@@ -96,6 +96,22 @@ class TokenManager:
 
         return secrets.compare_digest(self._token, token)
 
+    def delete_token_file(self) -> bool:
+        """删除当前会话 token 文件。
+
+        Returns:
+            True 如果删除成功或文件不存在，False 如果删除失败
+        """
+        self._token = None
+        self._file_hash = None
+
+        try:
+            self.token_file.unlink(missing_ok=True)
+            return True
+        except OSError as e:
+            logger.warning(f"删除 Token 文件失败: {e}")
+            return False
+
     def _load_token(self) -> Optional[dict]:
         """从文件加载 token
 

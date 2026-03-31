@@ -177,6 +177,7 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - **runtime 初始化语义：** `runtime.json` 仅在安装成功路径执行初始化，失败路径不创建
 - **目录变量约定：** 路径真相源仅 `PROJECT_DIR/SCRIPT_DIR`，并由 `scripts/_common.sh` 统一收敛
 - **脚本入口约定：** `scripts/*.sh` 必须使用统一入口模板（先解析脚本真实路径并定义 `PROJECT_DIR`，再 source `scripts/_common.sh`）
+- **bin 启动入口约定：** `bin/remote-claude`、`bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx` 在完成 `scripts/_common.sh` 的 lazy init 后，统一通过 `_remote_claude_python` 进入 `remote_claude.py`；脚本内部不要再次触发 `uv run`
 - **check-env 调用约定：** 严禁向 `scripts/check-env.sh` 传目录参数；历史传参必须显式报错退出
 - **uv 安装策略：** 优先使用 `pip --user` 安装；若失败则按多来源 fallback（官方脚本、conda/mamba、brew）自动恢复
 

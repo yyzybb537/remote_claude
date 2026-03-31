@@ -938,7 +938,16 @@ def _prepare_entry_script_project(tmp_path: Path, *entry_names: str) -> tuple[Pa
     (home / ".remote-claude" / "runtime.json").write_text("{}\n", encoding="utf-8")
     (project_dir / "package.json").write_text('{"name":"remote-claude","version":"0.test"}\n', encoding="utf-8")
     (project_dir / "pyproject.toml").write_text('[project]\nname="x"\nversion="0.1.0"\n', encoding="utf-8")
-    (project_dir / ".venv").mkdir()
+    python_bin_dir = project_dir / ".venv" / "bin"
+    python_bin_dir.mkdir(parents=True)
+    python_entry = python_bin_dir / "python3"
+    python_entry.write_text(
+        "#!/bin/sh\n"
+        "printf 'CWD:%s\\n' \"$PWD\"\n"
+        "printf 'PY:%s\\n' \"$*\"\n",
+        encoding="utf-8",
+    )
+    python_entry.chmod(0o755)
 
     bindir = tmp_path / "fakebin"
     bindir.mkdir()
@@ -961,8 +970,9 @@ def test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_option
     assert result.returncode == 0, result.stderr
     assert "飞书客户端尚未配置" not in result.stdout
     assert "飞书客户端未配置，跳过飞书启动。" in result.stdout
-    assert "UV:run remote-claude lark start" not in result.stdout
-    assert "UV:run remote-claude start" in result.stdout
+    assert "PY:" in result.stdout
+    assert "remote_claude.py start" in result.stdout
+    assert "remote_claude.py lark start" not in result.stdout
 
 
 def test_cla_session_name_uses_startup_dir_not_project_dir(tmp_path: Path):
@@ -981,15 +991,15 @@ def test_cla_session_name_uses_startup_dir_not_project_dir(tmp_path: Path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert f"UV:run remote-claude start {workspace_dir}_" in result.stdout
-    assert f"UV:run remote-claude start {project_dir}_" not in result.stdout
+    assert f"remote_claude.py start {workspace_dir}_" in result.stdout
+    assert f"remote_claude.py start {project_dir}_" not in result.stdout
 
 
-def test_cla_executes_uv_from_startup_dir(tmp_path: Path):
+def test_cla_executes_project_python_from_startup_dir(tmp_path: Path):
     project_dir, bin_dir, _, bindir = _prepare_entry_script_project(tmp_path, "cla")
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
-    (bindir / "uv").write_text("#!/bin/sh\nprintf 'CWD:%s\\n' \"$PWD\"\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
+    (bindir / "uv").write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
     (bindir / "uv").chmod(0o755)
 
     result = subprocess.run(
@@ -1003,13 +1013,14 @@ def test_cla_executes_uv_from_startup_dir(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert f"CWD:{workspace_dir}" in result.stdout
     assert f"CWD:{project_dir}" not in result.stdout
+    assert "PY:" in result.stdout
 
 
 def test_remote_claude_preserves_caller_cwd_for_normal_commands(tmp_path: Path):
     project_dir, bin_dir, _, bindir = _prepare_entry_script_project(tmp_path, "remote-claude")
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
-    (bindir / "uv").write_text("#!/bin/sh\nprintf 'CWD:%s\\n' \"$PWD\"\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
+    (bindir / "uv").write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
     (bindir / "uv").chmod(0o755)
 
     result = subprocess.run(
@@ -1023,7 +1034,8 @@ def test_remote_claude_preserves_caller_cwd_for_normal_commands(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert f"CWD:{workspace_dir}" in result.stdout
     assert f"CWD:{project_dir}" not in result.stdout
-    assert "UV:run remote-claude start demo" in result.stdout
+    assert "PY:" in result.stdout
+    assert "remote_claude.py start demo" in result.stdout
 
 
 def test_entry_script_errors_when_startup_dir_is_invalid(tmp_path: Path):
@@ -1103,6 +1115,7 @@ fi
 def test_docker_test_script_runs_startup_regression_cases():
     content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
     assert "test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional" in content
+    assert "test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently" in content
     assert "test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required" in content
     assert "test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details" in content
 
@@ -1152,6 +1165,15 @@ def test_entry_scripts_capture_and_use_startup_dir_consistently():
         assert 'cd "$PROJECT_DIR"' not in content
         assert 'cd "$STARTUP_DIR"' in content
         assert '"${STARTUP_DIR}_$(date +%m%d_%H%M%S)"' in content
+
+
+def test_bin_entry_scripts_use_remote_claude_python_consistently():
+    for rel in ENTRY_SCRIPTS:
+        content = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert "_remote_claude_python" in content
+
+    remote_claude_content = (REPO_ROOT / "bin/remote-claude").read_text(encoding="utf-8")
+    assert "exec uv run python3" not in remote_claude_content
 
 
 def test_shortcut_entry_scripts_handle_help_without_starting_session(tmp_path: Path):

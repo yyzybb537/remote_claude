@@ -2,6 +2,13 @@
 
 本文档描述 Remote Claude 项目的测试策略、分层和执行方法。
 
+## 本次变更补充
+
+- 验证 `README.md` 的快速开始以 `cla / cl / cx / cdx` 等 shell 入口为主，不再把 Python 启动方式暴露为日常用法
+- 验证 `server/token_manager.py` 统一负责 token 文件删除，且删除语义为幂等
+- 验证本地 `remote-claude kill <会话名>` 会删除对应 token 文件
+- 验证远程控制 `kill` 同样会删除对应 token 文件
+
 ## 测试分层
 
 测试分为三层，从底层到顶层依次覆盖：
@@ -237,6 +244,7 @@ echo "快速回归测试通过"
 | 场景 | 验证点 | 命令 |
 |------|--------|------|
 | 飞书未配置时允许本地启动 | `cla/cl/cx/cdx` 不因飞书缺失阻塞本地会话启动 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q` |
+| bin 入口统一走项目 Python | `bin/remote-claude` 与 `bin/cla/cl/cx/cdx` 完成 lazy init 后统一调用 `_remote_claude_python`，不再保留 `exec uv run python3` 特例 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently -q` |
 | 显式跳过飞书配置检查 | `REMOTE_CLAUDE_REQUIRE_FEISHU=0` 时 `check-env.sh` 直接返回成功 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required -q` |
 | lazy init 失败信息可见 | 失败时 stderr 保留 setup 错误细节并提示安装日志路径 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details -q` |
 

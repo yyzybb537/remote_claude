@@ -137,6 +137,25 @@ class TestWebSocketHandler:
         assert mock_server._shutdown_event.is_set()
 
     @pytest.mark.anyio
+    async def test_handle_control_kill_deletes_token_file(self, tmp_path):
+        """测试 kill 控制命令会删除 token 文件"""
+        from server.ws_handler import WebSocketHandler
+        mock_server = Mock()
+        mock_server._shutdown_event = asyncio.Event()
+
+        handler = WebSocketHandler(mock_server, "test-session", data_dir=tmp_path)
+        handler.token_manager.get_or_create_token()
+
+        token_file = tmp_path / "test-session_token.json"
+        assert token_file.exists()
+
+        response = await handler._handle_control("kill")
+
+        assert response.success is True
+        assert token_file.exists() is False
+        assert mock_server._shutdown_event.is_set()
+
+    @pytest.mark.anyio
     async def test_handle_control_unknown(self, tmp_path):
         """测试未知控制命令"""
         from server.ws_handler import WebSocketHandler

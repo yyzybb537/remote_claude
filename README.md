@@ -43,12 +43,23 @@ curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/script
 
 ### 启动
 
+安装完成后，日常直接使用这些 shell 命令即可：
+
 | 快捷命令 | 说明 |
 |------|------|
 | `cla` | 启动 Claude（会话名：当前目录路径+时间戳） |
 | `cl` | 同 `cla`，跳过权限确认 |
 | `cx` | 启动 Codex（跳过权限确认） |
 | `cdx` | 同 `cx`，需确认权限 |
+
+```bash
+cla        # 在当前目录启动 Claude 会话
+cl         # 启动 Claude，并跳过权限确认
+cx         # 在当前目录启动 Codex，会跳过权限
+cdx        # 在当前目录启动 Codex，并保留权限确认
+```
+
+首次运行这些命令时，会自动检查并准备所需运行环境；无需手动执行 Python 启动命令。
 
 ### 从其他终端连接
 

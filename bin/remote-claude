@@ -63,6 +63,5 @@ fi
 
 # 在启动目录执行入口点，保持调用方 cwd
 cd "$STARTUP_DIR" || exit 1
-_assert_not_nested_uv_run || exit 1
-export REMOTE_CLAUDE_TOPLEVEL_UV_RUN=1
-exec uv run python3 "$PROJECT_DIR/remote_claude.py" "$@"
+_remote_claude_python "$@"
+exit $?
