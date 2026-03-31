@@ -119,19 +119,19 @@ def _safe_filename(session_name: str) -> str:
     return truncated
 
 
-def resolve_session_name(original_path: str, config: "RuntimeConfig" = None) -> str:
+def resolve_session_name(original_path: str, state: "State" = None) -> str:
     """解析会话名称，处理截断和冲突
 
     Args:
         original_path: 原始会话名/路径
-        config: 运行时配置对象（可选，用于映射存储）
+        state: 运行时状态对象（可选，用于映射存储）
 
     Returns:
         最终的会话名（已处理截断和冲突）
     """
     # 延迟导入避免循环依赖：session.py ← → runtime_config.py
     # runtime_config.py 在模块级导入了 session.py 的 USER_DATA_DIR
-    from utils.runtime_config import load_runtime_config, save_runtime_config
+    from utils.runtime_config import load_state, save_state
 
     # 生成截断后的名称
     truncated = _safe_filename(original_path)
@@ -140,12 +140,12 @@ def resolve_session_name(original_path: str, config: "RuntimeConfig" = None) -> 
     if truncated == original_path.replace('/', '_').replace('.', '_'):
         return truncated
 
-    # 需要配置对象进行映射检查
-    if config is None:
-        config = load_runtime_config()
+    # 需要状态对象进行映射检查
+    if state is None:
+        state = load_state()
 
     # 检查映射
-    existing = config.get_session_mapping(truncated)
+    existing = state.get_session_path(truncated)
     result_name = truncated
     need_save = False
 
@@ -161,17 +161,17 @@ def resolve_session_name(original_path: str, config: "RuntimeConfig" = None) -> 
                 f"会话名冲突: '{truncated}' 已映射到 '{existing}'，"
                 f"'{original_path}' 使用完整 MD5 哈希 '{unique_name}'"
             )
-            config.set_session_mapping(unique_name, original_path)
+            state.set_session_path(unique_name, original_path)
             result_name = unique_name
             need_save = True
     else:
         # 新映射，记录并保存
-        config.set_session_mapping(truncated, original_path)
+        state.set_session_path(truncated, original_path)
         need_save = True
         _session_logger.info(f"记录会话映射: {truncated} -> {original_path}")
 
     if need_save:
-        save_runtime_config(config)
+        save_state(state)
 
     return result_name
 

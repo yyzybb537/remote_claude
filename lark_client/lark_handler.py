@@ -36,7 +36,7 @@ from .shared_memory_poller import SharedMemoryPoller, CardSlice
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, ensure_user_data_dir, USER_DATA_DIR, get_process_cwd
 from utils.runtime_config import (
-    load_user_config,
+    load_settings,
     get_notify_ready_enabled,
     set_notify_ready_enabled,
     get_notify_urgent_enabled,
@@ -94,7 +94,7 @@ class LarkHandler:
         # 正在启动中的会话名集合（防止并发点击触发竞态）
         self._starting_sessions: set = set()
         # 用户配置（用于快捷命令选择器等 UI 设置）
-        self._user_config = load_user_config()
+        self._settings = load_settings()
 
     # ── 持久化绑定 ──────────────────────────────────────────────────────────
 
@@ -577,7 +577,7 @@ class LarkHandler:
         snapshot = self._poller.read_snapshot(chat_id) if card_id else None
         if card_id and snapshot:
             loading_card = build_loading_card_from_snapshot(
-                snapshot, session_name, "正在断开连接...", user_config=self._user_config
+                snapshot, session_name, "正在断开连接...", settings=self._settings
             )
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
 
@@ -630,7 +630,7 @@ class LarkHandler:
         # T059: 显示 loading 状态（重连中）
         loading_card = build_loading_card_from_snapshot(
             None, session_name, "正在重新连接...",
-            user_config=self._user_config, disconnected=True
+            settings=self._settings, disconnected=True
         )
         old_slice = self._detached_slices.pop(chat_id, None)
         if old_slice:
@@ -673,7 +673,7 @@ class LarkHandler:
             notify_enabled=get_notify_ready_enabled(),
             urgent_enabled=get_notify_urgent_enabled(),
             bypass_enabled=get_bypass_enabled(),
-            user_config=self._user_config
+            settings=self._settings
         )
         await self._send_or_update_card(chat_id, card, message_id)
 
@@ -735,7 +735,7 @@ class LarkHandler:
                     option_block=snapshot.get("option_block"),
                     session_name=session_name,
                     cli_type=snapshot.get("cli_type", "claude"),
-                    user_config=self._user_config,
+                    settings=self._settings,
                 )
                 if card_id:
                     try:
@@ -795,7 +795,7 @@ class LarkHandler:
             for cid in self._group_chat_ids
             if cid in self._chat_bindings
         }
-        card = build_dir_card(target, entries, sessions_info, tree=tree, session_groups=session_groups, page=page, user_config=self._user_config)
+        card = build_dir_card(target, entries, sessions_info, tree=tree, session_groups=session_groups, page=page, settings=self._settings)
         await self._send_or_update_card(chat_id, card, message_id)
 
     async def _cmd_new_group(self, user_id: str, chat_id: str, args: str,
@@ -1066,7 +1066,7 @@ class LarkHandler:
             # 构建带 loading 状态的卡片（禁用所有选项按钮）
             loading_card = build_loading_card_from_snapshot(
                 initial_snapshot, self._chat_sessions.get(chat_id), "正在选择...",
-                user_config=self._user_config, option_block=initial_ob,
+                settings=self._settings, option_block=initial_ob,
             )
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
 
@@ -1225,7 +1225,7 @@ class LarkHandler:
             # 构建带 loading 状态的卡片
             loading_card = build_loading_card_from_snapshot(
                 snapshot, self._chat_sessions.get(chat_id), f"执行命令 {command}...",
-                user_config=self._user_config,
+                settings=self._settings,
             )
             # 就地更新卡片，不等待结果
             await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, loading_card)
