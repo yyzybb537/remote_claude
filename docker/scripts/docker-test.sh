@@ -81,8 +81,23 @@ print_session_diagnostics() {
 
     local server_log="$HOME/.remote-claude/startup.log"
     if [[ -f "$server_log" ]]; then
-        log_info "=== startup.log（最后 20 行）==="
-        tail -20 "$server_log"
+        log_info "=== startup.log（最后 30 行）==="
+        tail -30 "$server_log"
+    fi
+
+    # 检查 tmux 会话状态
+    log_info "=== tmux 会话状态 ==="
+    tmux list-sessions 2>&1 || echo "没有活跃的 tmux 会话"
+
+    # 检查 socket 目录
+    log_info "=== socket 目录状态 ==="
+    ls -la /tmp/remote-claude/ 2>&1 || echo "socket 目录不存在"
+
+    # 尝试捕获 tmux 会话输出（如果存在）
+    local tmux_name="rc-${session}"
+    if tmux has-session -t "$tmux_name" 2>/dev/null; then
+        log_info "=== tmux 会话 $tmux_name 输出 ==="
+        tmux capture-pane -t "$tmux_name" -p 2>&1 || echo "无法捕获输出"
     fi
 }
 

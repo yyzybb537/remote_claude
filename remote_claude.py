@@ -287,6 +287,7 @@ def cmd_start(args):
         return 1
 
     ensure_socket_dir()
+    ensure_user_data_dir()  # 确保用户数据目录存在（用于 startup.log 等）
 
     # 将当前 shell 的完整环境变量保存到快照文件（权限 0600 防止密钥泄露）
     # tmux new-session 继承的是 tmux 服务器的全局环境，而非调用方 shell 的环境，
