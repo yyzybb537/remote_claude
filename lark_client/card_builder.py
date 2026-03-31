@@ -16,7 +16,7 @@ import json as _json
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from utils.runtime_config import UserConfig
+    from utils.runtime_config import Settings
 
 from server.biz_enum import CliType
 
@@ -36,30 +36,27 @@ except Exception:
     _VERSION = ""
 
 
-def _get_matching_commands(user_config: Optional["UserConfig"]) -> List[Dict[str, str]]:
-    """获取自定义命令列表
+def _get_matching_commands(settings: Optional["Settings"]) -> List[Dict[str, str]]:
+    """获取启动器命令列表
 
     Args:
-        user_config: 用户配置对象
+        settings: 用户设置对象
 
     Returns:
         命令列表，每个元素包含 name 和 command。
-        如果未配置自定义命令，返回默认命令列表。
+        如果未配置启动器，返回默认命令列表。
     """
-    if not user_config or not user_config.session.custom_commands.is_visible():
-        # 未配置自定义命令，返回默认命令列表（Claude 和 Codex）
+    if not settings or not settings.launchers:
+        # 未配置启动器，返回默认命令列表（Claude 和 Codex）
         return [
             {"name": "Claude", "command": str(CliType.CLAUDE)},
             {"name": "Codex", "command": str(CliType.CODEX)},
         ]
 
-    commands = user_config.session.custom_commands.commands
-    matched = [
-        {"name": cmd.name, "command": cmd.command}
-        for cmd in commands
+    return [
+        {"name": launcher.name, "command": launcher.command}
+        for launcher in settings.launchers
     ]
-
-    return matched
 
 
 def _build_header(title: str, template: str) -> dict:
@@ -281,19 +278,18 @@ def _build_quick_command_selector(quick_commands: List[Any]) -> Dict[str, Any]:
     }
 
 
-def _build_operation_selector(user_config: Optional["UserConfig"]) -> Optional[Dict[str, Any]]:
-    """构建会话页操作下拉（快捷键 + 自定义命令）"""
+def _build_operation_selector(settings: Optional["Settings"]) -> Optional[Dict[str, Any]]:
+    """构建会话页操作下拉（快捷键 + 启动器）"""
     options: List[Dict[str, Any]] = []
 
     show_builtin_keys = True
-    show_custom_commands = True
-
+    show_launchers: List[str] = []
     enabled_keys = set()
-    if user_config:
-        panel_cfg = user_config.behavior.operation_panel
-        show_builtin_keys = panel_cfg.show_builtin_keys
-        show_custom_commands = panel_cfg.show_custom_commands
-        enabled_keys = set(panel_cfg.enabled_keys)
+
+    if settings:
+        show_builtin_keys = settings.ui.show_builtin_keys
+        show_launchers = settings.ui.show_launchers
+        enabled_keys = set(settings.ui.enabled_keys)
 
     if show_builtin_keys:
         key_map = [
@@ -311,16 +307,13 @@ def _build_operation_selector(user_config: Optional["UserConfig"]) -> Optional[D
                     "value": f"key:{key_name}",
                 })
 
-    if (
-        show_custom_commands
-        and user_config
-        and user_config.session.custom_commands.is_visible()
-    ):
-        for cmd in user_config.session.custom_commands.commands:
-            options.append({
-                "text": {"tag": "plain_text", "content": f"{cmd.name}: {cmd.command}"},
-                "value": f"cmd:{cmd.command}",
-            })
+    if show_launchers and settings:
+        for launcher in settings.launchers:
+            if launcher.name in show_launchers:
+                options.append({
+                    "text": {"tag": "plain_text", "content": f"{launcher.name}: {launcher.command}"},
+                    "value": f"cmd:{launcher.command}",
+                })
 
     if not options:
         return None
@@ -339,7 +332,7 @@ def _build_operation_selector(user_config: Optional["UserConfig"]) -> Optional[D
     }
 
 
-def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False, is_loading: bool = False, disabled_buttons: Optional[List[str]] = None, user_config: Optional["UserConfig"] = None) -> List[Dict[str, Any]]:
+def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False, is_loading: bool = False, disabled_buttons: Optional[List[str]] = None, settings: Optional["Settings"] = None) -> List[Dict[str, Any]]:
     """底部快捷菜单按钮行，用于流式卡片"""
     disabled_set = set(disabled_buttons or [])
 
@@ -459,7 +452,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
     form_elements: List[Dict[str, Any]] = [menu_enter_row, input_box]
 
     action_items: List[Dict[str, Any]] = []
-    operation_selector = _build_operation_selector(user_config)
+    operation_selector = _build_operation_selector(settings)
     if operation_selector:
         selector_action = dict(operation_selector["actions"][0])
         if "all" in disabled_set:
@@ -788,7 +781,7 @@ def build_stream_card(
     session_name: Optional[str] = None,
     disconnected: bool = False,
     cli_type: str = "claude",
-    user_config: Optional["UserConfig"] = None,
+    settings: Optional["Settings"] = None,
     is_loading: bool = False,
     disabled_buttons: Optional[List[str]] = None,
     loading_text: str = "处理中...",
@@ -811,7 +804,7 @@ def build_stream_card(
         session_name: 会话名
         disconnected: 是否断开连接
         cli_type: CLI 类型（claude/codex）
-        user_config: 用户配置对象（用于快捷命令选择器）
+        settings: 用户设置对象（用于快捷命令选择器）
         is_loading: 是否处于 loading 状态（按钮禁用、显示处理中）
         disabled_buttons: 需要禁用的按钮动作列表（如 ["menu_open", "stream_detach"]）
         loading_text: loading 状态时的提示文本
@@ -828,7 +821,7 @@ def build_stream_card(
                 option_block=snapshot.get("option_block"),
                 session_name=session_name,
                 cli_type=snapshot.get("cli_type", "claude"),
-                user_config=user_config,
+                settings=settings,
                 is_loading=True,
                 loading_text="正在处理...",
             )
@@ -962,7 +955,7 @@ def build_stream_card(
         disconnected=disconnected,
         is_loading=is_loading,
         disabled_buttons=disabled_buttons,
-        user_config=user_config,
+        settings=settings,
     )
     elements.extend(menu_elements)
 
@@ -1187,7 +1180,7 @@ def build_dir_card(
     tree: bool = False,
     session_groups: Optional[Dict[str, str]] = None,
     page: int = 0,
-    user_config: Optional["UserConfig"] = None,
+    settings: Optional["Settings"] = None,
 ) -> Dict[str, Any]:
     """构建目录浏览卡片
 
@@ -1268,7 +1261,7 @@ def build_dir_card(
                 }}]
             }
 
-            commands = _get_matching_commands(user_config)
+            commands = _get_matching_commands(settings)
 
             # 构建启动按钮（横排）
             launch_buttons = []
@@ -1496,7 +1489,7 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     session_groups: Optional[Dict[str, str]] = None, page: int = 0,
                     notify_enabled: bool = True, urgent_enabled: bool = False,
                     bypass_enabled: bool = False,
-                    user_config: Optional["UserConfig"] = None) -> Dict[str, Any]:
+                    settings: Optional["Settings"] = None) -> Dict[str, Any]:
     """构建快捷操作菜单卡片（/menu 和 /list 共用）：内嵌会话列表 + 快捷操作"""
     elements = []
 
@@ -1605,24 +1598,19 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
 
     # 自动应答按钮已迁移到会话流式卡片操作区（stream_toggle_auto_answer）
 
-    # 自定义命令配置显示
+    # 启动器配置显示
     elements.append({"tag": "hr"})
-    elements.append({"tag": "markdown", "content": "**自定义命令**"})
+    elements.append({"tag": "markdown", "content": "**启动器**"})
 
-    if user_config and user_config.session.custom_commands.is_visible():
-        custom_cmds = user_config.session.custom_commands.commands
-        for cmd in custom_cmds:
-            # 格式: "claude → aider (AI pair programming)"
-            desc = f" _{cmd.description}_" if cmd.description else ""
+    if settings and settings.launchers:
+        for launcher in settings.launchers:
+            desc = f" _{launcher.desc}_" if launcher.desc else ""
             elements.append({
                 "tag": "markdown",
-                "content": f"- **{cmd.name}** → `{cmd.command}`{desc}"
+                "content": f"- **{launcher.name}** → `{launcher.command}` ({launcher.cli_type}){desc}"
             })
     else:
-        elements.append({
-            "tag": "markdown",
-            "content": "_未配置，使用默认命令_"
-        })
+        elements.append({"tag": "markdown", "content": "_未配置_"})
 
     return {
         "schema": "2.0",
@@ -1636,7 +1624,7 @@ def build_loading_card_from_snapshot(
     snapshot: Optional[dict],
     session_name: str,
     loading_text: str,
-    user_config: Optional["UserConfig"] = None,
+    settings: Optional["Settings"] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """从共享内存快照构建 loading 状态卡片的便捷函数
@@ -1647,7 +1635,7 @@ def build_loading_card_from_snapshot(
         snapshot: 共享内存快照（可为 None）
         session_name: 会话名称
         loading_text: loading 提示文本
-        user_config: 用户配置对象
+        settings: 用户设置对象
         **kwargs: 其他传递给 build_stream_card 的参数（如 disconnected, option_block）
 
     Returns:
@@ -1656,7 +1644,7 @@ def build_loading_card_from_snapshot(
     Example:
         loading_card = build_loading_card_from_snapshot(
             snapshot, session_name, "正在断开连接...",
-            user_config=self._user_config, disconnected=True
+            settings=self._settings, disconnected=True
         )
     """
     if snapshot:
@@ -1675,7 +1663,7 @@ def build_loading_card_from_snapshot(
             option_block=option_block,
             session_name=session_name,
             cli_type=snapshot.get("cli_type", "claude"),
-            user_config=user_config,
+            settings=settings,
             is_loading=True,
             loading_text=loading_text,
             **other_kwargs,
@@ -1684,7 +1672,7 @@ def build_loading_card_from_snapshot(
         return build_stream_card(
             blocks=[],
             session_name=session_name,
-            user_config=user_config,
+            settings=settings,
             is_loading=True,
             loading_text=loading_text,
             **kwargs,
