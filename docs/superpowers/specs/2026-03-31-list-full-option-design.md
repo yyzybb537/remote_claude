@@ -180,7 +180,10 @@ esac
 
 ---
 
-## 不在范围内
+---
 
-- `status` 命令：当前功能简单，待后续完善后再考虑添加 `--full` 选项
-- 路径列截断：本次只处理名称列，路径列保持当前行为
+## 实现状态
+
+- [x] Task 1: 为 list 命令添加 --full 参数
+- [x] Task 2: 修改 cmd_list 函数支持 --full 选项
+- [x] Task 3: 为 bin/remote-claude 添加 -h/--help 支持
