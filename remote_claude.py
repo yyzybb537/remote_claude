@@ -1373,6 +1373,7 @@ def main():
 
     # list 命令
     list_parser = subparsers.add_parser("list", help="列出所有会话")
+    list_parser.add_argument("--full", action="store_true", help="显示完整名称（不截断）")
     add_remote_args(list_parser)
     list_parser.set_defaults(func=cmd_list)
 
