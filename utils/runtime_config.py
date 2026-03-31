@@ -1760,97 +1760,8 @@ def get_vague_commands_config() -> tuple:
     Returns:
         tuple: (vague_commands: List[str], vague_command_prompt: str)
     """
-    config = load_user_config()
-    auto_answer = config.behavior.auto_answer
-    return auto_answer.vague_commands, auto_answer.vague_command_prompt
-
-
-# ============== 新版配置迁移函数 ==============
-
-def migrate_settings_from_v1(user_config: "UserConfig") -> Settings:
-    """从旧版 UserConfig 迁移到新版 Settings"""
-    # 迁移 launchers（从 custom_commands）
-    launchers = []
-    if user_config.session.custom_commands.enabled:
-        for cmd in user_config.session.custom_commands.commands:
-            launchers.append(Launcher(
-                name=cmd.name,
-                cli_type=cmd.cli_type,
-                command=cmd.command,
-                desc=cmd.description,
-            ))
-
-    # 迁移 quick_commands（去掉中间层）
-    quick_commands = user_config.card.quick_commands.commands if user_config.card.quick_commands.enabled else []
-
-    # 迁移 session settings（扁平化 auto_answer）
-    session = SessionSettings(
-        bypass=user_config.session.bypass,
-        auto_answer_delay_sec=user_config.behavior.auto_answer.default_delay_seconds,
-        auto_answer_vague_patterns=user_config.behavior.auto_answer.vague_commands,
-        auto_answer_vague_prompt=user_config.behavior.auto_answer.vague_command_prompt,
-    )
-
-    # 迁移 notify
-    notify = NotifySettingsV11(
-        ready=user_config.behavior.notify.ready_enabled,
-        urgent=user_config.behavior.notify.urgent_enabled,
-    )
-
-    # 迁移 ui
-    ui = UiSettings(
-        show_builtin_keys=user_config.behavior.operation_panel.show_builtin_keys,
-        show_launchers=[cmd.name for cmd in user_config.session.custom_commands.commands]
-                        if user_config.behavior.operation_panel.show_custom_commands else [],
-        enabled_keys=user_config.behavior.operation_panel.enabled_keys,
-    )
-
-    return Settings(
-        version=SETTINGS_CURRENT_VERSION,
-        launchers=launchers,
-        card=CardSettings(
-            quick_commands=quick_commands,
-            expiry_sec=user_config.card.expiry.expiry_seconds,
-        ),
-        session=session,
-        notify=notify,
-        ui=ui,
-    )
-
-
-def migrate_state_from_v1(runtime_config: "RuntimeConfig") -> State:
-    """从旧版 RuntimeConfig 迁移到新版 State"""
-    sessions: Dict[str, SessionState] = {}
-
-    # 迁移 session_mappings
-    for name, path in runtime_config.session_mappings.items():
-        sessions[name] = SessionState(path=path)
-
-    # 迁移 lark_group_mappings
-    for chat_id, session_name in runtime_config.lark_group_mappings.items():
-        if session_name in sessions:
-            sessions[session_name].lark_chat_id = chat_id
-        else:
-            sessions[session_name] = SessionState(path="", lark_chat_id=chat_id)
-
-    # 迁移 session_auto_answer
-    for session_name, aa_data in runtime_config.session_auto_answer.items():
-        if session_name in sessions:
-            sessions[session_name].auto_answer_enabled = aa_data.get("enabled", False)
-            sessions[session_name].auto_answer_count = aa_data.get("count", 0)
-        else:
-            sessions[session_name] = SessionState(
-                path="",
-                auto_answer_enabled=aa_data.get("enabled", False),
-                auto_answer_count=aa_data.get("count", 0),
-            )
-
-    return State(
-        version=STATE_CURRENT_VERSION,
-        uv_path=runtime_config.uv_path,
-        sessions=sessions,
-        ready_notify_count=runtime_config.ready_notify_count,
-    )
+    settings = load_settings()
+    return settings.session.auto_answer_vague_patterns, settings.session.auto_answer_vague_prompt
 
 
 # ============== 新版配置加载/保存函数 ==============
@@ -1859,7 +1770,7 @@ def load_settings() -> Settings:
     """加载用户设置"""
     _ensure_filesystem_checked()
 
-    # 优先加载新版配置
+    # 加载配置文件
     if SETTINGS_FILE.exists():
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
@@ -1868,17 +1779,6 @@ def load_settings() -> Settings:
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning(f"settings.json 损坏: {e}")
             _backup_corrupted_file(SETTINGS_FILE, SETTINGS_LOCK_FILE)
-
-    # 尝试从旧版迁移
-    if USER_CONFIG_FILE.exists():
-        try:
-            old_config = load_user_config()
-            new_settings = migrate_settings_from_v1(old_config)
-            save_settings(new_settings)
-            logger.info("已从旧版 config.json 迁移到 settings.json")
-            return new_settings
-        except Exception as e:
-            logger.warning(f"旧版配置迁移失败: {e}")
 
     # 返回默认配置
     return Settings()
@@ -1893,7 +1793,7 @@ def load_state() -> State:
     """加载运行时状态"""
     _ensure_filesystem_checked()
 
-    # 优先加载新版状态
+    # 加载状态文件
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -1902,17 +1802,6 @@ def load_state() -> State:
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning(f"state.json 损坏: {e}")
             _backup_corrupted_file(STATE_FILE, STATE_LOCK_FILE)
-
-    # 尝试从旧版迁移
-    if RUNTIME_CONFIG_FILE.exists():
-        try:
-            old_state = load_runtime_config()
-            new_state = migrate_state_from_v1(old_state)
-            save_state(new_state)
-            logger.info("已从旧版 runtime.json 迁移到 state.json")
-            return new_state
-        except Exception as e:
-            logger.warning(f"旧版状态迁移失败: {e}")
 
     # 返回默认状态
     return State()
