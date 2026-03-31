@@ -1,6 +1,6 @@
 {
-  "version": "1.0",
-  "ui_settings": {
+  "version": "2.0",
+  "card": {
     "quick_commands": {
       "enabled": false,
       "commands": [
@@ -10,18 +10,22 @@
         {"label": "帮助", "value": "/help", "icon": "❓"}
       ]
     },
-    "notify": {
-      "ready_enabled": true,
-      "urgent_enabled": false
-    },
-    "bypass_enabled": false,
+    "expiry": {
+      "enabled": true,
+      "expiry_seconds": 3600
+    }
+  },
+  "session": {
+    "bypass": false,
     "custom_commands": {
       "enabled": true,
       "commands": [
         {"name": "Claude", "cli_type": "claude", "command": "claude", "description": "Claude Code CLI"},
         {"name": "Codex", "cli_type": "codex", "command": "codex", "description": "OpenAI Codex CLI"}
       ]
-    },
+    }
+  },
+  "behavior": {
     "auto_answer": {
       "default_delay_seconds": 10,
       "vague_commands": [
@@ -29,14 +33,14 @@
       ],
       "vague_command_prompt": "[系统提示] 请使用工具执行下一步操作。如果不确定下一步，请明确询问需要做什么。不要只返回状态确认。"
     },
-    "card_expiry": {
-      "enabled": true,
-      "expiry_seconds": 3600
+    "notify": {
+      "ready_enabled": true,
+      "urgent_enabled": false
     },
     "operation_panel": {
       "show_builtin_keys": true,
       "show_custom_commands": true,
       "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
-    }
+    "random": false
   }
 }
