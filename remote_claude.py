@@ -563,17 +563,36 @@ def cmd_list(args):
     GREEN = "\033[32m"
     RESET = "\033[0m"
 
+    # 检查 --full 选项
+    show_full = getattr(args, 'full', False)
+
+    # 计算名称列最大宽度
+    if show_full:
+        name_col_width = max(len(s['name']) for s in sessions)
+    else:
+        name_col_width = 20
+
+    # 计算路径列最大宽度
+    def get_path(s):
+        return _normalize_original_path(config.get_session_mapping(s['name']))
+
+    if show_full:
+        path_col_width = max(len(get_path(s)) for s in sessions)
+    else:
+        path_col_width = 52
+
+    # 表头
+    header = f"{'类型':<8} {'PID':<8} {'tmux':<6} {'名称':<{name_col_width}} {'原始路径':<{path_col_width}}"
     print("活跃会话:")
-    print("-" * 80)
-    print(f"{'类型':<8} {'PID':<8} {'tmux':<6} {'名称':<20} {'原始路径'}")
-    print("-" * 80)
+    print("-" * (8 + 8 + 6 + name_col_width + path_col_width + 4))
+    print(header)
+    print("-" * (8 + 8 + 6 + name_col_width + path_col_width + 4))
 
     for s in sessions:
         tmux_status = "是" if s["tmux"] else "否"
         cli_type = s.get('cli_type', 'claude')
         session_name = s['name']
-        # 从映射中获取原始路径
-        original_path = _normalize_original_path(config.get_session_mapping(session_name))
+        original_path = get_path(s)
 
         # 根据类型选择颜色
         if cli_type == CliType.CODEX:
@@ -582,11 +601,22 @@ def cmd_list(args):
             cli_colored = f"{YELLOW}{cli_type}{RESET}"
         # 带颜色的字段需要单独计算宽度
         padding = " " * (8 - len(cli_type))
-        name_display = session_name[:18] + ".." if len(session_name) > 20 else session_name
-        path_display = original_path[:50] + ".." if len(original_path) > 52 else original_path
-        print(f"{cli_colored}{padding} {s['pid']:<8} {tmux_status:<6} {name_display:<20} {path_display}")
 
-    print("-" * 80)
+        # 名称显示
+        if show_full:
+            name_display = session_name
+        else:
+            name_display = session_name[:18] + ".." if len(session_name) > 20 else session_name
+
+        # 路径显示
+        if show_full:
+            path_display = original_path
+        else:
+            path_display = original_path[:50] + ".." if len(original_path) > 52 else original_path
+
+        print(f"{cli_colored}{padding} {s['pid']:<8} {tmux_status:<6} {name_display:<{name_col_width}} {path_display:<{path_col_width}}")
+
+    print("-" * (8 + 8 + 6 + name_col_width + path_col_width + 4))
     print(f"共 {len(sessions)} 个会话")
 
     return 0
