@@ -23,7 +23,11 @@
       ]
     },
     "auto_answer": {
-      "default_delay_seconds": 10
+      "default_delay_seconds": 10,
+      "vague_commands": [
+        "继续执行", "继续", "开始执行", "开始", "执行", "continue", "确认", "OK"
+      ],
+      "vague_command_prompt": "[系统提示] 请使用工具执行下一步操作。如果不确定下一步，请明确询问需要做什么。不要只返回状态确认。"
     },
     "card_expiry": {
       "enabled": true,

@@ -39,6 +39,7 @@ class ConfigType:
     CONFIG = "config"
     RUNTIME = "runtime"
 
+
 # NFS 文件系统检测缓存
 _nfs_checked = False
 _nfs_is_nfs = False
@@ -340,13 +341,13 @@ class QuickCommandsConfig:
 @dataclass
 class NotifySettings:
     """通知设置"""
-    ready_enabled: bool = True      # 就绪通知开关（默认开启）
-    urgent_enabled: bool = False    # 加急通知开关（默认关闭）
+    ready_enabled: bool = True  # 就绪通知开关（默认开启）
+    urgent_enabled: bool = False  # 加急通知开关（默认关闭）
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "ready_enabled": self.ready_enabled,
+            "ready_enabled" : self.ready_enabled,
             "urgent_enabled": self.urgent_enabled,
         }
 
@@ -363,18 +364,34 @@ class NotifySettings:
 class AutoAnswerSettings:
     """自动应答设置"""
     default_delay_seconds: int = 10
+    # 模糊指令配置
+    vague_commands: List[str] = field(default_factory=list)
+    # 模糊指令增强提示文案
+    vague_command_prompt: str = ''
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
             "default_delay_seconds": self.default_delay_seconds,
+            "vague_commands"       : self.vague_commands,
+            "vague_command_prompt" : self.vague_command_prompt,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AutoAnswerSettings":
         """从字典创建"""
+        default_vague_commands = [
+            "继续执行", "继续", "开始执行", "开始", "执行", "continue", "确认", "OK"
+        ]
+        default_prompt = (
+            "[系统提示] 请使用工具执行下一步操作。"
+            "如果不确定下一步，请明确询问需要做什么。"
+            "不要只返回状态确认。"
+        )
         return cls(
             default_delay_seconds=data.get("default_delay_seconds", 10),
+            vague_commands=data.get("vague_commands", default_vague_commands),
+            vague_command_prompt=data.get("vague_command_prompt", default_prompt),
         )
 
 
@@ -387,7 +404,7 @@ class CardExpirySettings:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "enabled": self.enabled,
+            "enabled"       : self.enabled,
             "expiry_seconds": self.expiry_seconds,
         }
 
@@ -436,9 +453,9 @@ class OperationPanelSettings:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "show_builtin_keys": self.show_builtin_keys,
+            "show_builtin_keys"   : self.show_builtin_keys,
             "show_custom_commands": self.show_custom_commands,
-            "enabled_keys": self.enabled_keys,
+            "enabled_keys"        : self.enabled_keys,
         }
 
     @classmethod
@@ -454,9 +471,9 @@ class OperationPanelSettings:
 @dataclass
 class CustomCommand:
     """自定义 CLI 命令配置"""
-    name: str           # 显示名称，如 "Claude"、"Aider"
-    cli_type: str       # CLI 类型（必须为 CliType 枚举值之一)
-    command: str        # 实际执行的命令，如 "claude"、"aider --message-args"
+    name: str  # 显示名称，如 "Claude"、"Aider"
+    cli_type: str  # CLI 类型（必须为 CliType 枚举值之一)
+    command: str  # 实际执行的命令，如 "claude"、"aider --message-args"
     description: str = ""  # 可选描述
 
     def __post_init__(self):
@@ -478,9 +495,9 @@ class CustomCommand:
     def to_dict(self) -> Dict[str, str]:
         """转换为字典"""
         return {
-            "name": self.name,
-            "cli_type": self.cli_type,
-            "command": self.command,
+            "name"       : self.name,
+            "cli_type"   : self.cli_type,
+            "command"    : self.command,
             "description": self.description,
         }
 
@@ -528,7 +545,7 @@ class CustomCommandsConfig:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "enabled": self.enabled,
+            "enabled" : self.enabled,
             "commands": [cmd.to_dict() for cmd in self.commands],
         }
 
@@ -569,12 +586,12 @@ class UISettings:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "quick_commands": self.quick_commands.to_dict(),
-            "notify": self.notify.to_dict(),
-            "bypass_enabled": self.bypass_enabled,
+            "quick_commands" : self.quick_commands.to_dict(),
+            "notify"         : self.notify.to_dict(),
+            "bypass_enabled" : self.bypass_enabled,
             "custom_commands": self.custom_commands.to_dict(),
-            "auto_answer": self.auto_answer.to_dict(),
-            "card_expiry": self.card_expiry.to_dict(),
+            "auto_answer"    : self.auto_answer.to_dict(),
+            "card_expiry"    : self.card_expiry.to_dict(),
             "operation_panel": self.operation_panel.to_dict(),
         }
 
@@ -692,7 +709,7 @@ class RuntimeConfig:
             "uv_path"            : self.uv_path,
             "session_mappings"   : self.session_mappings,
             "lark_group_mappings": self.lark_group_mappings,
-            "ready_notify_count": self.ready_notify_count,
+            "ready_notify_count" : self.ready_notify_count,
             "session_auto_answer": self.session_auto_answer,
         }
 
@@ -881,6 +898,7 @@ def remove_session_mapping(truncated_name: str) -> None:
     Args:
         truncated_name: 截断后的会话名称
     """
+
     def mutator(config: RuntimeConfig):
         if config.remove_session_mapping(truncated_name):
             logger.info(f"已删除会话映射: {truncated_name}")
@@ -911,6 +929,7 @@ def set_uv_path(path: str) -> None:
     Args:
         path: uv 可执行文件的绝对路径
     """
+
     def mutator(config: RuntimeConfig):
         config.uv_path = path
         logger.info(f"已记录 uv 路径: {path}")
@@ -1138,6 +1157,7 @@ def get_notify_ready_enabled() -> bool:
 
 def set_notify_ready_enabled(enabled: bool) -> None:
     """设置就绪通知开关状态（原子更新）"""
+
     def mutator(config: UserConfig):
         config.ui_settings.notify.ready_enabled = enabled
         logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
@@ -1160,6 +1180,7 @@ def get_notify_urgent_enabled() -> bool:
 
 def set_notify_urgent_enabled(enabled: bool) -> None:
     """设置加急通知开关状态（原子更新）"""
+
     def mutator(config: UserConfig):
         config.ui_settings.notify.urgent_enabled = enabled
         logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
@@ -1182,6 +1203,7 @@ def get_bypass_enabled() -> bool:
 
 def set_bypass_enabled(enabled: bool) -> None:
     """设置新会话 bypass 开关状态（原子更新）"""
+
     def mutator(config: UserConfig):
         config.ui_settings.bypass_enabled = enabled
         logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
@@ -1204,6 +1226,7 @@ def get_ready_notify_count() -> int:
 
 def increment_ready_notify_count() -> int:
     """原子递增就绪通知计数器，返回新值"""
+
     def mutator(config: RuntimeConfig):
         config.ready_notify_count += 1
         return config.ready_notify_count
@@ -1274,13 +1297,14 @@ def get_cli_command(cli_type: str) -> str:
     # 回退到默认值
     default_commands = {
         str(CliType.CLAUDE): str(CliType.CLAUDE),
-        str(CliType.CODEX): str(CliType.CODEX),
+        str(CliType.CODEX) : str(CliType.CODEX),
     }
     return default_commands.get(cli_type_str, cli_type_str)
 
 
 def set_custom_commands(commands: List[CustomCommand]) -> None:
     """设置自定义命令列表（原子更新）"""
+
     def mutator(config: UserConfig):
         config.ui_settings.custom_commands.commands = commands
         logger.info(f"已保存 {len(commands)} 个自定义命令")
@@ -1311,6 +1335,7 @@ def load_session_auto_answer() -> Dict[str, dict]:
 
 def save_session_auto_answer(states: Dict[str, dict]) -> None:
     """保存所有 session 的自动应答状态（原子更新）"""
+
     def mutator(config: RuntimeConfig):
         config.session_auto_answer = states
         return None
@@ -1332,6 +1357,7 @@ def get_session_auto_answer_enabled(session_name: str) -> bool:
 
 def set_session_auto_answer_enabled(session_name: str, enabled: bool, enabled_by: str = "") -> None:
     """设置指定 session 的自动应答开关状态（原子更新）"""
+
     def mutator(config: RuntimeConfig):
         if enabled:
             config.session_auto_answer[session_name] = {"enabled": True, "enabled_by": enabled_by}
@@ -1346,3 +1372,16 @@ def set_session_auto_answer_enabled(session_name: str, enabled: bool, enabled_by
         RuntimeConfig,
         mutator,
     )
+
+
+# ============== 模糊指令配置 ==============
+
+def get_vague_commands_config() -> tuple:
+    """获取模糊指令配置（从用户配置文件读取）
+
+    Returns:
+        tuple: (vague_commands: List[str], vague_command_prompt: str)
+    """
+    config = load_user_config()
+    auto_answer = config.ui_settings.auto_answer
+    return auto_answer.vague_commands, auto_answer.vague_command_prompt

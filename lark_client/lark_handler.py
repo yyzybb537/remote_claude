@@ -995,6 +995,22 @@ class LarkHandler:
         if not bridge:
             return
 
+        # 自动应答模式下，增强模糊指令
+        session_name = self._chat_sessions.get(chat_id)
+        if session_name:
+            from utils.runtime_config import (
+                get_session_auto_answer_enabled,
+                get_vague_commands_config
+            )
+            if get_session_auto_answer_enabled(session_name):
+                vague_commands, vague_prompt = get_vague_commands_config()
+                text_lower = text.strip().lower()
+                vague_commands_lower = {cmd.lower() for cmd in vague_commands}
+                if text_lower in vague_commands_lower:
+                    # 追加提示，引导模型采取行动而非只返回状态
+                    text = f"{text}\n\n{vague_prompt}"
+                    logger.debug(f"自动应答模式下增强模糊指令: {text[:50]}...")
+
         success = await bridge.send_input(text)
         if success:
             self._poller.kick(chat_id)
