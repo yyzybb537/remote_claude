@@ -570,7 +570,7 @@ check_file_integrity() {
         "scripts/uninstall.sh"
         "scripts/completion.sh"
         "pyproject.toml"
-        "resources/defaults/.env.example"
+        "resources/defaults/env.example"
         "resources/defaults/settings.json.example"
         "resources/defaults/state.json.example"
     )

@@ -33,30 +33,27 @@ export LAZY_INIT_DISABLE_AUTO_RUN
 . "$PROJECT_DIR/scripts/_common.sh"
 unset LAZY_INIT_DISABLE_AUTO_RUN
 
-INSTALL_DIR="$PROJECT_DIR"
-if [ ! -f "$INSTALL_DIR/resources/defaults/.env.example" ]; then
+rc_ensure_home_dir
+if ! rc_require_file "$REMOTE_CLAUDE_ENV_TEMPLATE" "环境变量模板文件"; then
     if [ "$REQUIRE_FEISHU" = "0" ]; then
         echo ""
         echo "飞书客户端未配置，跳过飞书启动。"
-        echo "如需启用飞书客户端，请先配置 $HOME/.remote-claude/.env"
+        echo "如需启用飞书客户端，请先配置 $REMOTE_CLAUDE_ENV_FILE"
         echo ""
         return 0 2>/dev/null || exit 0
     fi
-    echo "错误: 无法定位安装目录模板文件: $INSTALL_DIR/resources/defaults/.env.example" >&2
     return 1 2>/dev/null || exit 1
 fi
 
-ENV_FILE="$HOME/.remote-claude/.env"
-mkdir -p "$HOME/.remote-claude"
 ENV_OK=false
 
 if [ "$REQUIRE_FEISHU" = "0" ]; then
     return 0 2>/dev/null || exit 0
 fi
 
-if [ -f "$ENV_FILE" ]; then
-    APP_ID=$(grep -E '^FEISHU_APP_ID=' "$ENV_FILE" | cut -d= -f2)
-    APP_SECRET=$(grep -E '^FEISHU_APP_SECRET=' "$ENV_FILE" | cut -d= -f2)
+if [ -f "$REMOTE_CLAUDE_ENV_FILE" ]; then
+    APP_ID=$(grep -E '^FEISHU_APP_ID=' "$REMOTE_CLAUDE_ENV_FILE" | cut -d= -f2)
+    APP_SECRET=$(grep -E '^FEISHU_APP_SECRET=' "$REMOTE_CLAUDE_ENV_FILE" | cut -d= -f2)
     if [ -n "$APP_ID" ] && [ "$APP_ID" != "cli_xxxxx" ] && \
        [ -n "$APP_SECRET" ] && [ "$APP_SECRET" != "xxxxx" ]; then
         ENV_OK=true
@@ -80,17 +77,17 @@ if [ "$ENV_OK" = false ]; then
         return 1 2>/dev/null || exit 1
     fi
 
-    cp "$INSTALL_DIR/resources/defaults/.env.example" "$ENV_FILE"
+    rc_copy_if_missing "$REMOTE_CLAUDE_ENV_TEMPLATE" "$REMOTE_CLAUDE_ENV_FILE" "环境变量配置文件"
 
     # 使用临时文件替代 sed -i，跨平台兼容
     tmp_file=$(mktemp)
-    sed "s/^FEISHU_APP_ID=.*/FEISHU_APP_ID=$INPUT_APP_ID/" "$ENV_FILE" > "$tmp_file" && mv "$tmp_file" "$ENV_FILE"
+    sed "s/^FEISHU_APP_ID=.*/FEISHU_APP_ID=$INPUT_APP_ID/" "$REMOTE_CLAUDE_ENV_FILE" > "$tmp_file" && mv "$tmp_file" "$REMOTE_CLAUDE_ENV_FILE"
 
     tmp_file=$(mktemp)
-    sed "s/^FEISHU_APP_SECRET=.*/FEISHU_APP_SECRET=$INPUT_APP_SECRET/" "$ENV_FILE" > "$tmp_file" && mv "$tmp_file" "$ENV_FILE"
+    sed "s/^FEISHU_APP_SECRET=.*/FEISHU_APP_SECRET=$INPUT_APP_SECRET/" "$REMOTE_CLAUDE_ENV_FILE" > "$tmp_file" && mv "$tmp_file" "$REMOTE_CLAUDE_ENV_FILE"
 
     echo ""
-    echo "配置已保存到 $ENV_FILE"
+    echo "配置已保存到 $REMOTE_CLAUDE_ENV_FILE"
     echo "（可选配置, 如白名单等可稍后编辑该文件）"
     echo ""
 fi

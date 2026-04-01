@@ -138,6 +138,56 @@ _require_common_layout() {
 _normalize_project_and_script_dir || :
 _require_common_layout || return 1
 
+rc_init_paths() {
+    REMOTE_CLAUDE_HOME_DIR="$HOME/.remote-claude"
+    REMOTE_CLAUDE_SOCKET_DIR="/tmp/remote-claude"
+    REMOTE_CLAUDE_ENV_FILE="$REMOTE_CLAUDE_HOME_DIR/.env"
+    REMOTE_CLAUDE_SETTINGS_FILE="$REMOTE_CLAUDE_HOME_DIR/settings.json"
+    REMOTE_CLAUDE_STATE_FILE="$REMOTE_CLAUDE_HOME_DIR/state.json"
+    REMOTE_CLAUDE_ENV_TEMPLATE="$PROJECT_DIR/resources/defaults/env.example"
+    REMOTE_CLAUDE_SETTINGS_TEMPLATE="$PROJECT_DIR/resources/defaults/settings.json.example"
+    REMOTE_CLAUDE_STATE_TEMPLATE="$PROJECT_DIR/resources/defaults/state.json.example"
+    REMOTE_CLAUDE_LARK_PID_FILE="$REMOTE_CLAUDE_SOCKET_DIR/lark.pid"
+    REMOTE_CLAUDE_LARK_STATUS_FILE="$REMOTE_CLAUDE_SOCKET_DIR/lark.status"
+    REMOTE_CLAUDE_LARK_LOG_FILE="$REMOTE_CLAUDE_HOME_DIR/lark_client.log"
+
+    export REMOTE_CLAUDE_HOME_DIR REMOTE_CLAUDE_SOCKET_DIR
+    export REMOTE_CLAUDE_ENV_FILE REMOTE_CLAUDE_SETTINGS_FILE REMOTE_CLAUDE_STATE_FILE
+    export REMOTE_CLAUDE_ENV_TEMPLATE REMOTE_CLAUDE_SETTINGS_TEMPLATE REMOTE_CLAUDE_STATE_TEMPLATE
+    export REMOTE_CLAUDE_LARK_PID_FILE REMOTE_CLAUDE_LARK_STATUS_FILE REMOTE_CLAUDE_LARK_LOG_FILE
+}
+
+rc_ensure_home_dir() {
+    mkdir -p "$REMOTE_CLAUDE_HOME_DIR"
+}
+
+rc_ensure_socket_dir() {
+    mkdir -p "$REMOTE_CLAUDE_SOCKET_DIR"
+}
+
+rc_require_file() {
+    if [ ! -f "$1" ]; then
+        print_error "缺少$2: $1"
+        return 1
+    fi
+    return 0
+}
+
+rc_copy_if_missing() {
+    src="$1"
+    dst="$2"
+    label="$3"
+
+    if [ -f "$dst" ]; then
+        return 0
+    fi
+
+    cp "$src" "$dst"
+    print_success "创建${label}: $dst"
+}
+
+rc_init_paths
+
 # 将目录加入 PATH（若目录存在且未包含）
 _prepend_path_if_dir() {
     local DIR
@@ -196,25 +246,25 @@ if ! _resolve_uv_path; then
     :
 fi
 
-# 从 runtime.json 读取 uv 路径
+# 从 state.json 读取 uv 路径
 _read_uv_path_from_runtime() {
-    local RUNTIME_FILE
-    RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
-    if [ -f "$RUNTIME_FILE" ] && command -v jq >/dev/null 2>&1; then
-        jq -r '.uv_path // empty' "$RUNTIME_FILE" 2>/dev/null
+    local STATE_FILE
+    STATE_FILE="$REMOTE_CLAUDE_STATE_FILE"
+    if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
+        jq -r '.uv_path // empty' "$STATE_FILE" 2>/dev/null
     fi
 }
 
-# 保存 uv 路径到 runtime.json
+# 保存 uv 路径到 state.json
 _save_uv_path_to_runtime() {
-    local UV_PATH RUNTIME_FILE TMP_FILE
+    local UV_PATH STATE_FILE TMP_FILE
     UV_PATH="$1"
-    RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
+    STATE_FILE="$REMOTE_CLAUDE_STATE_FILE"
 
-    if [ -f "$RUNTIME_FILE" ] && command -v jq >/dev/null 2>&1; then
+    if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
         TMP_FILE=$(mktemp)
-        jq --arg path "$UV_PATH" '.uv_path = $path' "$RUNTIME_FILE" > "$TMP_FILE" && \
-            mv "$TMP_FILE" "$RUNTIME_FILE"
+        jq --arg path "$UV_PATH" '.uv_path = $path' "$STATE_FILE" > "$TMP_FILE" && \
+            mv "$TMP_FILE" "$STATE_FILE"
     fi
 }
 

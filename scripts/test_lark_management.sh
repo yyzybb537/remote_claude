@@ -89,21 +89,21 @@ echo ""
 
 # 13. 检查残留文件（应该已清理）
 echo "13. 检查残留文件..."
-if [ -f /tmp/remote-claude/lark.pid ]; then
+if [ -f "$REMOTE_CLAUDE_LARK_PID_FILE" ]; then
     echo "  ✗ lark.pid 未清理"
 else
     echo "  ✓ lark.pid 已清理"
 fi
 
-if [ -f /tmp/remote-claude/lark.status ]; then
+if [ -f "$REMOTE_CLAUDE_LARK_STATUS_FILE" ]; then
     echo "  ✗ lark.status 未清理"
 else
     echo "  ✓ lark.status 已清理"
 fi
 
-if [ -f "$HOME/.remote-claude/lark_client.log" ]; then
-    echo "  ✓ 日志文件存在: ~/.remote-claude/lark_client.log"
-    echo "  日志大小: $(ls -lh "$HOME/.remote-claude/lark_client.log" | awk '{print $5}')"
+if [ -f "$REMOTE_CLAUDE_LARK_LOG_FILE" ]; then
+    echo "  ✓ 日志文件存在: $REMOTE_CLAUDE_LARK_LOG_FILE"
+    echo "  日志大小: $(ls -lh "$REMOTE_CLAUDE_LARK_LOG_FILE" | awk '{print $5}')"
 else
     echo "  ✗ 日志文件不存在"
 fi

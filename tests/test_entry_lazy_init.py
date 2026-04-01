@@ -251,6 +251,28 @@ fi
 
 
 
+def test_runtime_shell_scripts_do_not_repeat_centralized_paths():
+    for rel in (
+        "scripts/check-env.sh",
+        "scripts/setup.sh",
+        "scripts/install.sh",
+        "scripts/uninstall.sh",
+        "scripts/test_lark_management.sh",
+    ):
+        content = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert '"$HOME/.remote-claude"' not in content, rel
+        assert '"/tmp/remote-claude"' not in content, rel
+        assert "resources/defaults/" not in content, rel
+
+
+def test_test_lark_management_uses_common_runtime_variables():
+    content = (REPO_ROOT / "scripts" / "test_lark_management.sh").read_text(encoding="utf-8")
+    assert "REMOTE_CLAUDE_LARK_PID_FILE" in content
+    assert "REMOTE_CLAUDE_LARK_STATUS_FILE" in content
+    assert "REMOTE_CLAUDE_LARK_LOG_FILE" in content
+    assert "/tmp/remote-claude/lark.pid" not in content
+
+
 def test_install_uv_multi_source_prefers_pip_user_before_fallback():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
@@ -887,6 +909,111 @@ echo skip-ok
     assert result.stdout.strip().endswith("skip-ok")
 
 
+def test_common_exports_centralized_runtime_paths(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    scripts_dir = project_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+
+    common_sh = scripts_dir / "_common.sh"
+    common_sh.write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh"],
+        input=f"""#!/bin/sh
+set -e
+HOME='{tmp_path / 'home'}'
+mkdir -p "$HOME"
+PROJECT_DIR='{project_dir}'
+LAZY_INIT_DISABLE_AUTO_RUN=1
+. '{common_sh}'
+printf 'home=%s\n' "$REMOTE_CLAUDE_HOME_DIR"
+printf 'socket=%s\n' "$REMOTE_CLAUDE_SOCKET_DIR"
+printf 'env=%s\n' "$REMOTE_CLAUDE_ENV_FILE"
+printf 'settings=%s\n' "$REMOTE_CLAUDE_SETTINGS_FILE"
+printf 'state=%s\n' "$REMOTE_CLAUDE_STATE_FILE"
+printf 'env_template=%s\n' "$REMOTE_CLAUDE_ENV_TEMPLATE"
+printf 'settings_template=%s\n' "$REMOTE_CLAUDE_SETTINGS_TEMPLATE"
+printf 'state_template=%s\n' "$REMOTE_CLAUDE_STATE_TEMPLATE"
+""",
+        text=True,
+        capture_output=True,
+        cwd=project_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"home={tmp_path / 'home' / '.remote-claude'}" in result.stdout
+    assert "socket=/tmp/remote-claude" in result.stdout
+    assert f"env={tmp_path / 'home' / '.remote-claude' / '.env'}" in result.stdout
+    assert f"settings={tmp_path / 'home' / '.remote-claude' / 'settings.json'}" in result.stdout
+    assert f"state={tmp_path / 'home' / '.remote-claude' / 'state.json'}" in result.stdout
+    assert f"env_template={project_dir / 'resources' / 'defaults' / 'env.example'}" in result.stdout
+    assert f"settings_template={project_dir / 'resources' / 'defaults' / 'settings.json.example'}" in result.stdout
+    assert f"state_template={project_dir / 'resources' / 'defaults' / 'state.json.example'}" in result.stdout
+
+
+def test_common_copy_if_missing_preserves_existing_file(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    scripts_dir = project_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    common_sh = scripts_dir / "_common.sh"
+    common_sh.write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+
+    src = tmp_path / "src.txt"
+    dst = tmp_path / "dst.txt"
+    src.write_text("from-template\n", encoding="utf-8")
+    dst.write_text("keep-existing\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh"],
+        input=f"""#!/bin/sh
+set -e
+HOME='{tmp_path / 'home'}'
+mkdir -p "$HOME"
+PROJECT_DIR='{project_dir}'
+LAZY_INIT_DISABLE_AUTO_RUN=1
+. '{common_sh}'
+rc_copy_if_missing '{src}' '{dst}' 'dst'
+cat '{dst}'
+""",
+        text=True,
+        capture_output=True,
+        cwd=project_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("keep-existing")
+
+
+def test_common_require_file_returns_non_zero_for_missing_file(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    scripts_dir = project_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    common_sh = scripts_dir / "_common.sh"
+    common_sh.write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+
+    missing = tmp_path / "missing.txt"
+    result = subprocess.run(
+        ["sh"],
+        input=f"""#!/bin/sh
+set +e
+HOME='{tmp_path / 'home'}'
+mkdir -p "$HOME"
+PROJECT_DIR='{project_dir}'
+LAZY_INIT_DISABLE_AUTO_RUN=1
+. '{common_sh}'
+rc_require_file '{missing}' 'missing-file'
+echo rc:$?
+""",
+        text=True,
+        capture_output=True,
+        cwd=project_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "rc:1" in result.stdout
+    assert "missing-file" in result.stderr or "missing-file" in result.stdout
+
+
 def test_lazy_init_failure_surfaces_log_hint_and_stage_details(tmp_path: Path):
     project_dir = tmp_path / "project"
     script_dir = project_dir / "scripts"
@@ -1147,7 +1274,7 @@ def test_install_sh_initializes_install_log_helpers():
 def test_setup_still_initializes_runtime_file():
     content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
     assert "init_config_files()" in content
-    assert "runtime.default.json" in content
+    assert "REMOTE_CLAUDE_STATE_TEMPLATE" in content
 
 
 def test_entry_scripts_define_project_dir_before_sourcing_common():
@@ -1583,7 +1710,7 @@ def test_install_completion_hint_uses_dot_not_source():
 def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_context(tmp_path: Path):
     data_dir = tmp_path / ".remote-claude"
     data_dir.mkdir()
-    (data_dir / "runtime.json").write_text("{}", encoding="utf-8")
+    (data_dir / "state.json").write_text("{}", encoding="utf-8")
 
     result = subprocess.run(
         ["sh", str(REPO_ROOT / "scripts" / "uninstall.sh")],
@@ -1605,10 +1732,23 @@ def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_context(t
     assert "是否删除" not in result.stdout
 
 
+def test_uninstall_uses_centralized_current_file_names_only():
+    content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+    assert "REMOTE_CLAUDE_LARK_PID_FILE" in content
+    assert "REMOTE_CLAUDE_SOCKET_DIR" in content
+    assert "REMOTE_CLAUDE_STATE_FILE" in content
+    assert "REMOTE_CLAUDE_SETTINGS_FILE" in content
+    assert '"/tmp/remote-claude/lark.pid"' not in content
+    assert 'RUNTIME_DIR="/tmp/remote-claude"' not in content
+    assert 'DATA_DIR="$HOME/.remote-claude"' not in content
+    assert "config.json" not in content
+    assert "runtime.json" not in content
+
+
 def test_uninstall_keeps_manual_prompt_when_only_generic_npm_env_present(tmp_path: Path):
     data_dir = tmp_path / ".remote-claude"
     data_dir.mkdir()
-    (data_dir / "config.json").write_text("{}", encoding="utf-8")
+    (data_dir / "settings.json").write_text("{}", encoding="utf-8")
 
     result = subprocess.run(
         ["sh", str(REPO_ROOT / "scripts" / "uninstall.sh")],
@@ -1633,7 +1773,7 @@ def test_uninstall_keeps_manual_prompt_when_only_generic_npm_env_present(tmp_pat
 def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
     data_dir = tmp_path / ".remote-claude"
     data_dir.mkdir()
-    (data_dir / "config.json").write_text("{}", encoding="utf-8")
+    (data_dir / "settings.json").write_text("{}", encoding="utf-8")
 
     result = subprocess.run(
         ["sh", str(REPO_ROOT / "scripts" / "uninstall.sh")],
@@ -1657,7 +1797,7 @@ def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
 def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_global_rm_context(tmp_path: Path):
     data_dir = tmp_path / ".remote-claude"
     data_dir.mkdir()
-    (data_dir / "runtime.json").write_text("{}", encoding="utf-8")
+    (data_dir / "state.json").write_text("{}", encoding="utf-8")
 
     result = subprocess.run(
         ["sh", str(REPO_ROOT / "scripts" / "uninstall.sh")],
@@ -1681,6 +1821,20 @@ def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_global_rm
     assert "是否删除" not in result.stdout
 
 
+def test_common_reads_uv_path_from_state_json(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    state_file.write_text('{"uv_path":"/tmp/custom-bin/uv"}\n', encoding="utf-8")
+
+    result = run_common(f"""
+    export REMOTE_CLAUDE_STATE_FILE='{state_file}'
+    uv_path=$(_read_uv_path_from_runtime)
+    printf 'uv:%s\\n' "$uv_path"
+    """)
+
+    assert result.returncode == 0, result.stderr
+    assert "uv:/tmp/custom-bin/uv" in result.stdout
+
+
 def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
     project_dir = tmp_path / "project"
     scripts_dir = project_dir / "scripts"
@@ -1701,7 +1855,7 @@ def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
         encoding="utf-8",
     )
     (defaults_dir / "settings.json.example").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
-    (defaults_dir / "runtime.default.json").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
+    (defaults_dir / "state.json.example").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
 
     uv_stub = tmp_path / "uv"
     uv_stub.write_text(
@@ -1730,8 +1884,8 @@ def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert (home_dir / ".remote-claude" / "config.json").exists()
-    assert (home_dir / ".remote-claude" / "runtime.json").exists()
+    assert (home_dir / ".remote-claude" / "settings.json").exists()
+    assert (home_dir / ".remote-claude" / "state.json").exists()
 
 
 
@@ -1755,7 +1909,7 @@ def test_setup_lazy_writes_full_init_block_with_completion(tmp_path: Path):
         encoding="utf-8",
     )
     (defaults_dir / "settings.json.example").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
-    (defaults_dir / "runtime.default.json").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
+    (defaults_dir / "state.json.example").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
 
     uv_stub = tmp_path / "uv"
     uv_stub.write_text(
@@ -1814,7 +1968,7 @@ def test_setup_lazy_does_not_overwrite_existing_config_files(tmp_path: Path):
         encoding="utf-8",
     )
     (defaults_dir / "settings.json.example").write_text('{"version":"from-default"}\n', encoding="utf-8")
-    (defaults_dir / "runtime.default.json").write_text('{"version":"from-default"}\n', encoding="utf-8")
+    (defaults_dir / "state.json.example").write_text('{"version":"from-default"}\n', encoding="utf-8")
 
     uv_stub = tmp_path / "uv"
     uv_stub.write_text(
@@ -1834,8 +1988,8 @@ def test_setup_lazy_does_not_overwrite_existing_config_files(tmp_path: Path):
     home_dir = tmp_path / "home"
     data_dir = home_dir / ".remote-claude"
     data_dir.mkdir(parents=True)
-    (data_dir / "config.json").write_text('{"version":"existing-config"}\n', encoding="utf-8")
-    (data_dir / "runtime.json").write_text('{"version":"existing-runtime"}\n', encoding="utf-8")
+    (data_dir / "settings.json").write_text('{"version":"existing-config"}\n', encoding="utf-8")
+    (data_dir / "state.json").write_text('{"version":"existing-runtime"}\n', encoding="utf-8")
 
     result = subprocess.run(
         ["sh", str(setup_sh), "--lazy"],
@@ -1846,10 +2000,47 @@ def test_setup_lazy_does_not_overwrite_existing_config_files(tmp_path: Path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert (data_dir / "config.json").read_text(encoding="utf-8").strip() == '{"version":"existing-config"}'
+    assert (data_dir / "settings.json").read_text(encoding="utf-8").strip() == '{"version":"existing-config"}'
 
-    runtime_data = json.loads((data_dir / "runtime.json").read_text(encoding="utf-8"))
+    runtime_data = json.loads((data_dir / "state.json").read_text(encoding="utf-8"))
     assert runtime_data.get("version") == "existing-runtime"
+
+
+
+def test_setup_uses_centralized_path_variables_only():
+    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    assert "REMOTE_CLAUDE_ENV_FILE" in content
+    assert "REMOTE_CLAUDE_ENV_TEMPLATE" in content
+    assert "REMOTE_CLAUDE_SETTINGS_FILE" in content
+    assert "REMOTE_CLAUDE_STATE_FILE" in content
+    assert "REMOTE_CLAUDE_SETTINGS_TEMPLATE" in content
+    assert "REMOTE_CLAUDE_STATE_TEMPLATE" in content
+    assert "rc_ensure_home_dir" in content
+    assert "rc_ensure_socket_dir" in content
+    assert "rc_require_file" in content
+    assert "rc_copy_if_missing" in content
+    forbidden = [
+        "config.default.json",
+        "runtime.default.json",
+        "lark_group_mapping.json",
+        "CLAUDE_COMMAND",
+        "ready_notify_enabled",
+        "urgent_notify_enabled",
+        "bypass_enabled",
+        '$HOME/.remote-claude/.env',
+        '"/tmp/remote-claude"',
+    ]
+    for marker in forbidden:
+        assert marker not in content
+
+
+
+def test_setup_no_longer_contains_legacy_config_migration_logic():
+    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    assert "migrate_legacy_notify_files()" not in content
+    assert "migrate_claude_command()" not in content
+    assert "migrate_legacy_notify_files" not in content
+    assert "migrate_claude_command" not in content
 
 
 def test_entry_init_failure_shows_manual_recovery_command(tmp_path: Path):
