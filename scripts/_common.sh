@@ -203,6 +203,22 @@ _prepend_path_if_dir() {
     return 0
 }
 
+# 获取 Python user site-packages 路径
+_get_python_user_site_packages() {
+    local USER_SITE
+    USER_SITE=""
+
+    if command -v python3 >/dev/null 2>&1; then
+        USER_SITE=$(python3 -m site --user-site 2>/dev/null)
+    elif command -v python >/dev/null 2>&1; then
+        USER_SITE=$(python -m site --user-site 2>/dev/null)
+    fi
+
+    if [ -n "$USER_SITE" ]; then
+        printf '%s\n' "$USER_SITE"
+    fi
+}
+
 # 获取 Python user base 的 bin 路径
 _get_python_user_base_bin() {
     local USER_BASE
@@ -219,24 +235,42 @@ _get_python_user_base_bin() {
     fi
 }
 
+# 枚举常见的 Python user script 目录，供 uv 安装后重新探测
+_list_candidate_user_bin_dirs() {
+    local USER_BASE_BIN DIR
+
+    printf '%s\n' "$HOME/.local/bin"
+
+    USER_BASE_BIN="$(_get_python_user_base_bin)"
+    if [ -n "$USER_BASE_BIN" ]; then
+        printf '%s\n' "$USER_BASE_BIN"
+    fi
+
+    if [ -d "$HOME/Library/Python" ]; then
+        for DIR in "$HOME"/Library/Python/*/bin; do
+            [ -d "$DIR" ] || continue
+            printf '%s\n' "$DIR"
+        done
+    fi
+}
+
 # 确保 uv 可执行在 PATH 中，并可被 command -v 发现
 _resolve_uv_path() {
-    local USER_BASE_BIN
+    local USER_BIN_DIR
 
     if command -v uv >/dev/null 2>&1; then
         return 0
     fi
 
-    _prepend_path_if_dir "$HOME/.local/bin"
-    if command -v uv >/dev/null 2>&1; then
-        return 0
-    fi
-
-    USER_BASE_BIN=$(_get_python_user_base_bin)
-    _prepend_path_if_dir "$USER_BASE_BIN"
-    if command -v uv >/dev/null 2>&1; then
-        return 0
-    fi
+    while IFS= read -r USER_BIN_DIR; do
+        [ -n "$USER_BIN_DIR" ] || continue
+        _prepend_path_if_dir "$USER_BIN_DIR"
+        if command -v uv >/dev/null 2>&1; then
+            return 0
+        fi
+    done <<EOF
+$(_list_candidate_user_bin_dirs)
+EOF
 
     return 1
 }
@@ -245,6 +279,16 @@ _resolve_uv_path() {
 if ! _resolve_uv_path; then
     :
 fi
+
+# 自动懒初始化仅对入口脚本生效，避免 source 共享脚本时意外触发安装/同步
+_should_auto_run_lazy_init() {
+    case "${0##*/}" in
+        sh|bash|dash|zsh|ksh|ash)
+            return 1
+            ;;
+    esac
+    return 0
+}
 
 # 从 state.json 读取 uv 路径
 _read_uv_path_from_runtime() {
@@ -265,6 +309,57 @@ _save_uv_path_to_runtime() {
         TMP_FILE=$(mktemp)
         jq --arg path "$UV_PATH" '.uv_path = $path' "$STATE_FILE" > "$TMP_FILE" && \
             mv "$TMP_FILE" "$STATE_FILE"
+    fi
+}
+
+# 校验 uv 路径是否真实可用（不仅是文件可执行，还要能成功执行 --version）
+_is_working_uv_path() {
+    uv_candidate="$1"
+    [ -n "$uv_candidate" ] || return 1
+    [ -f "$uv_candidate" ] || return 1
+    [ -x "$uv_candidate" ] || return 1
+    "$uv_candidate" --version >/dev/null 2>&1
+}
+
+_uv_module_version() {
+    local USER_SITE
+
+    if command -v python3 >/dev/null 2>&1; then
+        USER_SITE="$(_get_python_user_site_packages)"
+        if [ -n "$USER_SITE" ] && [ -d "$USER_SITE/uv" ]; then
+            if python3 -m uv --version >/dev/null 2>&1; then
+                python3 -m uv --version 2>/dev/null
+                return 0
+            fi
+        fi
+    fi
+    if command -v python >/dev/null 2>&1; then
+        USER_SITE=$(python -m site --user-site 2>/dev/null)
+        if [ -n "$USER_SITE" ] && [ -d "$USER_SITE/uv" ]; then
+            if python -m uv --version >/dev/null 2>&1; then
+                python -m uv --version 2>/dev/null
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+_can_run_uv_command() {
+    if command -v uv >/dev/null 2>&1 && uv --version >/dev/null 2>&1; then
+        return 0
+    fi
+    _uv_module_version >/dev/null 2>&1
+}
+
+# 从 state.json 清除失效的 uv 路径
+_clear_uv_path_from_runtime() {
+    local STATE_FILE TMP_FILE
+    STATE_FILE="$REMOTE_CLAUDE_STATE_FILE"
+
+    if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
+        TMP_FILE=$(mktemp)
+        jq '.uv_path = null' "$STATE_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$STATE_FILE"
     fi
 }
 
@@ -311,24 +406,44 @@ _log_script_fail() {
         "$STAGE" "na" "$CMD_SUMMARY" "$EXIT_CODE" >> "$INSTALL_LOG_FILE"
 }
 
+# 检测 pip 错误输出是否为版本过低场景
+_is_pip_too_old_error() {
+    case "$1" in
+        *"No matching distribution found for uv"*|*"Could not find a version that satisfies the requirement uv"*|*"unsupported wheel on this platform"*|*"Metadata-generation failed"*|*"pyproject.toml"*|*"No module named pip"*|*"no such option: --break-system-packages"*|*"unrecognized arguments: --break-system-packages"*|*"unknown option --break-system-packages"*|*"invalid command 'bdist_wheel'"*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # 通用 pip 多源执行器（自动附加 -i + --trusted-host）
 _run_pip_install_with_mirrors() {
     # $1: stage, $2: pip_cmd, $3...: pip 基础参数
-    local STAGE PIP_CMD LABEL INDEX_URL HOST RC CMD_SUMMARY
+    local STAGE PIP_CMD LABEL INDEX_URL HOST RC CMD_SUMMARY PIP_ERR_FILE PIP_ERR_CONTENT
     STAGE="$1"
     PIP_CMD="$2"
     shift 2
 
     CMD_SUMMARY="$PIP_CMD $* -i <index> --trusted-host <host>"
+    PIP_ERR_FILE=$(mktemp)
 
     while IFS='|' read -r LABEL INDEX_URL HOST; do
         [ -n "$LABEL" ] || continue
 
-        "$PIP_CMD" "$@" -i "$INDEX_URL" --trusted-host "$HOST" 2>/dev/null
+        "$PIP_CMD" "$@" -i "$INDEX_URL" --trusted-host "$HOST" 2>"$PIP_ERR_FILE"
         RC=$?
         if [ "$RC" -eq 0 ]; then
+            rm -f "$PIP_ERR_FILE"
             _install_log "stage=$STAGE source=$LABEL success"
             return 0
+        fi
+
+        PIP_ERR_CONTENT=$(cat "$PIP_ERR_FILE" 2>/dev/null || true)
+        if [ "$STAGE" = "uv-install" ] && _is_pip_too_old_error "$PIP_ERR_CONTENT"; then
+            print_error "当前 pip 版本过低，无法安装 uv；请先手动升级 pip 后重试"
+            rm -f "$PIP_ERR_FILE"
+            _log_install_fail "$STAGE" "$LABEL" "$CMD_SUMMARY" "$RC"
+            return "$RC"
         fi
 
         _log_install_fail "$STAGE" "$LABEL" "$CMD_SUMMARY" "$RC"
@@ -336,6 +451,7 @@ _run_pip_install_with_mirrors() {
 $(_install_pypi_sources)
 EOF
 
+    rm -f "$PIP_ERR_FILE"
     return 1
 }
 
@@ -366,46 +482,20 @@ EOF
     return 1
 }
 
-# pip 升级前置（失败记录但不阻断）
-_upgrade_pip_before_uv_install() {
-    # $1: pip 命令
-    local PIP_CMD
-    PIP_CMD="$1"
-    [ -n "$PIP_CMD" ] || return 1
-
-    _run_pip_install_with_mirrors "pip-upgrade" "$PIP_CMD" install --upgrade pip --user
-}
-
 # 多来源安装 uv
 # 返回: 0 成功, 1 失败
 install_uv_multi_source() {
-    local PIP_CMD RC
+    local PIP_CMD RC UV_BEFORE UV_AFTER USER_BASE_BIN USER_BASE_UV
     PIP_CMD="$(_detect_pip_cmd)"
+    UV_BEFORE="$(command -v uv 2>/dev/null || true)"
 
-    # 先尝试 pip --user 升级（失败只记录，不阻断后续安装）
-    if ! command -v uv >/dev/null 2>&1 && [ -n "$PIP_CMD" ]; then
-        if ! _upgrade_pip_before_uv_install "$PIP_CMD"; then
-            _install_log "stage=pip-upgrade all-sources-failed"
-        fi
-    fi
-
-    # pip 升级后若 uv 已可用，直接成功返回
-    if command -v uv >/dev/null 2>&1; then
+    # uv 已可用时直接返回
+    if _can_run_uv_command; then
         _resolve_uv_path
         return 0
     fi
 
-    # 方式一：pip --user + 固定镜像回退
-    if ! command -v uv >/dev/null 2>&1 && [ -n "$PIP_CMD" ]; then
-        print_warning "尝试 pip 安装 uv（固定镜像回退，--user）..."
-        if _run_pip_install_with_mirrors "uv-install" "$PIP_CMD" install uv --quiet --user --break-system-packages; then
-            _resolve_uv_path
-            command -v uv >/dev/null 2>&1
-            return $?
-        fi
-    fi
-
-    # 方式二：官方安装脚本（推荐，无需 Python）
+    # 方式一：官方安装脚本（推荐，无需 Python）
     print_warning "尝试官方脚本安装"
     if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh 2>/dev/null | sh; then
         if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
@@ -417,7 +507,7 @@ install_uv_multi_source() {
         _log_script_fail "uv-install-script" "curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh" "$RC"
     fi
 
-    # 方式三：conda/mamba
+    # 方式二：conda/mamba
     if ! command -v uv >/dev/null 2>&1; then
         if command -v mamba >/dev/null 2>&1; then
             print_warning "尝试 mamba 安装 uv..."
@@ -444,7 +534,7 @@ install_uv_multi_source() {
         fi
     fi
 
-    # 方式四：brew（macOS）
+    # 方式三：brew（macOS）
     if ! command -v uv >/dev/null 2>&1 && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
         print_warning "尝试 brew install uv..."
         if brew install uv 2>/dev/null; then
@@ -458,13 +548,29 @@ install_uv_multi_source() {
         fi
     fi
 
+    # 方式四：pip --user + 固定镜像回退
+    if ! _can_run_uv_command && [ -n "$PIP_CMD" ]; then
+        print_warning "尝试 pip 安装 uv（固定镜像回退，--user）..."
+        if _run_pip_install_with_mirrors "uv-install" "$PIP_CMD" install uv --quiet --user --break-system-packages; then
+            USER_BASE_BIN="$(_get_python_user_base_bin)"
+            USER_BASE_UV="${USER_BASE_BIN%/}/uv"
+            if [ -n "$USER_BASE_BIN" ] && [ -x "$USER_BASE_UV" ] && [ "$USER_BASE_UV" != "$UV_BEFORE" ]; then
+                _prepend_path_if_dir "$USER_BASE_BIN"
+            fi
+            if _resolve_uv_path && _can_run_uv_command; then
+                return 0
+            fi
+            _log_script_fail "uv-install-user-bin" "installed uv but command -v uv still missing" 127
+        fi
+    fi
+
     return 1
 }
 
 # 检查并安装 uv（完整流程）
 # 返回: 0 成功, 1 失败
 check_and_install_uv() {
-    local UV_PATH RUNTIME_FILE TMP_FILE
+    local UV_PATH RESOLVED_UV_PATH
 
     _set_lazy_init_result_if_unset "pending"
 
@@ -473,35 +579,39 @@ check_and_install_uv() {
         return 0
     fi
 
-    # 1. 从 runtime.json 读取 uv_path
+    # 1. 优先使用 runtime 中记录的 uv_path，但必须是健康可执行路径
     UV_PATH=$(_read_uv_path_from_runtime)
-    if [ -n "$UV_PATH" ] && [ -x "$UV_PATH" ]; then
-        export PATH="$(dirname "$UV_PATH"):$PATH"
-        _set_lazy_init_result "ready"
-        return 0
-    elif [ -n "$UV_PATH" ]; then
-        print_warning "配置的 uv 路径失效（$UV_PATH），尝试系统 uv..."
-        # 清除失效路径
-        RUNTIME_FILE="$HOME/.remote-claude/runtime.json"
-        if [ -f "$RUNTIME_FILE" ] && command -v jq >/dev/null 2>&1; then
-            TMP_FILE=$(mktemp)
-            jq '.uv_path = null' "$RUNTIME_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$RUNTIME_FILE"
+    if [ -n "$UV_PATH" ]; then
+        if _is_working_uv_path "$UV_PATH"; then
+            _prepend_path_if_dir "$(dirname "$UV_PATH")"
+            _save_uv_path_to_runtime "$UV_PATH"
+            _set_lazy_init_result "ready"
+            return 0
         fi
+
+        print_warning "配置的 uv 路径失效，尝试系统 uv..."
+        _clear_uv_path_from_runtime
     fi
 
-    # 2. 检测系统 uv
-    if command -v uv >/dev/null 2>&1; then
-        _save_uv_path_to_runtime "$(command -v uv)"
-        _set_lazy_init_result "ready"
-        return 0
+    # 2. 检测系统 uv / 常见候选路径
+    if _resolve_uv_path; then
+        RESOLVED_UV_PATH="$(command -v uv 2>/dev/null || true)"
+        if _is_working_uv_path "$RESOLVED_UV_PATH" || _uv_module_version >/dev/null 2>&1; then
+            _save_uv_path_to_runtime "$RESOLVED_UV_PATH"
+            _set_lazy_init_result "ready"
+            return 0
+        fi
     fi
 
     # 3. 多来源安装
     if install_uv_multi_source; then
-        print_success "uv 安装成功"
-        _save_uv_path_to_runtime "$(command -v uv)"
-        _set_lazy_init_result "installed"
-        return 0
+        RESOLVED_UV_PATH="$(command -v uv 2>/dev/null || true)"
+        if _is_working_uv_path "$RESOLVED_UV_PATH" || _uv_module_version >/dev/null 2>&1; then
+            print_success "uv 安装成功"
+            _save_uv_path_to_runtime "$RESOLVED_UV_PATH"
+            _set_lazy_init_result "installed"
+            return 0
+        fi
     fi
 
     _set_lazy_init_result "uv-install-failed"
@@ -601,12 +711,121 @@ _path_contains() {
 }
 
 # 打印带颜色的标题头
+REMOTE_CLAUDE_SHORTCUT_COMMANDS="cla cl cx cdx remote-claude"
+export REMOTE_CLAUDE_SHORTCUT_COMMANDS
+
+rc_foreach_shortcut_command() {
+    for shortcut_cmd in $REMOTE_CLAUDE_SHORTCUT_COMMANDS; do
+        "$@" "$shortcut_cmd" || return $?
+    done
+}
+
+rc_link_shortcuts_into_dir() {
+    target_dir="$1"
+    [ -n "$target_dir" ] || return 1
+
+    rc_foreach_shortcut_command _rc_link_shortcut_into_dir "$target_dir"
+}
+
+_rc_link_shortcut_into_dir() {
+    target_dir="$1"
+    shortcut_cmd="$2"
+    ln -sf "$PROJECT_DIR/bin/$shortcut_cmd" "$target_dir/$shortcut_cmd" 2>/dev/null || true
+}
+
+rc_remove_shortcuts_from_dir() {
+    target_dir="$1"
+    [ -d "$target_dir" ] || return 1
+
+    rc_foreach_shortcut_command _rc_remove_shortcut_from_dir "$target_dir"
+}
+
+_rc_remove_shortcut_from_dir() {
+    target_dir="$1"
+    shortcut_cmd="$2"
+    link_path="$target_dir/$shortcut_cmd"
+    if [ -L "$link_path" ]; then
+        target=$(readlink "$link_path" 2>/dev/null || true)
+        case "$target" in
+            *"remote_claude"*|*"remote-claude"*)
+                rm -f "$link_path"
+                print_detail "已删除: $link_path"
+                RC_REMOVED_SHORTCUT_COUNT=$((RC_REMOVED_SHORTCUT_COUNT + 1))
+                export RC_REMOVED_SHORTCUT_COUNT
+                ;;
+        esac
+    fi
+}
+
+print_post_action_hint() {
+    title="$1"
+    shift
+
+    printf '\n%b%s%b\n' "${YELLOW}" "$title" "${NC}"
+    for hint in "$@"; do
+        print_detail "$hint"
+    done
+}
+
+print_shell_reload_hint() {
+    shell_rc="$1"
+    printf '%b\n' "${YELLOW}提示:${NC} 重新打开终端或运行 ${GREEN}. $shell_rc${NC} 生效"
+}
+
 print_header() {
     printf '\n'
     printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     printf '%b\n' "${GREEN}$1${NC}"
     printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     printf '\n'
+}
+
+print_banner() {
+    title="$1"
+    subtitle="$2"
+    printf '\n'
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '%b\n' "${GREEN}   ${title}${NC}"
+    printf '%b\n' "${GREEN}   ${subtitle}${NC}"
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '\n'
+}
+
+print_uv_manual_install_hint() {
+    print_info "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+    print_info "  或访问 https://docs.astral.sh/uv/getting-started/installation/"
+}
+
+require_supported_os() {
+    OS=$(uname -s)
+    if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
+        print_error "不支持的操作系统: $OS"
+        print_error "Remote Claude 仅支持 macOS 和 Linux"
+        return 1
+    fi
+    print_success "操作系统: $OS"
+}
+
+ensure_uv_or_hint() {
+    header_text="$1"
+    [ -z "$header_text" ] && header_text="检查 uv"
+
+    print_header "$header_text"
+
+    if check_and_install_uv; then
+        UV_VERSION=""
+        if command -v uv >/dev/null 2>&1 && UV_VERSION=$(uv --version 2>/dev/null); then
+            :
+        else
+            UV_VERSION=$(_uv_module_version)
+        fi
+        print_success "$UV_VERSION 已安装"
+        return 0
+    fi
+
+    print_error "uv 安装失败，请手动安装："
+    print_uv_manual_install_hint
+    return 1
 }
 
 # 检测是否在包管理器缓存目录中
@@ -910,7 +1129,7 @@ handle_lazy_init_failure() {
 }
 
 _remote_claude_python() {
-    local project_dir
+    local project_dir uv_project_dir force_uv_run command_name
     project_dir="${PROJECT_DIR:-}"
     if [ -z "$project_dir" ]; then
         case "$SCRIPT_DIR" in
@@ -928,12 +1147,36 @@ _remote_claude_python() {
         return 1
     fi
 
-    if [ ! -x "$project_dir/.venv/bin/python3" ]; then
-        print_error "项目虚拟环境未就绪: $project_dir/.venv/bin/python3"
+    uv_project_dir="${REMOTE_CLAUDE_UV_PROJECT_DIR:-$project_dir}"
+    force_uv_run="${REMOTE_CLAUDE_FORCE_UV_RUN:-0}"
+    command_name="${1:-}"
+    if [ ! -f "$uv_project_dir/pyproject.toml" ]; then
+        print_error "uv 项目目录无效: $uv_project_dir"
         return 1
     fi
 
-    "$project_dir/.venv/bin/python3" "$project_dir/remote_claude.py" "$@"
+    if [ -x "$project_dir/.venv/bin/python3" ] && [ "$uv_project_dir" = "$project_dir" ] && [ "$force_uv_run" != "1" ]; then
+        "$project_dir/.venv/bin/python3" "$project_dir/remote_claude.py" "$@"
+        return $?
+    fi
+
+    case "$command_name" in
+        start|attach|resume)
+            ;;
+        *)
+            if [ -x "$project_dir/.venv/bin/python3" ]; then
+                "$project_dir/.venv/bin/python3" "$project_dir/remote_claude.py" "$@"
+                return $?
+            fi
+            ;;
+    esac
+
+    if ! check_and_install_uv; then
+        print_error "未找到 uv，不能执行 Python 入口"
+        return 1
+    fi
+
+    uv run --project "$uv_project_dir" python3 "$project_dir/remote_claude.py" "$@"
 }
 
 _run_project_python() {
@@ -972,8 +1215,54 @@ _assert_not_nested_uv_run() {
     return 0
 }
 
+_remote_claude_shortcut_help_or_main() {
+    launcher="$1"
+    permission_args="$2"
+    shift 2
+
+    REMOTE_CLAUDE_SHORTCUT_LAUNCHER="$launcher"
+    REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS="$permission_args"
+    export REMOTE_CLAUDE_SHORTCUT_LAUNCHER REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS
+
+    case "${1:-}" in
+        -h|--help)
+            . "$PROJECT_DIR/scripts/_help.sh"
+            _print_quick_help
+            exit 0
+            ;;
+    esac
+
+    _remote_claude_shortcut_main "$@"
+}
+
 # 延迟初始化：检测是否需要运行 setup.sh
 # 条件：.venv 不存在 或依赖指纹变化 且不在缓存目录中
+_remote_claude_shortcut_main() {
+    # help 参数应显示快捷命令概览
+    case "${1:-}" in
+        -h|--help)
+            . "$PROJECT_DIR/scripts/_help.sh"
+            _print_quick_help
+            exit 0
+            ;;
+    esac
+
+    # 飞书未配置时允许继续启动本地会话
+    REMOTE_CLAUDE_REQUIRE_FEISHU=0
+    export REMOTE_CLAUDE_REQUIRE_FEISHU
+    sh "$PROJECT_DIR/scripts/check-env.sh"
+
+    # 在启动目录执行入口点，保持 session 名与 cwd 一致
+    cd "$STARTUP_DIR" || exit 1
+    if [ -f "$HOME/.remote-claude/.env" ]; then
+        _remote_claude_python lark start
+    fi
+
+    session_name="${STARTUP_DIR}_$(date +%m%d_%H%M%S)"
+    set -- start "$session_name" --launcher "$REMOTE_CLAUDE_SHORTCUT_LAUNCHER" ${REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS:-} -- "$@"
+    _remote_claude_python "$@"
+}
+
 _lazy_init() {
     _set_lazy_init_result_if_unset "pending"
 
@@ -996,8 +1285,7 @@ _lazy_init() {
         print_warning "未找到 uv，正在安装..."
         if ! check_and_install_uv; then
             print_error "uv 安装失败，请手动安装后重试"
-            print_info "  curl -LsSf https://astral.sh/uv/install.sh | sh"
-            print_info "  或访问 https://docs.astral.sh/uv/getting-started/installation/"
+            print_uv_manual_install_hint
             return 1
         fi
         print_success "uv 安装成功"
@@ -1047,7 +1335,7 @@ _lazy_init() {
     return 0
 }
 
-if [ "${LAZY_INIT_DISABLE_AUTO_RUN:-0}" != "1" ]; then
+if [ "${LAZY_INIT_DISABLE_AUTO_RUN:-0}" != "1" ] && _should_auto_run_lazy_init; then
     _lazy_init
     lazy_init_rc=$?
     if [ "$lazy_init_rc" -ne 0 ]; then

@@ -113,6 +113,12 @@ remote-claude lark status
    - `/list` - 列出所有会话
    - `/help` - 显示帮助信息
 
+如需先用指定启动器创建会话，可使用：
+
+```bash
+remote-claude start my-session --launcher Codex
+```
+
 ## 事件回调配置详解
 
 ### 本地开发环境
@@ -205,10 +211,7 @@ remote-claude lark restart
 ```json
 {
   "card": {
-    "expiry": {
-      "enabled": true,
-      "expiry_seconds": 3600
-    }
+    "expiry_sec": 3600
   }
 }
 ```

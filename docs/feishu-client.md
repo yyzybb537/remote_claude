@@ -7,7 +7,13 @@
 ### 启动飞书客户端
 
 ```bash
-uv run python3 remote_claude.py lark start
+remote-claude lark start
+```
+
+如需在某个会话中使用 Codex 启动器，可先这样启动会话：
+
+```bash
+remote-claude start my-session --launcher Codex
 ```
 
 **输出示例：**
@@ -17,8 +23,8 @@ uv run python3 remote_claude.py lark start
   PID: 12345
   日志: /path/to/lark_client.log
 
-使用 'uv run python3 remote_claude.py lark status' 查看状态
-使用 'uv run python3 remote_claude.py lark stop' 停止
+使用 'remote-claude lark status' 查看状态
+使用 'remote-claude lark stop' 停止
 ```
 
 **特性：**
@@ -29,7 +35,7 @@ uv run python3 remote_claude.py lark start
 ### 查看运行状态
 
 ```bash
-uv run python3 remote_claude.py lark status
+remote-claude lark status
 ```
 
 **输出示例：**
@@ -58,7 +64,7 @@ PID:      12345
 ### 停止飞书客户端
 
 ```bash
-uv run python3 remote_claude.py lark stop
+remote-claude lark stop
 ```
 
 **输出示例：**
@@ -75,7 +81,7 @@ uv run python3 remote_claude.py lark stop
 ### 重启飞书客户端
 
 ```bash
-uv run python3 remote_claude.py lark restart
+remote-claude lark restart
 ```
 
 等同于先执行 `stop`，再执行 `start`。
@@ -177,7 +183,7 @@ rm -f /tmp/remote-claude/lark.pid
 rm -f /tmp/remote-claude/lark.status
 
 # 4. 重新启动
-uv run python3 remote_claude.py lark start
+remote-claude lark start
 ```
 
 ### 4. 日志文件过大
@@ -190,13 +196,13 @@ ls -lh lark_client.log
 **归档旧日志：**
 ```bash
 # 1. 停止客户端
-python3 remote_claude.py lark stop
+remote-claude lark stop
 
 # 2. 归档日志
 mv lark_client.log lark_client.log.$(date +%Y%m%d_%H%M%S)
 
 # 3. 重新启动
-python3 remote_claude.py lark start
+remote-claude lark start
 ```
 
 **或使用 logrotate（推荐）：**
@@ -226,7 +232,7 @@ cat /tmp/remote-claude/lark.pid
 kill -9 <PID>
 
 # 清理文件
-python3 remote_claude.py lark stop
+remote-claude lark stop
 ```
 
 ## 🔄 开机自启动（可选）
@@ -244,21 +250,20 @@ python3 remote_claude.py lark stop
     <string>com.remote-claude.lark</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/path/to/remote_claude/remote_claude.py</string>
+        <string>/usr/local/bin/remote-claude</string>
         <string>lark</string>
         <string>start</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/path/to/remote_claude</string>
+    <string>/path/to/remote-claude</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/path/to/remote_claude/lark_client.log</string>
+    <string>/path/to/remote-claude/lark_client.log</string>
     <key>StandardErrorPath</key>
-    <string>/path/to/remote_claude/lark_client.log</string>
+    <string>/path/to/remote-claude/lark_client.log</string>
 </dict>
 </plist>
 ```
@@ -281,8 +286,8 @@ After=network.target
 Type=simple
 User=your-username
 WorkingDirectory=/path/to/remote_claude
-ExecStart=/usr/bin/python3 /path/to/remote_claude/remote_claude.py lark start
-ExecStop=/usr/bin/python3 /path/to/remote_claude/remote_claude.py lark stop
+ExecStart=/usr/local/bin/remote-claude lark start
+ExecStop=/usr/local/bin/remote-claude lark stop
 Restart=on-failure
 RestartSec=10
 
@@ -310,9 +315,9 @@ sudo systemctl status remote-claude-lark
 #!/bin/bash
 
 while true; do
-    if ! python3 remote_claude.py lark status > /dev/null 2>&1; then
+    if ! remote-claude lark status > /dev/null 2>&1; then
         echo "[$(date)] 飞书客户端未运行，正在重启..." | tee -a monitor.log
-        python3 remote_claude.py lark start
+        remote-claude lark start
     fi
     sleep 60
 done
@@ -348,7 +353,7 @@ def health():
 在启动时设置环境变量：
 
 ```bash
-LARK_LOG_FILE=/custom/path/lark.log python3 remote_claude.py lark start
+LARK_LOG_FILE=/custom/path/lark.log remote-claude lark start
 ```
 
 （需要在代码中支持此环境变量，当前未实现）
@@ -357,9 +362,9 @@ LARK_LOG_FILE=/custom/path/lark.log python3 remote_claude.py lark start
 
 如果遇到其他问题：
 
-1. 查看完整文档：[CLAUDE.md](./CLAUDE.md)
-2. 提交 Issue：[GitHub Issues](https://github.com/yourusername/remote_claude/issues)
-3. 查看测试脚本：`test_lark_management.sh`
+1. 查看仓库说明：[README.md](../README.md)
+2. 提交 Issue：[GitHub Issues](https://github.com/yyzybb537/remote_claude/issues)
+3. 查看测试脚本：`scripts/test_lark_management.sh`
 
 ---
 

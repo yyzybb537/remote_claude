@@ -20,6 +20,15 @@ cx         # 在当前目录启动 Codex，会跳过权限确认
 cdx        # 在当前目录启动 Codex，并保留权限确认
 ```
 
+如果需要稳定的会话名或从其他终端复用同一会话，优先使用主命令：
+
+```bash
+remote-claude start <session>
+remote-claude attach <session>
+remote-claude status <session>
+remote-claude kill <session>
+```
+
 ## 主命令
 
 ### start - 启动会话
@@ -31,7 +40,7 @@ remote-claude start <会话名> [选项]
 **选项**：
 | 选项 | 说明 |
 |------|------|
-| `--cli-type <type>` | CLI 类型（claude/codex），默认自动检测 |
+| `--launcher <name>` | 启动器名称（如 Claude/Codex），不指定则使用默认启动器 |
 | `--remote` | 启用远程模式 |
 | `--remote-port <port>` | 远程端口，默认 8765 |
 | `--remote-host <host>` | 远程监听地址，默认 0.0.0.0 |
@@ -44,8 +53,8 @@ remote-claude start my-session
 # 启动远程会话
 remote-claude start my-session --remote --remote-port 8765
 
-# 指定 CLI 类型
-remote-claude start my-session --cli-type codex
+# 指定启动器
+remote-claude start my-session --launcher Codex
 ```
 
 ### attach - 连接会话
@@ -173,22 +182,28 @@ remote-claude update
 ### config - 配置管理
 
 ```bash
-remote-claude config <子命令>
+remote-claude config reset [选项]
 ```
 
-**子命令**：
-| 子命令 | 说明 |
-|--------|------|
-| `reset` | 重置配置 |
-| `reset --all` | 重置所有配置（包括运行时状态） |
+当前公开的 `config` 子命令仅包含 `reset`。
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--all` | 重置全部配置（用户配置 + 运行时状态） |
+| `--config` | 仅重置用户配置 |
+| `--runtime` | 仅重置运行时状态 |
 
 **示例**：
 ```bash
 # 重置用户配置
-remote-claude config reset
+remote-claude config reset --config
 
-# 重置所有配置
+# 重置全部配置
 remote-claude config reset --all
+
+# 仅重置运行时状态
+remote-claude config reset --runtime
 ```
 
 ## Token 管理
@@ -241,9 +256,9 @@ remote-claude remote <子命令> <host>:<port>/<session> --token <token>
 **子命令**：
 | 子命令 | 说明 |
 |--------|------|
-| `shutdown` | 关闭服务器 |
-| `restart` | 重启服务器 |
-| `update` | 更新版本 |
+| `shutdown` | 关闭远程服务 |
+| `restart` | 重启远程服务 |
+| `update` | 更新远程服务版本 |
 
 **示例**：
 ```bash
@@ -261,7 +276,7 @@ remote-claude connection <子命令>
 |--------|------|
 | `list` | 列出所有保存的配置 |
 | `show <name>` | 查看配置详情 |
-| `set-default <name>` | 设置默认配置 |
+| `set-default <name>` | 设置默认连接配置 |
 | `delete <name>` | 删除配置 |
 
 **示例**：
@@ -272,7 +287,7 @@ remote-claude connection list
 # 查看配置详情
 remote-claude connection show default
 
-# 设置默认配置
+# 设置默认连接配置
 remote-claude connection set-default myserver
 
 # 删除配置

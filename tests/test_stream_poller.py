@@ -30,6 +30,23 @@ from lark_client.card_builder import (
 )
 
 
+class TestSettingsReload(unittest.TestCase):
+    """测试 SharedMemoryPoller 配置加载"""
+
+    def test_reload_settings_reads_latest_values(self):
+        from lark_client.shared_memory_poller import SharedMemoryPoller
+
+        fake_card_service = MagicMock()
+        poller = SharedMemoryPoller(fake_card_service)
+
+        with patch("lark_client.shared_memory_poller.load_settings", side_effect=[{"version": "new-1"}, {"version": "new-2"}]):
+            first = poller._get_settings()
+            second = poller._get_settings()
+
+        self.assertEqual(first, {"version": "new-1"})
+        self.assertEqual(second, {"version": "new-2"})
+
+
 class TestEscapeMd(unittest.TestCase):
     """测试 _escape_md markdown 特殊字符转义"""
 
@@ -845,6 +862,27 @@ class TestPollerPollOnce(unittest.TestCase):
         self.card_service.create_card.assert_not_called()
         self.assertEqual(len(tracker.cards), 0)
 
+    def test_first_poll_retries_when_send_fails(self):
+        """首次建卡发送失败时下次应继续尝试，而不是被 hash 跳过"""
+        blocks = [{"_type": "OutputBlock", "content": "hello", "indicator": "●"}]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+
+        self.card_service.send_card = AsyncMock(side_effect=RuntimeError("send failed"))
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+        with self.assertRaises(RuntimeError):
+            asyncio.run(self.poller._poll_once(tracker))
+
+        self.assertEqual(len(tracker.cards), 0)
+        self.assertEqual(tracker.content_hash, "")
+        first_create_calls = self.card_service.create_card.call_count
+
+        self.card_service.send_card = AsyncMock(return_value="msg_001")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+        asyncio.run(self.poller._poll_once(tracker))
+
+        self.assertGreater(self.card_service.create_card.call_count, first_create_calls)
+        self.assertEqual(len(tracker.cards), 1)
+
     def test_first_poll_creates_card(self):
         """首次轮询有 blocks → 创建新卡片"""
         blocks = [{"_type": "OutputBlock", "content": f"block {i}", "indicator": "●"} for i in range(5)]
@@ -928,6 +966,158 @@ class TestPollerPollOnce(unittest.TestCase):
         self.assertFalse(tracker.cards[1].frozen)
         self.assertEqual(tracker.cards[1].start_idx, MAX_CARD_BLOCKS)
 
+    def test_freeze_and_split_does_not_append_new_card_when_send_fails(self):
+        """冻结后新卡发送失败时不应把新卡写入本地状态"""
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(MAX_CARD_BLOCKS + 10)]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks[:5], "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        original_cards_len = len(tracker.cards)
+        original_hash = tracker.content_hash
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+        self.card_service.send_card = AsyncMock(side_effect=RuntimeError("send failed"))
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(self.poller._poll_once(tracker))
+
+        self.assertEqual(len(tracker.cards), original_cards_len)
+        self.assertEqual(tracker.content_hash, original_hash)
+
+    def test_freeze_and_split_retries_when_send_fails(self):
+        """冻结后新卡发送失败时下次应继续尝试，而不是被 hash 跳过"""
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(MAX_CARD_BLOCKS + 10)]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks[:5], "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+        self.card_service.send_card = AsyncMock(side_effect=RuntimeError("send failed"))
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(self.poller._poll_once(tracker))
+
+        first_create_calls = self.card_service.create_card.call_count
+
+        self.card_service.send_card = AsyncMock(return_value="msg_002")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+        asyncio.run(self.poller._poll_once(tracker))
+
+        self.assertGreater(self.card_service.create_card.call_count, first_create_calls)
+        self.assertEqual(len(tracker.cards), 2)
+
+    def test_freeze_and_split_does_not_log_freeze_when_freeze_update_fails(self):
+        """冻结旧卡失败时不应记录误导性的冻结成功日志"""
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(MAX_CARD_BLOCKS + 10)]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks[:5], "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        self.card_service.update_card = AsyncMock(return_value=False)
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        with patch("lark_client.shared_memory_poller.logger.info") as mock_info:
+            asyncio.run(self.poller._poll_once(tracker))
+
+        freeze_logs = [str(call.args[0]) for call in mock_info.call_args_list if call.args]
+        self.assertFalse(any("[FREEZE]" in msg for msg in freeze_logs))
+
+    def test_freeze_and_split_does_not_mark_frozen_when_freeze_update_fails(self):
+        """冻结旧卡失败时不应污染本地 frozen/sequence 状态"""
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(MAX_CARD_BLOCKS + 10)]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks[:5], "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        original_sequence = tracker.cards[0].sequence
+        self.card_service.update_card = AsyncMock(return_value=False)
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        self.assertFalse(tracker.cards[0].frozen)
+        self.assertEqual(tracker.cards[0].sequence, original_sequence)
+        self.assertEqual(len(tracker.cards), 1)
+
+    def test_handle_element_limit_clears_last_notify_message_on_success(self):
+        """元素超限成功拆卡后应清空上一条就绪通知 message_id"""
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.cards.append(CardSlice(card_id="card_001", sequence=3, start_idx=0))
+        tracker.last_notify_message_id = "msg_old"
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(40)]
+
+        self.card_service.update_card = AsyncMock(return_value=True)
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+        self.card_service.send_card = AsyncMock(return_value="msg_002")
+
+        asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+
+        self.assertIsNone(tracker.last_notify_message_id)
+
+    def test_handle_element_limit_keeps_last_notify_message_when_send_fails(self):
+        """元素超限新卡发送失败时不应提前清空上一条就绪通知 message_id"""
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.cards.append(CardSlice(card_id="card_001", sequence=3, start_idx=0))
+        tracker.last_notify_message_id = "msg_old"
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(40)]
+
+        self.card_service.update_card = AsyncMock(return_value=True)
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+        self.card_service.send_card = AsyncMock(side_effect=RuntimeError("send failed"))
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+
+        self.assertEqual(tracker.last_notify_message_id, "msg_old")
+
+    def test_handle_element_limit_retries_when_send_fails(self):
+        """元素超限新卡发送失败时下次应继续尝试，而不是被 hash 跳过"""
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.cards.append(CardSlice(card_id="card_001", sequence=3, start_idx=0))
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(40)]
+
+        self.card_service.update_card = AsyncMock(return_value=True)
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+        self.card_service.send_card = AsyncMock(side_effect=RuntimeError("send failed"))
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+
+        self.assertEqual(len(tracker.cards), 1)
+        self.assertTrue(tracker.cards[0].frozen)
+        first_create_calls = self.card_service.create_card.call_count
+
+        self.card_service.send_card = AsyncMock(return_value="msg_002")
+        asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+
+        self.assertGreater(self.card_service.create_card.call_count, first_create_calls)
+        self.assertEqual(len(tracker.cards), 2)
+
+    def test_handle_element_limit_does_not_split_when_freeze_update_fails(self):
+        """元素超限冻结失败时不应继续创建新卡"""
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.cards.append(CardSlice(card_id="card_001", sequence=3, start_idx=0))
+        blocks = [{"_type": "OutputBlock", "content": f"b{i}", "indicator": "●"} for i in range(40)]
+
+        self.card_service.update_card = AsyncMock(return_value=False)
+        self.card_service.create_card = AsyncMock(return_value="card_002")
+
+        asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+
+        self.card_service.create_card.assert_not_called()
+        self.card_service.send_card.assert_not_called()
+        self.assertEqual(len(tracker.cards), 1)
+        self.assertFalse(tracker.cards[0].frozen)
+        self.assertEqual(tracker.cards[0].sequence, 3)
+
     def test_update_fallback_on_failure(self):
         """update_card 失败时降级为创建新卡片"""
         blocks = [{"_type": "OutputBlock", "content": "hello", "indicator": "●"}]
@@ -951,6 +1141,100 @@ class TestPollerPollOnce(unittest.TestCase):
         # 降级创建了新卡片
         self.assertEqual(tracker.cards[0].card_id, "card_fallback")
         self.assertEqual(tracker.cards[0].sequence, 0)
+
+    def test_update_fallback_on_failure_does_not_keep_failed_sequence_or_timestamp(self):
+        """update_card 失败降级时不应保留失败更新写入的本地状态"""
+        blocks = [{"_type": "OutputBlock", "content": "hello", "indicator": "●"}]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        original_last_activity = tracker.cards[0].last_activity_time
+
+        blocks_v2 = [
+            {"_type": "OutputBlock", "content": "hello", "indicator": "●"},
+            {"_type": "OutputBlock", "content": "world", "indicator": "●"},
+        ]
+        tracker.reader = self._make_reader({"blocks": blocks_v2, "status_line": None, "bottom_bar": None})
+        self.card_service.update_card = AsyncMock(return_value=False)
+        self.card_service.create_card = AsyncMock(return_value="card_fallback")
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        self.assertEqual(tracker.cards[0].card_id, "card_fallback")
+        self.assertEqual(tracker.cards[0].sequence, 0)
+        self.assertEqual(tracker.cards[0].last_activity_time, original_last_activity)
+
+    def test_update_fallback_create_failure_does_not_log_update(self):
+        """fallback 创建失败时不应记录误导性的 UPDATE 调试日志"""
+        blocks = [{"_type": "OutputBlock", "content": "hello", "indicator": "●"}]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        blocks_v2 = [
+            {"_type": "OutputBlock", "content": "hello", "indicator": "●"},
+            {"_type": "OutputBlock", "content": "world", "indicator": "●"},
+        ]
+        tracker.reader = self._make_reader({"blocks": blocks_v2, "status_line": None, "bottom_bar": None})
+        self.card_service.update_card = AsyncMock(return_value=False)
+        self.card_service.create_card = AsyncMock(return_value=None)
+
+        with patch("lark_client.shared_memory_poller.logger.debug") as mock_debug:
+            asyncio.run(self.poller._poll_once(tracker))
+
+        debug_logs = [str(call.args[0]) for call in mock_debug.call_args_list if call.args]
+        self.assertFalse(any("[UPDATE]" in msg for msg in debug_logs))
+
+    def test_update_fallback_does_not_track_fallback_when_create_fails(self):
+        """fallback 创建失败时不应记录 fallback 成功埋点"""
+        blocks = [{"_type": "OutputBlock", "content": "hello", "indicator": "●"}]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        blocks_v2 = [
+            {"_type": "OutputBlock", "content": "hello", "indicator": "●"},
+            {"_type": "OutputBlock", "content": "world", "indicator": "●"},
+        ]
+        tracker.reader = self._make_reader({"blocks": blocks_v2, "status_line": None, "bottom_bar": None})
+        self.card_service.update_card = AsyncMock(return_value=False)
+        self.card_service.create_card = AsyncMock(return_value=None)
+
+        with patch("lark_client.shared_memory_poller._safe_track_stats") as mock_track:
+            asyncio.run(self.poller._poll_once(tracker))
+
+        track_calls = [call.args[:2] for call in mock_track.call_args_list]
+        self.assertNotIn(("card", "fallback"), track_calls)
+
+    def test_update_fallback_create_failure_does_not_commit_hash_or_sequence(self):
+        """fallback 创建新卡失败时不应提交 content_hash 或 sequence"""
+        blocks = [{"_type": "OutputBlock", "content": "hello", "indicator": "●"}]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        original_card_id = tracker.cards[0].card_id
+        original_sequence = tracker.cards[0].sequence
+        original_hash = tracker.content_hash
+
+        blocks_v2 = [
+            {"_type": "OutputBlock", "content": "hello", "indicator": "●"},
+            {"_type": "OutputBlock", "content": "world", "indicator": "●"},
+        ]
+        tracker.reader = self._make_reader({"blocks": blocks_v2, "status_line": None, "bottom_bar": None})
+        self.card_service.update_card = AsyncMock(return_value=False)
+        self.card_service.create_card = AsyncMock(return_value=None)
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        self.assertEqual(tracker.cards[0].card_id, original_card_id)
+        self.assertEqual(tracker.cards[0].sequence, original_sequence)
+        self.assertEqual(tracker.content_hash, original_hash)
 
 
 class TestPollerStartStop(unittest.TestCase):

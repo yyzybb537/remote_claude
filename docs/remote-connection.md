@@ -122,7 +122,7 @@ remote-claude connection list
 # 查看配置详情
 remote-claude connection show <name>
 
-# 设置默认配置
+# 设置默认连接配置
 remote-claude connection set-default <name>
 
 # 删除配置

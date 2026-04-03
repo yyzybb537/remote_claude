@@ -164,6 +164,9 @@ def clean_terminal_output(raw_data: bytes, user_input: str = "") -> str:
     """
     text = raw_data.decode('utf-8', errors='replace')
 
+    # 先移除 OSC 标题等非显示控制序列，避免污染提示符行内容
+    text = re.sub(r'\x1b\][^\x07]*\x07', '', text)
+
     # 使用终端缓冲器处理
     buffer = TerminalBuffer()
     buffer.write(text)
@@ -203,7 +206,7 @@ def clean_terminal_output(raw_data: bytes, user_input: str = "") -> str:
             continue
 
         # 跳过用户输入回显
-        if user_input and stripped == user_input:
+        if user_input and (stripped == user_input or stripped == f'❯ {user_input}'):
             continue
 
         # 跳过 esc 提示

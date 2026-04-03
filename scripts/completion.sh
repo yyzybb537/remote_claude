@@ -48,15 +48,31 @@ _resolve_project_dir_from_completion_source() {
 
 PROJECT_DIR="$(_resolve_project_dir_from_remote_cmd 2>/dev/null || true)"
 if [ -z "$PROJECT_DIR" ]; then
-    PROJECT_DIR="$(_resolve_project_dir_from_completion_source)"
+    PROJECT_DIR="$(_resolve_project_dir_from_completion_source 2>/dev/null || true)"
 fi
 LAZY_INIT_DISABLE_AUTO_RUN=1
 export LAZY_INIT_DISABLE_AUTO_RUN
-. "$PROJECT_DIR/scripts/_common.sh"
+if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/scripts/_common.sh" ]; then
+    . "$PROJECT_DIR/scripts/_common.sh"
+fi
 unset LAZY_INIT_DISABLE_AUTO_RUN
 
 _remote_claude_get_sessions() {
-    remote-claude list 2>/dev/null | awk 'NR>3 && NF>0 && !/^-/ && !/^共/ {print $1}'
+    if ! command -v remote-claude >/dev/null 2>&1; then
+        return 0
+    fi
+
+    remote-claude list 2>/dev/null | \
+        sed 's/\x1b\[[0-9;]*m//g' | \
+        awk '
+            NF == 0 { next }
+            /^活跃会话:/ { next }
+            /^类型[[:space:]]+PID[[:space:]]+tmux[[:space:]]+名称$/ { next }
+            /^[-─]+$/ { next }
+            /^共[[:space:]][0-9]+[[:space:]]+个会话$/ { next }
+            /^没有活跃的会话$/ { next }
+            { print $NF }
+        '
 }
 
 if [ -n "${ZSH_VERSION:-}" ]; then
@@ -79,6 +95,12 @@ if [ -n "${ZSH_VERSION:-}" ]; then
             "stats:查看使用统计"
             "log:查看会话日志"
             "update:更新到最新版本"
+            "config:配置管理"
+            "connection:远程连接配置管理"
+            "token:显示会话 token"
+            "regenerate-token:重新生成 token"
+            "connect:连接到远程会话"
+            "remote:远程控制"
         )
         lark_cmds=(
             "start:启动飞书客户端"
@@ -113,7 +135,7 @@ elif [ -n "${BASH_VERSION:-}" ]; then
         _rc_bash_sessions=
 
         _rc_bash_cur="${COMP_WORDS[COMP_CWORD]}"
-        _rc_bash_commands="start attach list kill status lark stats log update"
+        _rc_bash_commands="start attach list kill status lark stats log update config connection token regenerate-token connect remote"
         _rc_bash_lark_cmds="start stop restart status"
 
         if [ "$COMP_CWORD" -eq 1 ]; then

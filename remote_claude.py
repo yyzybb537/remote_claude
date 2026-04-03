@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Remote Claude - 双端共享 Claude CLI 工具
+Remote Claude - 双端共享 Claude/Codex CLI 工具
 
 命令:
   start <name>       启动新会话（在 tmux 中）
@@ -25,26 +25,129 @@ import signal
 from datetime import datetime
 from pathlib import Path
 
-# 确保项目根目录在 sys.path 中，以便 import client / server 子模块
-_PROJECT_ROOT = str(Path(__file__).parent)
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-from utils.session import (
-    get_socket_path, ensure_socket_dir, tmux_session_exists, tmux_create_session,
-    tmux_kill_session,
-    list_active_sessions, is_session_active, cleanup_session,
-    is_lark_running, get_lark_pid, get_lark_status, get_lark_pid_file,
-    save_lark_status, cleanup_lark,
-    USER_DATA_DIR, ensure_user_data_dir,
-    get_env_snapshot_path,
-)
-from server.biz_enum import CliType
-from utils.logging_setup import get_role_log_path
-
 # 获取脚本所在目录
 SCRIPT_DIR = Path(__file__).parent.absolute()
+_PROJECT_ROOT = str(SCRIPT_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 logger = logging.getLogger('RemoteCLI')
+USER_DATA_DIR = None
+
+
+def _session_api():
+    from utils.session import (
+        get_socket_path, ensure_socket_dir, tmux_session_exists, tmux_create_session,
+        tmux_kill_session,
+        list_active_sessions, is_session_active, cleanup_session,
+        is_lark_running, get_lark_pid, get_lark_status, get_lark_pid_file,
+        save_lark_status, cleanup_lark,
+        USER_DATA_DIR, ensure_user_data_dir,
+        get_env_snapshot_path,
+    )
+    return {
+        "get_socket_path": get_socket_path,
+        "ensure_socket_dir": ensure_socket_dir,
+        "tmux_session_exists": tmux_session_exists,
+        "tmux_create_session": tmux_create_session,
+        "tmux_kill_session": tmux_kill_session,
+        "list_active_sessions": list_active_sessions,
+        "is_session_active": is_session_active,
+        "cleanup_session": cleanup_session,
+        "is_lark_running": is_lark_running,
+        "get_lark_pid": get_lark_pid,
+        "get_lark_status": get_lark_status,
+        "get_lark_pid_file": get_lark_pid_file,
+        "save_lark_status": save_lark_status,
+        "cleanup_lark": cleanup_lark,
+        "USER_DATA_DIR": USER_DATA_DIR,
+        "ensure_user_data_dir": ensure_user_data_dir,
+        "get_env_snapshot_path": get_env_snapshot_path,
+    }
+
+
+def _get_cli_type():
+    from server.biz_enum import CliType
+    return CliType
+
+
+def _get_role_log_path(role: str):
+    from utils.logging_setup import get_role_log_path
+    return get_role_log_path(role)
+
+
+# 兼容现有测试与 monkeypatch：保留轻量可替换包装层
+
+def is_session_active(session_name):
+    return _session_api()["is_session_active"](session_name)
+
+
+def tmux_session_exists(session_name):
+    return _session_api()["tmux_session_exists"](session_name)
+
+
+def cleanup_session(session_name):
+    return _session_api()["cleanup_session"](session_name)
+
+
+def ensure_socket_dir():
+    return _session_api()["ensure_socket_dir"]()
+
+
+def ensure_user_data_dir():
+    return _session_api()["ensure_user_data_dir"]()
+
+
+def get_socket_path(session_name):
+    return _session_api()["get_socket_path"](session_name)
+
+
+def get_env_snapshot_path(session_name):
+    return _session_api()["get_env_snapshot_path"](session_name)
+
+
+def tmux_create_session(session_name, command, detached=True):
+    return _session_api()["tmux_create_session"](session_name, command, detached=detached)
+
+
+def tmux_kill_session(session_name):
+    return _session_api()["tmux_kill_session"](session_name)
+
+
+def list_active_sessions():
+    return _session_api()["list_active_sessions"]()
+
+
+def is_lark_running():
+    return _session_api()["is_lark_running"]()
+
+
+def get_lark_pid():
+    return _session_api()["get_lark_pid"]()
+
+
+def get_lark_status():
+    return _session_api()["get_lark_status"]()
+
+
+def get_lark_pid_file():
+    return _session_api()["get_lark_pid_file"]()
+
+
+def save_lark_status(*args, **kwargs):
+    return _session_api()["save_lark_status"](*args, **kwargs)
+
+
+def cleanup_lark():
+    return _session_api()["cleanup_lark"]()
+
+
+def _get_user_data_dir():
+    value = globals().get("USER_DATA_DIR")
+    if callable(value):
+        return value()
+    if value is not None:
+        return value
+    return _session_api()["USER_DATA_DIR"]
 
 
 def _mask_token(token: str) -> str:
@@ -73,13 +176,13 @@ def _normalize_original_path(value: str | None) -> str:
     value = value.strip()
     return value or "-"
 
-# 读取版本号（仅 import 时读取一次）
-try:
-    import json as _json
-
-    _VERSION = _json.loads((SCRIPT_DIR / "package.json").read_text())["version"]
-except (OSError, json.JSONDecodeError, KeyError):
-    _VERSION = "unknown"
+# 读取版本号（懒加载，避免 import 时触发文件读取）
+def get_version() -> str:
+    try:
+        import json as _json
+        return _json.loads((SCRIPT_DIR / "package.json").read_text(encoding="utf-8"))["version"]
+    except (OSError, json.JSONDecodeError, KeyError):
+        return "unknown"
 
 
 def _sanitize_command_for_log(command: str) -> str:
@@ -118,6 +221,46 @@ def _sanitize_command_for_log(command: str) -> str:
         sanitized_tokens.append("***")
 
     return " ".join(sanitized_tokens)
+
+
+def _read_start_log_lines_since(log_path: Path, start_time: datetime) -> list[str]:
+    if not log_path.exists():
+        return []
+
+    lines = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        try:
+            ts = datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
+            if ts >= start_time:
+                lines.append(line)
+        except ValueError:
+            if lines:
+                lines.append(line)
+    return lines
+
+
+def _read_recent_start_log_lines(log_path: Path, max_lines: int = 200) -> list[str]:
+    if not log_path.exists():
+        return []
+    return log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-max_lines:]
+
+
+def _detect_hard_startup_failure(log_lines: list[str]) -> str:
+    hard_failure_markers = (
+        "command not found",
+        "no such file or directory",
+        "filenotfounderror",
+        "exec failed",
+        "can't find",
+        "not recognized as an internal or external command",
+        "exited with status 127",
+    )
+
+    for line in log_lines:
+        lower_line = line.lower()
+        if any(marker in lower_line for marker in hard_failure_markers):
+            return line
+    return ""
 
 
 
@@ -192,6 +335,16 @@ def parse_host_session(args):
     return host, port, session, token
 
 
+def _run_remote_client(host: str, session: str, token: str, port: int) -> int:
+    from client.remote_client import run_remote_client
+    return run_remote_client(host, session, token, port)
+
+
+def _build_remote_client(host: str, session: str, token: str, port: int):
+    from client.remote_client import RemoteClient
+    return RemoteClient(host, session, token, port)
+
+
 def run_remote_control(host: str, port: int, session: str, token: str, action: str) -> int:
     """执行远程控制命令
 
@@ -205,11 +358,10 @@ def run_remote_control(host: str, port: int, session: str, token: str, action: s
     Returns:
         退出码
     """
-    from client.remote_client import RemoteClient
     import asyncio
 
     async def do_control():
-        client = RemoteClient(host, session, token, port)
+        client = _build_remote_client(host, session, token, port)
         result = await client.send_control(action)
         if result['success']:
             print(f"✓ {result['message']}")
@@ -223,6 +375,7 @@ def run_remote_control(host: str, port: int, session: str, token: str, action: s
     except Exception as e:
         print(f"✗ 连接失败: {e}")
         return 1
+
 
 
 def validate_remote_args(args, session_fallback: str = None) -> tuple:
@@ -260,6 +413,7 @@ def validate_remote_args(args, session_fallback: str = None) -> tuple:
 
 def cmd_start(args):
     """启动新会话"""
+    session_api = _session_api()
     original_session_name = args.name
 
     # 加载配置
@@ -284,12 +438,16 @@ def cmd_start(args):
     cli_type = launcher.cli_type
     command = launcher.command
 
+    if command and os.path.isabs(command) and not Path(command).exists():
+        print(f"错误: 启动器命令不存在: {command}")
+        return 1
+
     # 使用 resolve_session_name() 处理名称截断和冲突
     from utils.session import resolve_session_name
     session_name = resolve_session_name(original_session_name, state)
 
     # 检查会话是否已存在
-    if is_session_active(session_name):
+    if session_api["is_session_active"](session_name):
         print(f"错误: 会话 '{session_name}' 已存在")
         print(f"使用 'remote-claude attach {session_name}' 连接")
         return 1
@@ -305,13 +463,13 @@ def cmd_start(args):
         print("错误: start 子命令不支持透传帮助参数，请直接运行 remote-claude start --help 查看用法")
         return 1
 
-    ensure_socket_dir()
-    ensure_user_data_dir()  # 确保用户数据目录存在（用于 startup.log 等）
+    session_api["ensure_socket_dir"]()
+    session_api["ensure_user_data_dir"]()  # 确保用户数据目录存在（用于 startup.log 等）
 
     # 将当前 shell 的完整环境变量保存到快照文件（权限 0600 防止密钥泄露）
     # tmux new-session 继承的是 tmux 服务器的全局环境，而非调用方 shell 的环境，
     # 通过快照文件将完整环境传递给 server.py 的 _start_pty()
-    env_snapshot_path = get_env_snapshot_path(session_name)
+    env_snapshot_path = session_api["get_env_snapshot_path"](session_name)
     env_fd = os.open(str(env_snapshot_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(env_fd, 'w') as f:
         json.dump(dict(os.environ), f)
@@ -347,7 +505,7 @@ def cmd_start(args):
     server_cmd_sanitized = _sanitize_command_for_log(server_cmd)
 
     # 配置启动日志（写文件 + stdout）
-    _log_path = USER_DATA_DIR / "startup.log"
+    _log_path = _get_user_data_dir() / "startup.log"
     _start_logger = logging.getLogger('Start')
     if not _start_logger.handlers:
         _handler_file = logging.FileHandler(_log_path, encoding="utf-8")
@@ -396,11 +554,35 @@ def cmd_start(args):
     socket_path = get_socket_path(session_name)
     wait_interval = 0.1  # 100ms
     max_attempts = int(startup_timeout / wait_interval)
+    server_status_grace_checks = 2
     for i in range(max_attempts):
         if socket_path.exists():
             break
+
+        log_lines = _read_start_log_lines_since(_log_path, start_time)
+        hard_failure = _detect_hard_startup_failure(log_lines)
+        if hard_failure:
+            _start_logger.error(
+                "stage=server_start_failed reason=hard_startup_error session=%s remote=%s remote_host=%s remote_port=%s detail=%s",
+                session_name,
+                args.remote,
+                args.remote_host if args.remote else "",
+                args.remote_port if args.remote else "",
+                hard_failure,
+            )
+            print("错误: Server 启动失败")
+            print(f"--- Server 日志 ({_log_path}) ---")
+            print("\n".join(log_lines))
+            print("-------------------")
+            tmux_kill_session(session_name)
+            return 1
+
         # 检查 tmux 会话是否仍在运行（server 启动失败时会退出）
         if not tmux_session_exists(session_name):
+            if server_status_grace_checks > 0:
+                server_status_grace_checks -= 1
+                time.sleep(wait_interval)
+                continue
             _start_logger.error(
                 "stage=server_start_failed reason=server_exited session=%s remote=%s remote_host=%s remote_port=%s",
                 session_name,
@@ -410,20 +592,10 @@ def cmd_start(args):
             )
             print("错误: Server 进程已退出")
             # 输出启动日志辅助诊断
-            if _log_path.exists():
-                lines = []
-                for line in _log_path.read_text(encoding="utf-8").splitlines():
-                    try:
-                        ts = datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
-                        if ts >= start_time:
-                            lines.append(line)
-                    except ValueError:
-                        if lines:  # 多行日志的续行，附到上一条
-                            lines.append(line)
-                if lines:
-                    print(f"--- Server 日志 ({_log_path}) ---")
-                    print("\n".join(lines))
-                    print("-------------------")
+            if log_lines:
+                print(f"--- Server 日志 ({_log_path}) ---")
+                print("\n".join(log_lines))
+                print("-------------------")
             return 1
         time.sleep(wait_interval)
         if (i + 1) % 10 == 0:
@@ -440,20 +612,11 @@ def cmd_start(args):
         )
         print(f"错误: Server 启动超时 ({startup_timeout}s)")
         # 过滤出本次启动后的日志行
-        if _log_path.exists():
-            lines = []
-            for line in _log_path.read_text(encoding="utf-8").splitlines():
-                try:
-                    ts = datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
-                    if ts >= start_time:
-                        lines.append(line)
-                except ValueError:
-                    if lines:  # 多行日志的续行，附到上一条
-                        lines.append(line)
-            if lines:
-                print(f"--- Server 日志 ({_log_path}) ---")
-                print("\n".join(lines))
-                print("-------------------")
+        log_lines = _read_start_log_lines_since(_log_path, start_time)
+        if log_lines:
+            print(f"--- Server 日志 ({_log_path}) ---")
+            print("\n".join(log_lines))
+            print("-------------------")
         tmux_kill_session(session_name)
         return 1
 
@@ -487,7 +650,6 @@ def cmd_start(args):
 
 def cmd_attach(args):
     """连接到已有会话（支持本地/远程模式）"""
-    from client import run_client, run_remote_client
     from client.connection_config import get_connection, get_default_connection, save_connection
 
     session_name = args.name
@@ -541,7 +703,7 @@ def cmd_attach(args):
             print(f"已保存连接配置: {config_name}")
 
         # 运行远程客户端
-        return run_remote_client(host, session_name, token, port)
+        return _run_remote_client(host, session_name, token, port)
 
     # 本地模式
     # 检查会话是否存在
@@ -553,6 +715,7 @@ def cmd_attach(args):
     print(f"连接到会话: {session_name}")
 
     # 直接运行 client（不通过 tmux）
+    from client.local_client import run_client
     return run_client(session_name)
 
 
@@ -560,7 +723,7 @@ def cmd_list(args):
     """列出所有会话（支持远程模式）"""
     # 远程模式
     if getattr(args, 'remote', False):
-        result = validate_remote_args(args)
+        result = validate_remote_args(args, session_fallback='list')
         if result is None:
             return 1
         host, port, session, token = result
@@ -615,7 +778,8 @@ def cmd_list(args):
         original_path = get_path(s)
 
         # 根据类型选择颜色
-        if cli_type == CliType.CODEX:
+        cli_type_cls = _get_cli_type()
+        if cli_type == cli_type_cls.CODEX:
             cli_colored = f"{GREEN}{cli_type}{RESET}"
         else:
             cli_colored = f"{YELLOW}{cli_type}{RESET}"
@@ -754,7 +918,7 @@ def cmd_lark_start(args):
     ensure_user_data_dir()
 
     # 启动守护进程（使用 -m 模块方式运行，确保相对导入正常工作）
-    log_file = get_role_log_path("lark")
+    log_file = _get_role_log_path("lark")
 
     try:
         # 启动进程
@@ -778,8 +942,8 @@ def cmd_lark_start(args):
             print(f"✓ 飞书客户端已启动")
             print(f"  PID: {pid}")
             print(f"  日志: {log_file}")
-            print(f"\n使用 'python3 remote_claude.py lark status' 查看状态")
-            print(f"使用 'python3 remote_claude.py lark stop' 停止")
+            print(f"\n使用 'remote-claude lark status' 查看状态")
+            print(f"使用 'remote-claude lark stop' 停止")
             return 0
         else:
             print("✗ 启动失败，请查看日志:")
@@ -864,7 +1028,7 @@ def cmd_lark_status(args):
     """显示飞书客户端状态"""
     if not is_lark_running():
         print("飞书客户端未运行")
-        print("\n使用 'python3 remote_claude.py lark start' 启动")
+        print("\n使用 'remote-claude lark start' 启动")
         return 0
 
     status = get_lark_status()
@@ -876,13 +1040,13 @@ def cmd_lark_status(args):
     print("飞书客户端状态")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print(f"状态:     运行中 ✓")
-    print(f"版本:     v{_VERSION}")
+    print(f"版本:     v{get_version()}")
     print(f"PID:      {status['pid']}")
     print(f"启动时间: {status['start_time']}")
     print(f"运行时长: {status['uptime']}")
 
     # 检查日志文件
-    log_file = get_role_log_path("lark")
+    log_file = _get_role_log_path("lark")
     if log_file.exists():
         print(f"日志文件: {log_file}")
         print(f"日志大小: {log_file.stat().st_size / 1024:.1f} KB")
@@ -971,8 +1135,6 @@ def cmd_update(args):
 
 def cmd_connect(args):
     """连接到远程会话"""
-    from client import run_remote_client
-
     # 解析 host/session/port
     host = args.host
     session = args.session
@@ -992,12 +1154,11 @@ def cmd_connect(args):
         print("错误: 请指定会话名称")
         return 1
 
-    return run_remote_client(host, session, token, port)
+    return _run_remote_client(host, session, token, port)
 
 
 def cmd_remote(args):
     """远程控制命令"""
-    from client import RemoteClient
     import asyncio
 
     host = args.host
@@ -1018,7 +1179,7 @@ def cmd_remote(args):
         print("错误: 请指定会话名称")
         return 1
 
-    client = RemoteClient(host, session, token, port)
+    client = _build_remote_client(host, session, token, port)
 
     async def run_action():
         try:
@@ -1054,7 +1215,7 @@ def cmd_token(args):
     # 本地模式
     from server.token_manager import TokenManager
 
-    manager = TokenManager(session_name, USER_DATA_DIR)
+    manager = TokenManager(session_name, _get_user_data_dir())
     token = manager.get_or_create_token()
     print(f"Session: {session_name}")
     print(f"Token: {token}")
@@ -1079,7 +1240,7 @@ def cmd_regenerate_token(args):
     # 本地模式
     from server.token_manager import TokenManager
 
-    manager = TokenManager(session_name, USER_DATA_DIR)
+    manager = TokenManager(session_name, _get_user_data_dir())
     old_token = manager._token
     new_token = manager.regenerate_token()
     print(f"Session: {session_name}")
@@ -1100,10 +1261,10 @@ def cmd_lark(args):
 
     print("飞书客户端未运行")
     print("\n可用命令:")
-    print("  python3 remote_claude.py lark start    - 启动客户端")
-    print("  python3 remote_claude.py lark stop     - 停止客户端")
-    print("  python3 remote_claude.py lark restart  - 重启客户端")
-    print("  python3 remote_claude.py lark status   - 查看状态")
+    print("  remote-claude lark start    - 启动客户端")
+    print("  remote-claude lark stop     - 停止客户端")
+    print("  remote-claude lark restart  - 重启客户端")
+    print("  remote-claude lark status   - 查看状态")
     return 0
 
 
@@ -1291,7 +1452,7 @@ def cmd_connection(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Remote Claude - 双端共享 Claude CLI 工具",
+        description="Remote Claude - 双端共享 Claude/Codex CLI 工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
@@ -1329,17 +1490,17 @@ def main():
   %(prog)s update                    更新到最新版本
 
 远程连接:
-  %(prog)s start mywork --remote     启动会话并开启远程连接
-  %(prog)s token mywork              显示会话 token
-  %(prog)s connect myserver mywork --token <TOKEN>  连接远程会话
-  %(prog)s remote shutdown myserver mywork --token <TOKEN>  远程关闭会话
+  %(prog)s start mywork --remote                    启动会话并开启远程连接
+  %(prog)s token mywork                             显示会话 token
+  %(prog)s connect <host>:<port>/<session> --token <TOKEN>  连接远程会话
+  %(prog)s remote list <host>:<port>/<session> --token <TOKEN>  远程列出/控制会话
 """
     )
 
     parser.add_argument(
         "--version", "-V",
         action="version",
-        version=f"remote-claude v{_VERSION}",
+        version=f"remote-claude v{get_version()}",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="命令")

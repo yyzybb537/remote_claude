@@ -14,6 +14,7 @@ import sys
 import asyncio
 from pathlib import Path
 from typing import Optional
+from unittest.mock import AsyncMock
 
 # 确保项目根目录在 sys.path 中
 _PROJECT_ROOT = str(Path(__file__).parent.parent)
@@ -143,6 +144,94 @@ def test_card_service_mock():
     asyncio.run(run_test())
 
 
+def test_create_and_send_card_records_active_card_mapping():
+    """测试 create_and_send_card 会同步记录 chat_id 对应的活跃卡片"""
+    from lark_client.card_service import CardService
+
+    async def run_test():
+        service = CardService()
+        service.create_card = AsyncMock(return_value="card_123")
+        service.send_card = AsyncMock(return_value="msg_456")
+
+        message_id = await service.create_and_send_card("chat_789", {"elements": []})
+
+        assert message_id == "msg_456"
+        active = service.get_active_card("chat_789")
+        assert active is not None
+        assert active.card_id == "card_123"
+        assert active.message_id == "msg_456"
+
+    asyncio.run(run_test())
+
+
+def test_session_bridge_reassembles_split_utf8_input_before_callback():
+    """测试 SessionBridge 在 UTF-8 字符分片到达时仍能正确回调完整输入"""
+    from lark_client.session_bridge import SessionBridge
+
+    calls = []
+    bridge = SessionBridge("demo", on_input=calls.append)
+    data = "中".encode("utf-8")
+
+    bridge._process_input_bytes(data[:1])
+    bridge._process_input_bytes(data[1:])
+    bridge._process_input_bytes(data[2:])
+    bridge._process_input_bytes(b"\r")
+
+    assert calls == ["中"]
+
+
+def test_clear_active_card_removes_message_index_for_active_card():
+    """测试 clear_active_card 会同步清理活跃卡片对应的 message_id 索引"""
+    from lark_client.card_service import CardService, CardState
+
+    service = CardService()
+    state = CardState(card_id="card_1", message_id="msg_1")
+    service.set_active_card("chat_1", state)
+    service._cards_by_message_id["msg_1"] = state
+
+    service.clear_active_card("chat_1")
+
+    assert service.get_active_card("chat_1") is None
+    assert "msg_1" not in service._cards_by_message_id
+
+
+def test_update_card_by_message_id_does_not_advance_sequence_on_failure():
+    """测试 update_card_by_message_id 在更新失败时不会污染本地 sequence"""
+    from lark_client.card_service import CardService, CardState
+
+    async def run_test():
+        service = CardService()
+        state = CardState(card_id="card_1", message_id="msg_1", sequence=7)
+        service._cards_by_message_id["msg_1"] = state
+        service.update_card = AsyncMock(return_value=False)
+
+        ok = await service.update_card_by_message_id("msg_1", {"body": {}})
+
+        assert ok is False
+        assert state.sequence == 7
+
+    asyncio.run(run_test())
+
+
+def test_update_card_by_message_id_refreshes_last_update_on_success():
+    """测试 update_card_by_message_id 成功后会刷新本地 last_update 时间戳"""
+    from lark_client.card_service import CardService, CardState
+
+    async def run_test():
+        service = CardService()
+        state = CardState(card_id="card_1", message_id="msg_1", sequence=3, last_update=100.0)
+        service._cards_by_message_id["msg_1"] = state
+        service.update_card = AsyncMock(return_value=True)
+
+        ok = await service.update_card_by_message_id("msg_1", {"body": {}})
+
+        assert ok is True
+        assert state.sequence == 4
+        assert state.last_update > 100.0
+
+    asyncio.run(run_test())
+
+
 def test_disconnected_prompt_text():
     """测试断开提示文本已定义"""
     # 验证断开提示文本常量存在
@@ -235,6 +324,7 @@ def run_all_tests():
         test_send_raw_success,
         test_send_raw_failure,
         test_card_service_mock,
+        test_create_and_send_card_records_active_card_mapping,
         test_disconnected_prompt_text,
         test_realtime_check_logic,
         test_multiple_bridges,

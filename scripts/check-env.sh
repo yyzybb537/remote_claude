@@ -10,6 +10,10 @@ is_valid_project_dir() {
     [ -n "$1" ] && [ -f "$1/scripts/_common.sh" ]
 }
 
+escape_sed_replacement() {
+    printf '%s' "$1" | sed 's/[\\&/]/\\&/g'
+}
+
 if [ "${1:+x}" = "x" ]; then
     echo "错误: check-env.sh 目录参数已废弃，请直接调用 sh scripts/check-env.sh（或 source 时不传目录参数）" >&2
     return 2 2>/dev/null || exit 2
@@ -65,7 +69,7 @@ if [ "$ENV_OK" = false ]; then
     echo "飞书客户端尚未配置，需要填写应用凭证。"
     echo "（在飞书开发者后台创建应用获取: https://open.feishu.cn/app）"
     echo ""
-    printf "\033[33m飞书机器人配置文档参考：https://github.com/yyzybb537/remote_claude\033[0m\n"
+    printf "\033[33m飞书机器人配置文档参考：docs/feishu-setup.md\033[0m\n"
     echo ""
     printf "FEISHU_APP_ID: "
     read -r INPUT_APP_ID
@@ -79,12 +83,15 @@ if [ "$ENV_OK" = false ]; then
 
     rc_copy_if_missing "$REMOTE_CLAUDE_ENV_TEMPLATE" "$REMOTE_CLAUDE_ENV_FILE" "环境变量配置文件"
 
+    ESCAPED_APP_ID=$(escape_sed_replacement "$INPUT_APP_ID")
+    ESCAPED_APP_SECRET=$(escape_sed_replacement "$INPUT_APP_SECRET")
+
     # 使用临时文件替代 sed -i，跨平台兼容
     tmp_file=$(mktemp)
-    sed "s/^FEISHU_APP_ID=.*/FEISHU_APP_ID=$INPUT_APP_ID/" "$REMOTE_CLAUDE_ENV_FILE" > "$tmp_file" && mv "$tmp_file" "$REMOTE_CLAUDE_ENV_FILE"
+    sed "s/^FEISHU_APP_ID=.*/FEISHU_APP_ID=$ESCAPED_APP_ID/" "$REMOTE_CLAUDE_ENV_FILE" > "$tmp_file" && mv "$tmp_file" "$REMOTE_CLAUDE_ENV_FILE"
 
     tmp_file=$(mktemp)
-    sed "s/^FEISHU_APP_SECRET=.*/FEISHU_APP_SECRET=$INPUT_APP_SECRET/" "$REMOTE_CLAUDE_ENV_FILE" > "$tmp_file" && mv "$tmp_file" "$REMOTE_CLAUDE_ENV_FILE"
+    sed "s/^FEISHU_APP_SECRET=.*/FEISHU_APP_SECRET=$ESCAPED_APP_SECRET/" "$REMOTE_CLAUDE_ENV_FILE" > "$tmp_file" && mv "$tmp_file" "$REMOTE_CLAUDE_ENV_FILE"
 
     echo ""
     echo "配置已保存到 $REMOTE_CLAUDE_ENV_FILE"

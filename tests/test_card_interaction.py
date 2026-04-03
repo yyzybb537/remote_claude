@@ -121,6 +121,76 @@ class TestCardInteraction(unittest.TestCase):
 class TestQuickCommandLoading(unittest.TestCase):
     """快捷命令 loading 状态测试"""
 
+    def test_start_server_session_waits_for_successful_bridge_connect(self):
+        """测试启动会话时需要等到 bridge 真正可连接"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+
+        socket_state = {"exists": False}
+        poll_state = {"count": 0}
+
+        class FakeSocketPath:
+            def exists(self):
+                return socket_state["exists"]
+
+        class FakeProc:
+            def poll(self):
+                return None
+
+        async def fake_sleep(_):
+            poll_state["count"] += 1
+            if poll_state["count"] >= 3:
+                socket_state["exists"] = True
+
+        real_open = open
+
+        def fake_open(file, mode='r', *args, **kwargs):
+            if str(file).endswith("startup.log"):
+                return unittest.mock.mock_open()(file, mode, *args, **kwargs)
+            return real_open(file, mode, *args, **kwargs)
+
+        with patch("lark_client.lark_handler.get_socket_path", return_value=FakeSocketPath()), \
+                patch("lark_client.lark_handler.subprocess.Popen", return_value=FakeProc()), \
+                patch("lark_client.lark_handler.asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)), \
+                patch("lark_client.lark_handler.card_service") as mock_card_service, \
+                patch("lark_client.lark_handler.open", side_effect=fake_open), \
+                patch("lark_client.lark_handler.Path") as mock_path:
+            mock_path.return_value.parent.parent.absolute.return_value = Path("/tmp/project")
+            mock_path.return_value.parent.parent.__truediv__.return_value = Path("/tmp/project/server/server.py")
+            mock_card_service.send_text = AsyncMock()
+
+            result = asyncio.run(handler._start_server_session("demo", None, "chat_1"))
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(poll_state["count"], 3)
+
+    def test_cmd_start_retries_attach_until_bridge_ready(self):
+        """测试启动成功后 attach 失败时会在短暂窗口内重试直到 bridge 就绪"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        attach_results = [False, False, True]
+
+        async def fake_attach(chat_id, session_name, user_id=None):
+            return attach_results.pop(0)
+
+        handler._attach = AsyncMock(side_effect=fake_attach)
+        handler._start_server_session = AsyncMock(return_value=True)
+        handler._save_chat_bindings = MagicMock()
+
+        with patch('lark_client.lark_handler.card_service') as mock_card_service, \
+                patch('lark_client.lark_handler.asyncio.sleep', new=AsyncMock()) as mock_sleep:
+            mock_card_service.send_text = AsyncMock()
+
+            asyncio.run(handler._cmd_start("user_1", "chat_1", "demo"))
+
+        self.assertEqual(handler._attach.await_count, 3)
+        self.assertEqual(handler._chat_bindings.get("chat_1"), "demo")
+        handler._save_chat_bindings.assert_called_once()
+        mock_card_service.send_text.assert_not_called()
+        self.assertEqual(mock_sleep.await_count, 2)
+
     def test_handle_quick_command_shows_loading(self):
         """测试快捷命令发送时显示 loading 状态"""
         from lark_client.lark_handler import LarkHandler

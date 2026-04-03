@@ -12,10 +12,56 @@ import argparse
 import asyncio
 import sys
 import logging
-from typing import Optional
+from typing import Any, Optional
 
-from websockets.asyncio.client import connect, ClientConnection
-from websockets import exceptions as ws_exceptions
+def _missing_websockets_connect(*args, **kwargs):
+    error = _WEBSOCKETS_IMPORT_ERROR or ModuleNotFoundError("No module named 'websockets'")
+    raise ModuleNotFoundError(f"websockets unavailable: {error}")
+
+
+connect = _missing_websockets_connect
+ClientConnection = Any
+ws_exceptions = None
+_WEBSOCKETS_IMPORT_ERROR: Optional[Exception] = None
+
+
+def _import_websockets_asyncio():
+    from websockets.asyncio.client import connect as asyncio_connect, ClientConnection as asyncio_connection
+    from websockets import exceptions as imported_exceptions
+
+    return asyncio_connect, asyncio_connection, imported_exceptions
+
+
+def _import_websockets_root():
+    from websockets import connect as root_connect, exceptions as imported_exceptions
+
+    return root_connect, Any, imported_exceptions
+
+
+def _load_websockets() -> None:
+    global connect, ClientConnection, ws_exceptions, _WEBSOCKETS_IMPORT_ERROR
+
+    if connect is not None and ws_exceptions is not None:
+        return
+
+    try:
+        connect, ClientConnection, ws_exceptions = _import_websockets_asyncio()
+        _WEBSOCKETS_IMPORT_ERROR = None
+        return
+    except (ImportError, AttributeError) as exc:
+        last_error: Optional[Exception] = exc
+
+    try:
+        connect, ClientConnection, ws_exceptions = _import_websockets_root()
+        _WEBSOCKETS_IMPORT_ERROR = None
+        return
+    except (ImportError, AttributeError) as exc:
+        last_error = exc
+
+    _WEBSOCKETS_IMPORT_ERROR = last_error
+
+
+_load_websockets()
 
 from client.base_client import BaseWSClient
 from utils.protocol import Message, encode_message, decode_message
@@ -50,6 +96,13 @@ class RemoteClient(BaseWSClient):
         Returns:
             True 表示连接成功，False 表示连接失败
         """
+        if connect is None:
+            error = _WEBSOCKETS_IMPORT_ERROR or ModuleNotFoundError("No module named 'websockets'")
+            self._disconnect_reason = f"连接失败: 缺少 websockets 依赖（{error}）"
+            logger.error("stage=remote_connect_failed session=%s host=%s port=%s error=%s", self.session_name, self.host, self.port, error)
+            print(f"❌ {self._disconnect_reason}")
+            return False
+
         try:
             url = self._get_ws_url()
             self._disconnect_reason = None
@@ -103,16 +156,16 @@ class RemoteClient(BaseWSClient):
                 raw = raw.encode()
             msg = decode_message(raw)
             return msg
-        except ws_exceptions.ConnectionClosed as e:
-            self._connected = False
-            reason = str(e).strip()
-            if not reason:
-                reason = "连接已关闭"
-            self._disconnect_reason = f"连接关闭: {reason}"
-            logger.warning("stage=remote_recv_closed session=%s reason=%s", self.session_name, reason)
-            return None
         except Exception as e:
             self._connected = False
+            if ws_exceptions is not None and isinstance(e, ws_exceptions.ConnectionClosed):
+                reason = str(e).strip()
+                if not reason:
+                    reason = "连接已关闭"
+                self._disconnect_reason = f"连接关闭: {reason}"
+                logger.warning("stage=remote_recv_closed session=%s reason=%s", self.session_name, reason)
+                return None
+
             self._disconnect_reason = f"读取失败: {e}"
             logger.error("stage=remote_recv_failed session=%s error=%s", self.session_name, e)
             return None

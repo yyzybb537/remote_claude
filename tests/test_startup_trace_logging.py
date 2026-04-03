@@ -170,3 +170,61 @@ def test_cmd_start_rejects_help_like_cli_args_before_spawning_session(monkeypatc
     assert rc == 1
     assert spawned == []
     assert "start 子命令不支持透传帮助参数" in captured.out
+
+
+
+
+def test_detect_hard_startup_failure_matches_shell_exec_error_line():
+    line = "2099-04-01 12:00:00.000 [Start] ERROR launcher failed: exited with status 127"
+
+    assert remote_claude._detect_hard_startup_failure([line]) == line
+
+
+
+def test_cmd_start_accepts_monkeypatched_user_data_dir_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(remote_claude, "USER_DATA_DIR", tmp_path)
+    assert remote_claude._get_user_data_dir() == tmp_path
+
+
+def test_cmd_start_fails_fast_on_hard_startup_error_log(monkeypatch, tmp_path, capsys):
+    env_snapshot_file = tmp_path / "env.json"
+    startup_log = tmp_path / "startup.log"
+    startup_log.write_text(
+        "2099-04-01 12:00:00.000 [Start] INFO launcher failed: command not found\n",
+        encoding="utf-8",
+    )
+
+    class _DummyConfig:
+        pass
+
+    monkeypatch.setattr(remote_claude, "USER_DATA_DIR", tmp_path)
+    monkeypatch.setattr(remote_claude, "is_session_active", lambda _s: False)
+
+    def _tmux_session_exists(_s):
+        _tmux_session_exists.calls += 1
+        return _tmux_session_exists.calls > 1
+
+    _tmux_session_exists.calls = 0
+
+    monkeypatch.setattr(remote_claude, "tmux_session_exists", _tmux_session_exists)
+    monkeypatch.setattr(remote_claude, "ensure_socket_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "ensure_user_data_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "get_env_snapshot_path", lambda _s: env_snapshot_file)
+    monkeypatch.setattr(remote_claude, "tmux_create_session", lambda *_a, **_kw: True)
+    monkeypatch.setattr(remote_claude, "get_socket_path", lambda _s: tmp_path / "missing.sock")
+    monkeypatch.setattr(remote_claude, "tmux_kill_session", lambda _s: None)
+    monkeypatch.setattr(remote_claude, "time", type("T", (), {"sleep": staticmethod(lambda _x: None)})())
+
+    import utils.runtime_config as runtime_config_module
+    import utils.session as session_module
+
+    monkeypatch.setattr(runtime_config_module, "load_state", lambda: _DummyConfig())
+    monkeypatch.setattr(runtime_config_module, "load_settings", _mock_settings)
+    monkeypatch.setattr(session_module, "resolve_session_name", lambda original, _cfg: original)
+
+    rc = remote_claude.cmd_start(_build_args(name="hard-fail-session", remote=False, remote_host="127.0.0.1", remote_port=8765, cli_args=[]))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "错误: Server 启动失败" in captured.out
+    assert "command not found" in captured.out

@@ -16,6 +16,14 @@ PASSED=0
 FAILED=0
 WARNINGS=0
 TEST_REPORT=""
+TEST_INTERRUPTED=0
+
+handle_interrupt() {
+    TEST_INTERRUPTED=1
+    log_warning "检测到中断信号，停止并行测试..."
+}
+
+trap 'handle_interrupt' INT TERM
 
 # 结果目录
 RESULTS_DIR="/home/testuser/test-results"
@@ -117,26 +125,24 @@ verify_session_startup() {
     # 构建 start 命令
     local start_cmd="uv run remote-claude start '$session'"
     if [[ "$cli_type" == "codex" ]]; then
-        start_cmd="uv run remote-claude start '$session' --cli codex"
+        start_cmd="uv run remote-claude start '$session' --launcher Codex"
     fi
 
     log_info "启动 $cli_type 会话 '$session'（限时 ${timeout_sec}s）..."
 
-    # 执行 start 命令（使用 bash -c 确保正确解析引号）
+    # 执行 start 命令并记录退出码。
+    # 这里不能把 rc==124（timeout）当作唯一成功条件：
+    # 真正的判定依据应是 socket 已创建且会话能被 list 发现。
+    set +e
     timeout "$timeout_sec" bash -c "$start_cmd" > "$log_file" 2>&1
     local rc=$?
+    set -e
 
-    # 检查返回值
-    if [[ $rc -ne 124 ]]; then
-        # 非 timeout 退出 = 启动失败
-        log_error "$cli_type 会话 '$session' 在 ${timeout_sec}s 内意外退出（rc=$rc）"
-        report "✗ $cli_type start 意外退出（rc=$rc）"
-        print_session_diagnostics "$session" "$log_file"
-        cleanup_session "$session"
-        return 1
+    if [[ $rc -ne 0 && $rc -ne 124 ]]; then
+        log_info "$cli_type 会话 '$session' 启动命令退出码: $rc；继续基于 socket 与 list 状态判定"
     fi
 
-    log_info "$cli_type 会话 '$session' ${timeout_sec}s 后仍在运行（符合预期），验证 socket..."
+    log_info "验证 $cli_type 会话 '$session' 的 socket 与 list 状态..."
 
     # 验证 socket
     if [[ ! -S "$socket_path" ]]; then
@@ -275,6 +281,8 @@ simulate_install() {
 
     log_info "在临时目录安装 npm 包..."
 
+    export REMOTE_CLAUDE_NONINTERACTIVE=1
+
     if npm install "$pack_file" > "$RESULTS_DIR/npm_install.log" 2>&1; then
         log_success "npm install 成功"
     else
@@ -314,24 +322,30 @@ verify_postinstall() {
         return 1
     fi
 
-    # 检查 Python 依赖（使用项目已有的 .venv 虚拟环境）
+    # 检查 Python 依赖（显式使用安装目录下 .venv，避免 uv 项目解析偏移）
     log_info "检查 Python 依赖安装..."
 
-    if uv run python3 -c "import lark_oapi" 2>/dev/null; then
+    local venv_python="$package_dir/.venv/bin/python3"
+    if [ ! -x "$venv_python" ]; then
+        log_error "虚拟环境 Python 不可用: $venv_python"
+        return 1
+    fi
+
+    if "$venv_python" -c "import lark_oapi" 2>/dev/null; then
         log_success "lark-oapi 已安装"
     else
         log_error "lark-oapi 未安装"
         return 1
     fi
 
-    if uv run python3 -c "import dotenv" 2>/dev/null; then
+    if "$venv_python" -c "import dotenv" 2>/dev/null; then
         log_success "python-dotenv 已安装"
     else
         log_error "python-dotenv 未安装"
         return 1
     fi
 
-    if uv run python3 -c "import pyte" 2>/dev/null; then
+    if "$venv_python" -c "import pyte" 2>/dev/null; then
         log_success "pyte 已安装"
     else
         log_error "pyte 未安装"
@@ -339,9 +353,9 @@ verify_postinstall() {
     fi
 }
 
-# 步骤 5：配置 mock .env 并测试启动超时行为
+# 步骤 5：配置 mock .env 并测试启动链路
 test_env_and_startup() {
-    print_header "步骤 5：env 配置与启动超时测试"
+    print_header "步骤 5：env 配置与启动链路测试"
 
     local install_dir="$1"
     local env_file="$HOME/.remote-claude/.env"
@@ -357,33 +371,38 @@ EOF
 
     cd "$install_dir/node_modules/remote-claude"
 
-    # 5-2：验证 check-env.sh 不再交互阻塞
-    log_info "验证 check-env.sh 不阻塞..."
-    if timeout 5 bash scripts/check-env.sh > "$RESULTS_DIR/check_env.log" 2>&1; then
-        log_success "check-env.sh 在 5s 内正常返回（不阻塞）"
-        report "✓ check-env.sh 不阻塞"
+    # 5-2：验证 check-env.sh 可在本地启动场景被显式跳过
+    log_info "验证 check-env.sh 在本地启动场景可跳过飞书检查..."
+    if REMOTE_CLAUDE_REQUIRE_FEISHU=0 timeout 5 sh scripts/check-env.sh > "$RESULTS_DIR/check_env_skip.log" 2>&1; then
+        log_success "check-env.sh 在 REMOTE_CLAUDE_REQUIRE_FEISHU=0 下 5s 内返回成功"
+        report "✓ check-env.sh 支持跳过飞书检查"
     else
         local rc=$?
         if [ $rc -eq 124 ]; then
-            log_error "check-env.sh 超时（5s）—— 仍在等待交互输入"
-            report "✗ check-env.sh 超时阻塞"
-            return 1
+            log_error "check-env.sh 超时（5s）—— 跳过飞书检查时仍发生阻塞"
+            report "✗ check-env.sh 跳过飞书检查时仍阻塞"
         else
-            log_error "check-env.sh 返回非零（rc=$rc）"
-            return 1
+            log_error "check-env.sh 在跳过飞书检查时返回非零（rc=$rc）"
+            cat "$RESULTS_DIR/check_env_skip.log"
+            report "✗ check-env.sh 跳过飞书检查失败（rc=$rc）"
         fi
+        return 1
     fi
 
     # 5-3：验证 lark start 不会无限卡死（凭证无效应快速报错）
     log_info "验证 lark start 不会无限卡死（限 20s）..."
+    set +e
     timeout 20 uv run remote-claude lark start > "$RESULTS_DIR/lark_start.log" 2>&1
     local rc=$?
+    set -e
     if [ $rc -eq 124 ]; then
         log_error "lark start 超时（20s）—— 存在无限阻塞问题"
+        report "✗ lark start 超时阻塞"
         return 1
     else
         # 非 124 均可接受（0=成功/已在运行，非零=凭证错误快速退出，两者都 OK）
         log_success "lark start 在 20s 内退出（rc=$rc），不存在无限卡死"
+        report "✓ lark start 在 20s 内退出（rc=$rc）"
     fi
 
     # 5-4：验证 remote-claude start 能成功启动 Claude 会话
@@ -393,19 +412,12 @@ EOF
     fi
     cleanup_session "$session"
 
-    # 5-5：负面测试——自定义命令配置为不存在的命令，验证能检测到启动失败
-    log_info "负面测试：配置不存在的命令应导致 start 在 20s 内失败退出..."
+    # 5-5：负面测试——启动器配置为不存在的命令，验证能检测到启动失败
+    log_info "负面测试：配置不存在的启动器命令应导致 start 在 20s 内失败退出..."
 
-    local config_file="$HOME/.remote-claude/config.json"
-    local backup_config=""
+    local config_file="$HOME/.remote-claude/settings.json"
+    local backup_file="$RESULTS_DIR/settings.backup.json"
 
-    # 备份原始配置
-    if [[ -f "$config_file" ]]; then
-        backup_config=$(cat "$config_file")
-    fi
-
-    # 配置无效命令：设置一个完全不存在的命令路径
-    # 关键：必须让系统无法找到命令，而不是仅修改 command 字段
     if ! command -v jq &> /dev/null; then
         log_error "jq 未安装，无法执行负面测试"
         report "✗ 负面测试：失败（jq 未安装）"
@@ -413,33 +425,74 @@ EOF
     fi
 
     if [[ ! -f "$config_file" ]]; then
-        log_error "config.json 不存在，无法执行负面测试"
-        report "✗ 负面测试：失败（config.json 不存在）"
+        log_error "settings.json 不存在，无法执行负面测试"
+        report "✗ 负面测试：失败（settings.json 不存在）"
         return 1
     fi
 
-    local tmp_file=$(mktemp)
-    # 设置 enabled=true，并将命令改为一个不存在的绝对路径
-    jq '.session.custom_commands.enabled = true | .session.custom_commands.commands = [{"name": "Invalid", "cli_type": "claude", "command": "/nonexistent/path/to/claude-invalid", "description": "Invalid command for testing"}]' \
-        "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+    cp "$config_file" "$backup_file"
+
+    local restore_rc=0
+    set +e
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq '.launchers = [{"name": "Invalid", "cli_type": "claude", "command": "/nonexistent/path/to/claude-invalid", "desc": "Invalid command for testing"}]' \
+        "$config_file" > "$tmp_file"
+    local jq_rc=$?
+    if [ $jq_rc -eq 0 ]; then
+        mv "$tmp_file" "$config_file"
+    else
+        rm -f "$tmp_file"
+        restore_rc=1
+    fi
 
     local negative_session="docker-negative-test"
     cleanup_session "$negative_session"
 
     local fail_log="$RESULTS_DIR/start_fail.log"
-    timeout 20 uv run remote-claude start "$negative_session" > "$fail_log" 2>&1
-    local fail_rc=$?
-
-    # 还原配置
-    if [[ -n "$backup_config" ]]; then
-        echo "$backup_config" > "$config_file"
+    local fail_rc=1
+    if [ $restore_rc -eq 0 ]; then
+        timeout 20 uv run remote-claude start "$negative_session" > "$fail_log" 2>&1
+        fail_rc=$?
     fi
 
+    cp "$backup_file" "$config_file"
+    if [[ -f "$config_file" ]]; then
+        log_info "=== 当前 settings.json ==="
+        cat "$config_file"
+    fi
+    if [[ -f "$fail_log" ]]; then
+        log_info "=== start_fail.log ==="
+        cat "$fail_log"
+    fi
     cleanup_session "$negative_session"
+    set -e
 
-    # 验证负面测试结果
-    if [ $fail_rc -eq 124 ]; then
-        log_error "负面测试失败：无效命令配置时 start 未在 20s 内退出"
+    if [ $restore_rc -ne 0 ]; then
+        log_error "负面测试失败：jq 重写 settings.json 失败"
+        report "✗ 负面测试：无法写入无效启动器配置"
+        return 1
+    fi
+
+    # 验证负面测试结果：不能只依赖 timeout 退出码，要结合日志中的硬失败信号与 socket 状态
+    local hard_failure_line=""
+    if [[ -f "$HOME/.remote-claude/startup.log" ]]; then
+        hard_failure_line=$(python3 - <<'PY'
+from pathlib import Path
+from remote_claude import _detect_hard_startup_failure, _read_recent_start_log_lines
+log_path = Path.home() / '.remote-claude' / 'startup.log'
+print(_detect_hard_startup_failure(_read_recent_start_log_lines(log_path)))
+PY
+)
+    fi
+
+    local negative_socket="/tmp/remote-claude/${negative_session}.sock"
+    if [[ -n "$hard_failure_line" && ! -S "$negative_socket" ]]; then
+        log_success "负面测试通过：检测到启动硬失败，且未创建 socket"
+        report "✓ 负面测试：启动失败被正确检测（硬失败信号）"
+    elif [ $fail_rc -eq 124 ]; then
+        log_error "负面测试失败：无效命令配置时 start 未在 20s 内退出，且未检测到明确硬失败信号"
         print_session_diagnostics "$negative_session" "$fail_log"
         report "✗ 负面测试：无效命令未被检测到"
         return 1
@@ -470,7 +523,7 @@ test_basic_commands() {
     # 测试 remote-claude --help
     log_info "测试 remote-claude --help..."
     if uv run remote-claude --help > "$RESULTS_DIR/cmd_help.log" 2>&1; then
-        if grep -q "双端共享 Claude CLI 工具" "$RESULTS_DIR/cmd_help.log"; then
+        if grep -q "双端共享 Claude/Codex CLI 工具" "$RESULTS_DIR/cmd_help.log"; then
             log_success "remote-claude --help 输出正确"
         else
             log_error "remote-claude --help 输出异常"
@@ -509,17 +562,17 @@ test_basic_commands() {
         return 1
     fi
 
-    if grep -q "remote-claude" "bin/cla"; then
-        log_success "cla 脚本包含 remote-claude"
+    if grep -Eq "remote-claude|_remote_claude_shortcut_main" "bin/cla"; then
+        log_success "cla 脚本包含 remote-claude 或共享快捷入口"
     else
-        log_error "cla 脚本缺少 remote-claude"
+        log_error "cla 脚本缺少 remote-claude 或共享快捷入口"
         return 1
     fi
 
-    if grep -q "lark start" "bin/cla"; then
-        log_success "cla 脚本包含 lark start"
+    if grep -Eq "lark start|_remote_claude_shortcut_main" "bin/cla"; then
+        log_success "cla 脚本包含 lark start 或共享快捷入口"
     else
-        log_error "cla 脚本缺少 lark start"
+        log_error "cla 脚本缺少 lark start 或共享快捷入口"
         return 1
     fi
 
@@ -612,11 +665,13 @@ run_unit_tests() {
         "tests/test_auto_answer_integration.py"
         "tests/test_base_client.py"
         "tests/test_local_client.py"
+        "tests/test_startup_trace_logging.py"
         "tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional"
         "tests/test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently"
         "tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required"
         "tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details"
         "tests/test_entry_lazy_init.py"
+        "tests/test_cli_help_and_remote.py"
     )
 
     # 非核心测试列表（失败继续）
@@ -656,12 +711,11 @@ run_unit_tests() {
         local log_file="$RESULTS_DIR/${log_name}.log"
 
         if uv run pytest -q "$test" > "$log_file" 2>&1; then
-            echo "PASS:$test:$test_type"
+            printf 'PASS\t%s\t%s\n' "$test" "$test_type"
         else
-            echo "FAIL:$test:$test_type"
+            printf 'FAIL\t%s\t%s\n' "$test" "$test_type"
         fi
     }
-    export -f run_single_test
     export RESULTS_DIR
 
     # 执行核心测试
@@ -670,9 +724,19 @@ run_unit_tests() {
     if [ "$parallel_jobs" -gt 1 ]; then
         # 并行执行核心测试
         local core_results
-        core_results=$(printf "%s\n" "${core_tests[@]}" | parallel -j "$parallel_jobs" run_single_test {} "core")
-        while IFS=: read -r status test test_type; do
-            if [ -f "$test" ]; then
+        set +e
+        core_results=$(printf "%s\n" "${core_tests[@]}" | parallel --env RESULTS_DIR -j "$parallel_jobs" 'python3 -c "import os, subprocess, sys; test=sys.argv[1]; test_type=sys.argv[2]; log_name=test.replace(\"/\", \"__\").replace(\":\", \"__\"); log_file=os.path.join(os.environ[\"RESULTS_DIR\"], f\"{log_name}.log\"); result=subprocess.run([\"uv\", \"run\", \"pytest\", \"-q\", test], stdout=open(log_file, \"w\"), stderr=subprocess.STDOUT, text=True); status=\"PASS\" if result.returncode == 0 else \"FAIL\"; print(f\"{status}\\t{test}\\t{test_type}\")" {} core')
+        local core_parallel_rc=$?
+        set -e
+        if [ $core_parallel_rc -ne 0 ]; then
+            log_error "核心并行测试执行失败（rc=$core_parallel_rc）"
+            return 1
+        fi
+        while IFS=$'\t' read -r status test test_type; do
+            [ "$TEST_INTERRUPTED" -eq 0 ] || break
+            [[ -n "$status" ]] || continue
+            [[ -n "$test" ]] || continue
+            if [[ "$test" == *"::"* ]] || [ -f "$test" ]; then
                 unit_total=$((unit_total + 1))
                 if [ "$status" = "PASS" ]; then
                     log_success "核心测试通过: $test"
@@ -707,6 +771,11 @@ run_unit_tests() {
     fi
 
     # 核心测试失败则终止
+    if [ "$TEST_INTERRUPTED" -ne 0 ]; then
+        log_error "测试被用户中断"
+        return 130
+    fi
+
     if [ $core_failed -gt 0 ]; then
         log_error "$core_failed 个核心测试失败，终止测试流程"
         return 1
@@ -718,9 +787,19 @@ run_unit_tests() {
     if [ "$parallel_jobs" -gt 1 ]; then
         # 并行执行非核心测试
         local non_core_results
-        non_core_results=$(printf "%s\n" "${non_core_tests[@]}" | parallel -j "$parallel_jobs" run_single_test {} "non_core")
-        while IFS=: read -r status test test_type; do
-            if [ -f "$test" ]; then
+        set +e
+        non_core_results=$(printf "%s\n" "${non_core_tests[@]}" | parallel --env RESULTS_DIR -j "$parallel_jobs" 'python3 -c "import os, subprocess, sys; test=sys.argv[1]; test_type=sys.argv[2]; log_name=test.replace(\"/\", \"__\").replace(\":\", \"__\"); log_file=os.path.join(os.environ[\"RESULTS_DIR\"], f\"{log_name}.log\"); result=subprocess.run([\"uv\", \"run\", \"pytest\", \"-q\", test], stdout=open(log_file, \"w\"), stderr=subprocess.STDOUT, text=True); status=\"PASS\" if result.returncode == 0 else \"FAIL\"; print(f\"{status}\\t{test}\\t{test_type}\")" {} non_core')
+        local non_core_parallel_rc=$?
+        set -e
+        if [ $non_core_parallel_rc -ne 0 ]; then
+            log_error "非核心并行测试执行失败（rc=$non_core_parallel_rc）"
+            return 1
+        fi
+        while IFS=$'\t' read -r status test test_type; do
+            [ "$TEST_INTERRUPTED" -eq 0 ] || break
+            [[ -n "$status" ]] || continue
+            [[ -n "$test" ]] || continue
+            if [[ "$test" == *"::"* ]] || [ -f "$test" ]; then
                 unit_total=$((unit_total + 1))
                 if [ "$status" = "PASS" ]; then
                     log_success "非核心测试通过: $test"
@@ -752,6 +831,11 @@ run_unit_tests() {
                 non_core_failed=$((non_core_failed + 1))
             fi
         done
+    fi
+
+    if [ "$TEST_INTERRUPTED" -ne 0 ]; then
+        log_error "测试被用户中断"
+        return 130
     fi
 
     # 汇总单元测试结果

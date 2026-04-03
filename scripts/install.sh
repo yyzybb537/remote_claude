@@ -24,32 +24,14 @@ PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 LAZY_INIT_DISABLE_AUTO_RUN=1
 export LAZY_INIT_DISABLE_AUTO_RUN
 . "$PROJECT_DIR/scripts/_common.sh"
+if [ -f "$PROJECT_DIR/scripts/_help.sh" ]; then
+    . "$PROJECT_DIR/scripts/_help.sh"
+fi
 unset LAZY_INIT_DISABLE_AUTO_RUN
-
-# 检测操作系统
-detect_os() {
-    OS=$(uname -s)
-    if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
-        print_error "不支持的操作系统: $OS"
-        print_error "Remote Claude 仅支持 macOS 和 Linux"
-        return 1
-    fi
-    print_success "操作系统: $OS"
-}
 
 # 检查并安装 uv（使用 _common.sh 中的函数）
 check_and_install_uv_install() {
-    print_header "检查 uv 包管理器"
-
-    if check_and_install_uv; then
-        UV_VERSION=$(uv --version)
-        print_success "$UV_VERSION 已安装"
-        return 0
-    fi
-
-    print_error "uv 安装失败，请手动安装："
-    print_uv_manual_install_hint
-    return 1
+    ensure_uv_or_hint "检查 uv 包管理器"
 }
 
 # 创建虚拟环境并安装依赖
@@ -140,14 +122,11 @@ show_completion() {
 
     shell_rc=$(get_shell_rc)
 
-    echo "${GREEN}可用命令:${NC}"
-    echo "  ${GREEN}cla${NC}  - 启动 Claude"
-    echo "  ${GREEN}cl${NC}   - 启动 Claude (跳过权限)"
-    echo "  ${GREEN}cx${NC}   - 启动 Codex"
-    echo "  ${GREEN}cdx${NC}  - 启动 Codex (需权限)"
-    echo "  ${GREEN}remote-claude${NC} - 管理工具"
-    echo ""
-    echo "${YELLOW}提示:${NC} 重新打开终端或运行 ${GREEN}. $shell_rc${NC} 生效"
+    printf '\n'
+    print_quick_commands_table
+    printf '%b\n' "  ${GREEN}remote-claude${NC} - 管理工具"
+    printf '\n'
+    print_shell_reload_hint "$shell_rc"
 }
 
 # 主流程
@@ -169,12 +148,7 @@ main() {
         exit 0
     fi
 
-    printf '\n'
-    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf '%b\n' "${GREEN}   Remote Claude 一键安装${NC}"
-    printf '%b\n' "${GREEN}   零依赖安装 - 自动配置 Python 环境${NC}"
-    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf '\n'
+    print_banner "Remote Claude 一键安装" "零依赖安装 - 自动配置 Python 环境"
 
     # 延迟模式：只运行必要步骤
     if $LAZY_MODE; then
@@ -188,7 +162,7 @@ main() {
     fi
 
     _install_stage "precheck"
-    detect_os || { rc=$?; _log_script_fail "precheck" "detect_os" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
+    require_supported_os || { rc=$?; _log_script_fail "precheck" "require_supported_os" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
     _install_stage "uv"
     check_and_install_uv_install || { rc=$?; _log_script_fail "uv" "check_and_install_uv_install" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
     _install_stage "deps"

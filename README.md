@@ -31,16 +31,20 @@ curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/script
 
 | 命令 | CLI | 权限模式 | 用途 |
 |------|-----|---------|------|
-| `cla` | Claude | 正常 | 启动 Claude 会话 |
-| `cl` | Claude | 跳过确认 | 快速启动 Claude |
-| `cx` | Codex | 跳过确认 | 快速启动 Codex |
-| `cdx` | Codex | 正常 | 启动 Codex 会话 |
+| `cla` | Claude | 正常（需确认） | 启动 Claude 会话 |
+| `cl` | Claude | 跳过权限确认 | 快速启动 Claude 会话 |
+| `cx` | Codex | 跳过权限确认 | 快速启动 Codex 会话 |
+| `cdx` | Codex | 正常（需确认） | 启动 Codex 会话 |
+| `remote-claude start <name>` | Claude/Codex | 按配置执行 | 启动命名会话 |
+| `remote-claude attach <name>` | Claude/Codex | 连接已有会话 | 从另一个终端接入 |
 
 ```bash
 cla        # 在当前目录启动 Claude 会话
 cl         # 启动 Claude，跳过权限确认
 cx         # 启动 Codex，跳过权限确认
 cdx        # 启动 Codex，需确认权限
+remote-claude start demo
+remote-claude attach demo
 ```
 
 ### 从其他终端连接
@@ -70,10 +74,11 @@ remote-claude lark status  # 查看状态
 - [远程连接](docs/remote-connection.md) — 远程连接详细说明
 - [CLI 参考](docs/cli-reference.md) — 完整命令参考
 - [Docker 测试](docs/docker-test.md) — Docker 测试说明
+- [开发者指南](docs/developer.md) — 项目结构、技术栈与开发约定
 
 ## 系统要求
 
 - **操作系统**: macOS 或 Linux
-- **依赖工具**: [uv](https://docs.astral.sh/uv/)、[tmux](https://github.com/tmux/tmux)
+- **依赖工具**: [tmux](https://github.com/tmux/tmux)
 - **CLI 工具**: [Claude CLI](https://claude.ai/code) 或 [Codex CLI](https://github.com/openai/codex)
 - **可选**: 飞书企业自建应用

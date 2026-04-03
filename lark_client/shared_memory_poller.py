@@ -42,7 +42,7 @@ from utils.stats_helper import safe_track_stats as _safe_track_stats
 from server.biz_enum import CliType
 
 # 模块级用户设置（用于快捷命令选择器）
-_settings = load_settings()
+
 
 # ── 自动应答选项解析 ─────────────────────────────────────────────────────────
 
@@ -146,6 +146,9 @@ class SharedMemoryPoller:
         self._tasks: Dict[str, asyncio.Task] = {}       # chat_id → Task
         self._kick_events: Dict[str, asyncio.Event] = {}  # chat_id → Event（唤醒轮询）
         self._rapid_until: Dict[str, float] = {}           # chat_id → 快速模式截止时间
+
+    def _get_settings(self):
+        return load_settings()
 
     def start(self, chat_id: str, session_name: str, is_group: bool = False,
               notify_user_id: Optional[str] = None) -> None:
@@ -461,7 +464,8 @@ class SharedMemoryPoller:
 
         # 更新卡片
         from .card_builder import build_stream_card
-        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=_settings)
+        settings = self._get_settings()
+        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=settings)
 
         # 大小超限检查（与 blocks 数量超限同一套逻辑）
         card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
@@ -473,14 +477,14 @@ class SharedMemoryPoller:
             )
             return
 
-        active.sequence += 1
-        active.last_activity_time = time.time()
+        next_sequence = active.sequence + 1
         success = await self._card_service.update_card(
             card_id=active.card_id,
-            sequence=active.sequence,
+            sequence=next_sequence,
             card_content=card_dict,
         )
 
+        update_committed = False
         if getattr(success, 'is_element_limit', False):
             # 元素超限：冻结旧卡 + 推新流式卡
             await self._handle_element_limit(
@@ -491,24 +495,30 @@ class SharedMemoryPoller:
         elif not success:
             # 降级：创建新卡片替代
             logger.warning(
-                f"update_card 失败 card_id={active.card_id} seq={active.sequence}，降级为新卡片"
+                f"update_card 失败 card_id={active.card_id} seq={next_sequence}，降级为新卡片"
             )
-            _safe_track_stats('card', 'fallback', session_name=tracker.session_name,
-                         chat_id=tracker.chat_id)
             new_card_id = await self._card_service.create_card(card_dict)
             if new_card_id:
                 await self._card_service.send_card(tracker.chat_id, new_card_id)
                 active.card_id = new_card_id
                 active.sequence = 0
+                tracker.content_hash = new_hash
+                _safe_track_stats('card', 'fallback', session_name=tracker.session_name,
+                             chat_id=tracker.chat_id)
+                update_committed = True
         else:
+            active.sequence = next_sequence
+            active.last_activity_time = time.time()
             _safe_track_stats('card', 'update', session_name=tracker.session_name,
                          chat_id=tracker.chat_id)
+            tracker.content_hash = new_hash
+            update_committed = True
 
-        tracker.content_hash = new_hash
-        logger.debug(
-            f"[UPDATE] session={tracker.session_name} blocks={len(blocks_slice)} "
-            f"seq={active.sequence} hash={new_hash[:8]}"
-        )
+        if update_committed:
+            logger.debug(
+                f"[UPDATE] session={tracker.session_name} blocks={len(blocks_slice)} "
+                f"seq={active.sequence} hash={new_hash[:8]}"
+            )
 
     async def _create_new_card(
         self, tracker: StreamTracker, blocks: List[dict],
@@ -537,14 +547,15 @@ class SharedMemoryPoller:
             return
 
         from .card_builder import build_stream_card
-        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=_settings)
+        settings = self._get_settings()
+        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=settings)
 
         # 新卡大小检查：超限则从头部裁剪
         card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
         while card_size > CARD_SIZE_LIMIT and len(blocks_slice) > 1:
             blocks_slice = blocks_slice[1:]
             start_idx += 1
-            card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=_settings)
+            card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=settings)
             card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
 
         card_id = await self._card_service.create_card(card_dict)
@@ -581,23 +592,28 @@ class SharedMemoryPoller:
         from .card_builder import build_stream_card
         blocks_slice = blocks[active.start_idx:]
         frozen_card = build_stream_card(blocks_slice, None, None, is_frozen=True)
-        active.sequence += 1
-        await self._card_service.update_card(active.card_id, active.sequence, frozen_card)
-        active.frozen = True
-        _safe_track_stats('card', 'freeze', session_name=tracker.session_name,
-                     chat_id=tracker.chat_id)
+        next_sequence = active.sequence + 1
+        freeze_ok = await self._card_service.update_card(active.card_id, next_sequence, frozen_card)
+        if freeze_ok:
+            active.sequence = next_sequence
+            active.frozen = True
+            _safe_track_stats('card', 'freeze', session_name=tracker.session_name,
+                         chat_id=tracker.chat_id)
+        else:
+            return
 
         # 2. 创建新流式卡片，从最近 INITIAL_WINDOW 个 blocks 开始（重置窗口）
         new_start = max(0, len(blocks) - INITIAL_WINDOW)
         new_blocks = blocks[new_start:]
         if not new_blocks and not status_line and not bottom_bar:
             return
+        settings = self._get_settings()
         new_card_dict = build_stream_card(
             new_blocks, status_line, bottom_bar,
             agent_panel=agent_panel, option_block=option_block,
             session_name=tracker.session_name,
             cli_type=cli_type,
-            settings=_settings,
+            settings=settings,
         )
         new_card_id = await self._card_service.create_card(new_card_dict)
         if new_card_id:
@@ -650,15 +666,19 @@ class SharedMemoryPoller:
         frozen_blocks = blocks[active.start_idx:active.start_idx + count]
         from .card_builder import build_stream_card
         frozen_card = build_stream_card(frozen_blocks, None, None, is_frozen=True)
-        active.sequence += 1
-        await self._card_service.update_card(active.card_id, active.sequence, frozen_card)
-        active.frozen = True
-        _safe_track_stats('card', 'freeze', session_name=tracker.session_name,
-                     chat_id=tracker.chat_id)
-        logger.info(
-            f"[FREEZE] session={tracker.session_name} card_id={active.card_id} "
-            f"blocks=[{active.start_idx}:{active.start_idx + count}] reason={reason}"
-        )
+        next_sequence = active.sequence + 1
+        freeze_ok = await self._card_service.update_card(active.card_id, next_sequence, frozen_card)
+        if freeze_ok:
+            active.sequence = next_sequence
+            active.frozen = True
+            _safe_track_stats('card', 'freeze', session_name=tracker.session_name,
+                         chat_id=tracker.chat_id)
+            logger.info(
+                f"[FREEZE] session={tracker.session_name} card_id={active.card_id} "
+                f"blocks=[{active.start_idx}:{active.start_idx + count}] reason={reason}"
+            )
+        else:
+            return
 
         # 创建新卡片
         new_start = active.start_idx + count
@@ -666,14 +686,15 @@ class SharedMemoryPoller:
         if not new_blocks:
             return
 
-        new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=_settings)
+        settings = self._get_settings()
+        new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=settings)
 
         # 新卡大小检查：超限则从头部裁剪
         new_card_size = len(json.dumps(new_card_dict, ensure_ascii=False).encode('utf-8'))
         while new_card_size > CARD_SIZE_LIMIT and len(new_blocks) > 1:
             new_blocks = new_blocks[1:]
             new_start += 1
-            new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=_settings)
+            new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type, settings=settings)
             new_card_size = len(json.dumps(new_card_dict, ensure_ascii=False).encode('utf-8'))
 
         new_card_id = await self._card_service.create_card(new_card_dict)

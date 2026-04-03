@@ -43,3 +43,4 @@ capture_*.txt
 # npm
 node_modules/
 .worktrees/
+docs/superpowers

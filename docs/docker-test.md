@@ -33,6 +33,8 @@ docker buildx build --cache-to type=local,dest=.docker-cache --cache-from type=l
 
 ### 运行测试
 
+当修改 npm 打包、安装脚本、shell 入口、启动链路或 Docker 逻辑时，优先运行：
+
 **CI 模式（推荐）：**
 
 ```bash
@@ -91,16 +93,16 @@ test-results/
 ### 宿主机快速使用
 
 ```bash
-# 方式一：直接运行（推荐）
+# 方式一：直接运行快捷命令（推荐）
 cd test-results/npm-install/node_modules/remote-claude
 ./bin/cla  # 启动 Claude 会话
 
-# 方式二：使用 uv run（推荐）
+# 方式二：使用公开入口查看帮助
 cd test-results/npm-install/node_modules/remote-claude
-uv run python3 remote_claude.py --help
+./bin/remote-claude --help
 
 # 方式三：激活虚拟环境后使用（传统方式）
-source test-results/npm-install/.venv/bin/activate
+source test-results/npm-install/node_modules/remote-claude/.venv/bin/activate
 remote-claude --help
 ```
 
@@ -110,10 +112,10 @@ remote-claude --help
 
 | 脚本 | 说明 |
 |------|------|
-| `cla` | 启动 Claude（以当前目录为会话名） |
-| `cl` | 同 `cla`，跳过权限确认 |
-| `cx` | 启动 Codex（以当前目录为会话名，跳过权限确认） |
-| `cdx` | 同 `cx`，需要确认权限 |
+| `cla` | 启动 Claude 会话 |
+| `cl` | 快速启动 Claude 会话（跳过权限确认） |
+| `cx` | 快速启动 Codex 会话（跳过权限确认） |
+| `cdx` | 启动 Codex 会话 |
 
 ### 前置要求
 
@@ -123,19 +125,26 @@ remote-claude --help
 2. **CLI 工具**：Claude CLI 或 Codex CLI（至少一个）
 3. **可选**：飞书企业自建应用（用于飞书客户端）
 
+**指定启动器示例：**
+
+```bash
+remote-claude start demo --launcher Codex
+```
+
 > **注意**：产物中已包含便携式 Python 虚拟环境（`.venv`），宿主机无需预装 Python。
 
 ### 验证安装
 
 ```bash
 # 验证 Python 环境
-uv run python3 --version
+test-results/npm-install/node_modules/remote-claude/.venv/bin/python3 --version
 
 # 验证依赖
-uv run python3 -c "import lark_oapi; print('✓ 依赖完整')"
+test-results/npm-install/node_modules/remote-claude/.venv/bin/python3 -c "import lark_oapi; print('✓ 依赖完整')"
 
 # 验证命令可用
 test-results/npm-install/node_modules/remote-claude/bin/cla --help
+test-results/npm-install/node_modules/remote-claude/bin/remote-claude --help
 ```
 
 ## 测试流程
@@ -145,13 +154,13 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 1. **环境检查** - 验证 Python、uv、tmux、npm、Claude CLI、Codex CLI
 2. **打包 npm 包** - 执行 `npm pack` 生成 `.tgz` 文件
 3. **模拟用户安装** - 在临时目录执行 `npm install <packaged_file>`
-4. **验证 postinstall** - 检查 .venv、pyproject.toml、Python 依赖
-5. **测试基本命令** - 验证 `remote-claude --help`、`remote-claude list`、`cla` 脚本
-6. **验证 Claude/Codex CLI 启动** - 测试 `cla`/`cl`/`cx`/`cdx` 快捷命令启动流程
-7. **文件完整性检查** - 验证关键文件（含 resources/defaults/ 模板文件）是否存在
+4. **验证 postinstall** - 检查 `.venv`、`pyproject.toml`、Python 依赖
+5. **env 配置与启动链路测试** - 验证 `check-env.sh` 的跳过逻辑、`lark start` 不阻塞、`remote-claude start` 正常启动，以及无效启动器配置能被识别
+6. **测试基本命令** - 验证 `remote-claude --help`、`remote-claude list`、`cla` 脚本语法与关键逻辑
+7. **文件完整性检查** - 验证关键文件（含 `resources/defaults/` 模板文件）是否存在
 8. **执行独立单元测试** - 运行核心测试（失败终止）和非核心测试（失败继续）
 9. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
-10. **清理** - 停止会话、清理 socket 文件、清理 npm 缓存
+10. **清理** - 成功时退出容器；失败时保留容器、会话日志与测试产物便于调试
 
 ## 独立单元测试
 
@@ -171,6 +180,8 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 - `test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required` - 跳过飞书配置检查
 - `test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details` - lazy init 失败信息可见
 - `test_entry_lazy_init.py` - 入口脚本与 lazy init 全量回归
+- `test_cli_help_and_remote.py` - CLI 帮助与 remote 参数回归
+- `test_startup_trace_logging.py` - 启动 tracing 日志回归
 
 **非核心测试**（失败继续执行，记录警告）：
 - `test_stream_poller.py` - 流式卡片模型测试
@@ -196,20 +207,20 @@ docker exec -it remote-claude-npm-test /bin/bash
 
 ```bash
 cd /project
-/home/testuser/docker/docker-test.sh
+/project/docker/scripts/docker-test.sh
 ```
 
 ### 手动执行失败的测试
 
 ```bash
-cd /home/testuser/test-npm-install/node_modules/remote-claude
-python3 tests/test_format_unit.py
+cd /home/testuser/test-results/npm-install/node_modules/remote-claude
+uv run pytest -q tests/test_cli_help_and_remote.py
 ```
 
 ### 收集诊断信息
 
 ```bash
-/home/testuser/docker/scripts/docker-diagnose.sh
+/project/docker/scripts/docker-diagnose.sh
 ```
 
 诊断信息将保存到 `/home/testuser/test-results/diagnosis/` 目录。
@@ -368,10 +379,11 @@ cat test-results/npm_install.log
 
 ### 单元测试失败？
 
-查看具体的测试日志：
+查看具体的测试日志（文件名与测试路径一一对应，例如 `tests/test_entry_lazy_init.py` 会生成 `test-results/tests__test_entry_lazy_init.py.log`）：
 
 ```bash
-cat test-results/test_format_unit.log
+ls test-results/tests__*.log
+cat test-results/tests__test_entry_lazy_init.py.log
 ```
 
 ## 联系支持

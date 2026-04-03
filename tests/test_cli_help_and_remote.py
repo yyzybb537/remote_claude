@@ -33,17 +33,16 @@ def test_validate_remote_args_accepts_current_attach_order():
     )
 
 
+def test_remote_claude_module_doc_and_epilog_use_current_public_entrypoints():
+    content = (REPO_ROOT / "remote_claude.py").read_text(encoding="utf-8")
+    assert 'Remote Claude - 双端共享 Claude/Codex CLI 工具' in content
+    assert 'python3 remote_claude.py' not in content
+    assert 'start mywork --launcher Codex' in content
+    assert 'connect <host>' in content
+    assert 'remote list' in content
+
+
 def test_main_help_exits_cleanly(capsys):
-    with patch("sys.argv", ["remote_claude.py", "--help"]):
-        with pytest.raises(SystemExit) as exc_info:
-            remote_claude.main()
-
-    assert exc_info.value.code == 0
-    out = capsys.readouterr().out
-    assert "Remote Claude" in out
-
-
-def test_lark_help_exits_cleanly(capsys):
     with patch("sys.argv", ["remote_claude.py", "lark", "--help"]):
         with pytest.raises(SystemExit) as exc_info:
             remote_claude.main()
@@ -96,16 +95,44 @@ def test_bin_remote_claude_help_exits_cleanly_without_spawning_session(tmp_path)
     )
 
     assert result.returncode == 0
-    assert "Remote Claude - 双端共享 Claude CLI 工具" in result.stdout
+    assert "Remote Claude - 双端共享 Claude/Codex CLI 工具" in result.stdout
     assert "启动新会话" in result.stdout
+
+
+def test_main_help_uses_launcher_wording_only(tmp_path):
+    home_dir = tmp_path / "main_help_launcher_only"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+
+    install_dir_file = REPO_ROOT / "test-results" / "install_dir.txt"
+    env = {**os.environ, "HOME": str(home_dir)}
+    command_path = REPO_ROOT / "bin" / "remote-claude"
+    if install_dir_file.exists():
+        install_dir = Path(install_dir_file.read_text(encoding="utf-8").strip())
+        candidate = install_dir / "node_modules" / "remote-claude"
+        if candidate.exists():
+            broken_python = candidate / ".venv" / "bin" / "python3"
+            if broken_python.exists() or broken_python.is_symlink():
+                broken_python.unlink()
+            command_path = candidate / "bin" / "remote-claude"
+
+    result = subprocess.run(
+        [str(command_path), "start", "demo", "--help"],
+        cwd=command_path.parent.parent,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "--launcher" in result.stdout
+    assert "--cli-type" not in result.stdout
+    assert "--cli_type" not in result.stdout
 
 
 def test_management_subcommand_help_and_empty_invocation_do_not_create_side_effects(tmp_path):
     commands = [
         ["config", "--help"],
-        ["config"],
         ["connection", "--help"],
-        ["connection"],
         ["conn", "--help"],
         ["connect", "--help"],
         ["remote", "--help"],
@@ -116,25 +143,98 @@ def test_management_subcommand_help_and_empty_invocation_do_not_create_side_effe
         ["connection", "delete", "--help"],
         ["connection", "set-default", "--help"],
         ["config", "reset", "--help"],
+        ["lark", "--help"],
     ]
+
+    install_dir_file = REPO_ROOT / "test-results" / "install_dir.txt"
+    command_path = REPO_ROOT / "bin" / "remote-claude"
+    command_cwd = REPO_ROOT
+    env_overrides = {}
+    broken_python = None
+    if install_dir_file.exists():
+        install_dir = Path(install_dir_file.read_text(encoding="utf-8").strip())
+        candidate = install_dir / "node_modules" / "remote-claude"
+        if candidate.exists():
+            command_path = candidate / "bin" / "remote-claude"
+            command_cwd = candidate
+            env_overrides = {
+                "REMOTE_CLAUDE_UV_PROJECT_DIR": str(candidate),
+                "REMOTE_CLAUDE_FORCE_UV_RUN": "1",
+            }
+            broken_python = candidate / ".venv" / "bin" / "python3"
 
     for command in commands:
         home_dir = tmp_path / "_".join(command).replace("-", "_")
         (home_dir / ".remote-claude").mkdir(parents=True)
 
+        if broken_python is not None and (broken_python.exists() or broken_python.is_symlink()):
+            broken_python.unlink()
+
         before = {p.name for p in Path("/tmp/remote-claude").glob("*")}
+        env = {**os.environ, "HOME": str(home_dir), **env_overrides}
         result = subprocess.run(
-            [str(REPO_ROOT / "bin/remote-claude"), *command],
-            cwd=REPO_ROOT,
+            [str(command_path), *command],
+            cwd=command_cwd,
             capture_output=True,
             text=True,
-            env={**os.environ, "HOME": str(home_dir)},
+            env=env,
         )
         after = {p.name for p in Path("/tmp/remote-claude").glob("*")}
 
         assert result.returncode == 0, (command, result.stdout, result.stderr)
+        assert "检测到依赖变更，正在更新 Python 环境..." not in result.stdout, (command, result.stdout)
+        assert "scripts/setup.sh --npm --lazy" not in result.stderr, (command, result.stderr)
         assert "飞书客户端尚未配置" not in result.stdout, (command, result.stdout)
         assert not any(name.startswith(home_dir.name) for name in after - before), (command, sorted(after - before))
+
+
+def test_connection_shortcuts_fall_back_to_uv_when_system_python_too_old(tmp_path):
+    install_dir_file = REPO_ROOT / "test-results" / "install_dir.txt"
+    if not install_dir_file.exists():
+        pytest.skip("requires installed package fixture")
+
+    install_dir = Path(install_dir_file.read_text(encoding="utf-8").strip())
+    candidate = install_dir / "node_modules" / "remote-claude"
+    if not candidate.exists():
+        pytest.skip("requires installed package fixture")
+
+    home_dir = tmp_path / "connection_shortcut_old_python"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+    broken_python = candidate / ".venv" / "bin" / "python3"
+    if broken_python.exists() or broken_python.is_symlink():
+        broken_python.unlink()
+
+    shim_dir = tmp_path / "shim-bin"
+    shim_dir.mkdir()
+    (shim_dir / "python3").write_text(
+        "#!/bin/sh\n"
+        "if [ \"${1:-}\" = \"--version\" ]; then\n"
+        "  echo 'Python 3.9.0'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exec /usr/bin/python3 \"$@\"\n",
+        encoding="utf-8",
+    )
+    (shim_dir / "python3").chmod(0o755)
+
+    env = {
+        **os.environ,
+        "HOME": str(home_dir),
+        "PATH": f"{shim_dir}:{os.environ.get('PATH', '')}",
+        "REMOTE_CLAUDE_UV_PROJECT_DIR": str(candidate),
+        "REMOTE_CLAUDE_FORCE_UV_RUN": "1",
+    }
+
+    result = subprocess.run(
+        [str(candidate / "bin" / "remote-claude"), "connection"],
+        cwd=candidate,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "没有保存的连接配置" in result.stdout
 
 
 def test_shortcut_help_commands_exit_cleanly_without_spawn_error(tmp_path):
@@ -154,33 +254,71 @@ def test_shortcut_help_commands_exit_cleanly_without_spawn_error(tmp_path):
         after = {p.name for p in Path("/tmp/remote-claude").glob("*")}
 
         assert result.returncode == 0, (rel, result.stdout, result.stderr)
-        assert "usage: remote_claude.py start" in result.stdout, (rel, result.stdout)
+        assert "检测到依赖变更，正在更新 Python 环境..." not in result.stdout, (rel, result.stdout)
+        assert "scripts/setup.sh --npm --lazy" not in result.stderr, (rel, result.stderr)
+        assert "Remote Claude 快捷命令" in result.stdout, (rel, result.stdout)
+        assert "cla    Claude   正常（需确认）    启动 Claude 会话" in result.stdout, (rel, result.stdout)
+        assert "cl     Claude   跳过权限确认      快速启动 Claude 会话" in result.stdout, (rel, result.stdout)
+        assert "cx     Codex    跳过权限确认      快速启动 Codex 会话" in result.stdout, (rel, result.stdout)
+        assert "cdx    Codex    正常（需确认）    启动 Codex 会话" in result.stdout, (rel, result.stdout)
         assert "start 子命令不支持透传帮助参数" not in result.stdout, (rel, result.stdout)
         assert "飞书客户端尚未配置" not in result.stdout, (rel, result.stdout)
         assert not any(name.startswith(home_dir.name) for name in after - before), (rel, sorted(after - before))
 
 
-def test_cmd_attach_remote_logs_tracing(monkeypatch, caplog):
-    args = SimpleNamespace(
-        name="assistant_public",
-        config_name="",
-        save=False,
-        remote=True,
-        host="10.0.0.1",
-        token="secret-token",
-        port=10000,
+def test_main_help_lists_management_commands(tmp_path):
+    home_dir = tmp_path / "main_help_commands"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(REPO_ROOT / "bin/remote-claude"), "--help"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home_dir)},
     )
 
-    monkeypatch.setattr("client.run_remote_client", lambda host, session, token, port: 0)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "Remote Claude - 双端共享 Claude/Codex CLI 工具" in result.stdout
+    assert "connection       远程连接配置管理" in result.stdout
+    assert "regenerate-token 重新生成 token" in result.stdout
+    assert "remote           远程控制" in result.stdout
 
-    with caplog.at_level(logging.INFO):
-        result = remote_claude.cmd_attach(args)
+
+
+
+def test_remote_client_module_imports_without_deprecation_warning_when_asyncio_client_available():
+    import importlib
+    import sys
+    import warnings
+
+    sys.modules.pop("client.remote_client", None)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        remote_client = importlib.import_module("client.remote_client")
+
+    messages = [str(item.message) for item in caught if issubclass(item.category, DeprecationWarning)]
+    assert callable(remote_client.connect)
+    assert not any("websockets.client" in message for message in messages)
+    assert not any("websockets.legacy" in message for message in messages)
+
+
+def test_cmd_attach_remote_logs_tracing(monkeypatch, caplog):
+    args = SimpleNamespace(remote=True, host="10.0.0.1", token="secret-token", port=10000, name="")
+
+    calls = []
+
+    def fake_run_remote_control(host, port, session, token, action):
+        calls.append((host, port, session, token, action))
+        return 0
+
+    monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
+
+    result = remote_claude.cmd_list(args)
 
     assert result == 0
-    assert any(
-        "stage=remote_args_parsed" in record.message and "has_token=True" in record.message
-        for record in caplog.records
-    )
+    assert calls == [("10.0.0.1", 10000, "list", "secret-token", "list")]
 
 
 def test_cmd_list_remote_logs_tracing(monkeypatch, caplog):
@@ -225,6 +363,16 @@ def test_cmd_kill_remote_logs_tracing(monkeypatch, caplog):
         "stage=remote_args_parsed" in record.message and "command=kill" in record.message
         for record in caplog.records
     )
+
+
+def test_lark_commands_use_public_remote_claude_entrypoint_in_runtime_output():
+    content = (REPO_ROOT / "remote_claude.py").read_text(encoding="utf-8")
+    assert "remote-claude lark status" in content
+    assert "remote-claude lark stop" in content
+    assert "remote-claude lark start" in content
+    assert "python3 remote_claude.py lark status" not in content
+    assert "python3 remote_claude.py lark stop" not in content
+    assert "python3 remote_claude.py lark start" not in content
 
 
 def test_cmd_kill_deletes_token_file(monkeypatch, tmp_path):

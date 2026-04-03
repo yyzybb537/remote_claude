@@ -75,6 +75,22 @@ def test_normalize_original_path_returns_dash_for_none():
     assert remote_claude._normalize_original_path(None) == "-"
 
 
+def test_validate_remote_args_uses_fallback_for_list_like_commands():
+    args = type("Args", (), {
+        "host": "10.0.0.1",
+        "port": 10000,
+        "token": "t",
+        "name": "",
+    })()
+
+    assert remote_claude.validate_remote_args(args, session_fallback="list") == (
+        "10.0.0.1",
+        10000,
+        "list",
+        "t",
+    )
+
+
 def test_normalize_original_path_returns_dash_for_empty_string():
     assert remote_claude._normalize_original_path("") == "-"
 

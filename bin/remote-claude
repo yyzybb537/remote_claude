@@ -14,6 +14,50 @@ done
 SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 STARTUP_DIR="${STARTUP_DIR:-$(pwd)}"
+
+# -h/--help 与纯管理帮助应在 shell 层短路，避免触发 _common.sh 的 lazy init
+case "${1:-}" in
+    -h|--help)
+        export LAZY_INIT_DISABLE_AUTO_RUN=1
+        . "$PROJECT_DIR/scripts/_common.sh"
+        . "$PROJECT_DIR/scripts/_help.sh"
+        _print_main_help
+        exit 0
+        ;;
+    start)
+        second_arg="${2:-}"
+        third_arg="${3:-}"
+        fourth_arg="${4:-}"
+        if [ "$second_arg" = "--help" ] || [ "$second_arg" = "-h" ] \
+            || [ "$third_arg" = "--help" ] || [ "$third_arg" = "-h" ] \
+            || [ "$fourth_arg" = "--help" ] || [ "$fourth_arg" = "-h" ]; then
+            export LAZY_INIT_DISABLE_AUTO_RUN=1
+            . "$PROJECT_DIR/scripts/_common.sh"
+            _remote_claude_python "$@"
+            exit $?
+        fi
+        ;;
+    config|connection|conn|connect|remote|token|regenerate-token|lark)
+        second_arg="${2:-}"
+        third_arg="${3:-}"
+        if [ "$second_arg" = "--help" ] || [ "$second_arg" = "-h" ] \
+            || [ "$third_arg" = "--help" ] || [ "$third_arg" = "-h" ]; then
+            export LAZY_INIT_DISABLE_AUTO_RUN=1
+            . "$PROJECT_DIR/scripts/_common.sh"
+            if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+                python3 "$PROJECT_DIR/remote_claude.py" "$@"
+                RC=$?
+                if [ "$RC" -eq 0 ]; then
+                  return
+                fi
+            fi
+            _remote_claude_python "$@"
+            exit $?
+        fi
+
+        ;;
+esac
+
 # 引入共享脚本（提供颜色定义、打印函数、uv 管理函数）
 # _common.sh 末尾会自动调用 _lazy_init 进行初始化检查
 . "$PROJECT_DIR/scripts/_common.sh"
@@ -60,15 +104,6 @@ fi
 if [ "$1" = "lark" ] && [ "${2:-}" != "--help" ] && [ "${2:-}" != "-h" ]; then
     sh "${PROJECT_DIR}/scripts/check-env.sh"
 fi
-
-# -h/--help：显示简明命令概览（在 shell 层处理，无需 Python 初始化）
-case "${1:-}" in
-    -h|--help)
-        . "$PROJECT_DIR/scripts/_help.sh"
-        _print_main_help
-        exit 0
-        ;;
-esac
 
 # 在启动目录执行入口点，保持调用方 cwd
 cd "$STARTUP_DIR" || exit 1

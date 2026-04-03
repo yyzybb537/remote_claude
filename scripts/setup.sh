@@ -15,6 +15,9 @@ PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 LAZY_INIT_DISABLE_AUTO_RUN=1
 export LAZY_INIT_DISABLE_AUTO_RUN
 . "$PROJECT_DIR/scripts/_common.sh"
+if [ -f "$PROJECT_DIR/scripts/_help.sh" ]; then
+    . "$PROJECT_DIR/scripts/_help.sh"
+fi
 unset LAZY_INIT_DISABLE_AUTO_RUN
 
 # 末尾汇总警告（使用简单变量，POSIX sh 不支持数组）
@@ -57,31 +60,14 @@ setup_path() {
 # 检查操作系统
 check_os() {
     print_header "检查系统环境"
-
-    OS=$(uname -s)
-    if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
-        print_error "不支持的操作系统: $OS"
-        print_error "Remote Claude 仅支持 macOS 和 Linux"
-        return 1
-    fi
-
-    print_success "操作系统: $OS"
+    require_supported_os
 }
 
 # 检查 uv（使用 _common.sh 中的函数）
 check_uv() {
-    print_header "检查 uv"
-
-    if check_and_install_uv; then
-        UV_VERSION=$(uv --version)
-        print_success "$UV_VERSION 已安装"
-        _ensure_full_shell_init_block
-        print_success "已确保 \$HOME/.local/bin 写入 shell 初始化配置"
-    else
-        print_error "uv 安装失败，请手动安装："
-        print_uv_manual_install_hint
-        return 1
-    fi
+    ensure_uv_or_hint "检查 uv"
+    _ensure_full_shell_init_block
+    print_success "已确保 \$HOME/.local/bin 写入 shell 初始化配置"
 }
 
 # 检查并安装 tmux（要求 3.6+）
@@ -431,7 +417,9 @@ set_permissions() {
 
     chmod +x remote_claude.py
     chmod +x server/server.py
-    chmod +x client/client.py
+    chmod +x client/base_client.py
+    chmod +x client/local_client.py
+    chmod +x client/remote_client.py
 
     print_success "已设置执行权限"
 }
@@ -440,7 +428,11 @@ set_permissions() {
 configure_shell() {
     print_header "安装快捷命令"
 
-    chmod +x "$PROJECT_DIR/bin/cla" "$PROJECT_DIR/bin/cl" "$PROJECT_DIR/bin/cx" "$PROJECT_DIR/bin/cdx" "$PROJECT_DIR/bin/remote-claude" 2>/dev/null || true
+    rc_link_shortcuts_into_prepared_bins() {
+        chmod +x "$PROJECT_DIR/bin/cla" "$PROJECT_DIR/bin/cl" "$PROJECT_DIR/bin/cx" "$PROJECT_DIR/bin/cdx" "$PROJECT_DIR/bin/remote-claude" 2>/dev/null || true
+    }
+
+    rc_link_shortcuts_into_prepared_bins
 
     # 优先 /usr/local/bin，权限不够则选 ~/bin 或 ~/.local/bin 中已在 PATH 里的
     BIN_DIR="/usr/local/bin"
@@ -457,24 +449,17 @@ configure_shell() {
             print_success "已自动将 \$HOME/.local/bin 加入 PATH 并写入 shell 初始化配置"
         fi
         mkdir -p "$BIN_DIR"
-        ln -sf "$PROJECT_DIR/bin/cla"           "$BIN_DIR/cla"          2>/dev/null || true
-        ln -sf "$PROJECT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
-        ln -sf "$PROJECT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
-        ln -sf "$PROJECT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
-        ln -sf "$PROJECT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
+        rc_link_shortcuts_into_dir "$BIN_DIR"
     else
-        ln -sf "$PROJECT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
-        ln -sf "$PROJECT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
-        ln -sf "$PROJECT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
-        ln -sf "$PROJECT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
+        rc_link_shortcuts_into_dir "$BIN_DIR"
     fi
 
-    print_success "已安装 cla、cl、cx、cdx 和 remote-claude 到 $BIN_DIR"
+    print_success "已安装 $REMOTE_CLAUDE_SHORTCUT_COMMANDS 到 $BIN_DIR"
     print_info "  cla           - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Claude"
     print_info "  cl            - 同 cla，但跳过权限确认"
     print_info "  cx            - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Codex（跳过权限）"
     print_info "  cdx           - 同 cx，但需确认权限"
-    print_info "  remote-claude - Remote Claude 主命令（start/attach/list/kill/lark）"
+    print_info "  remote-claude - Remote Claude 主命令（start/attach/list/kill/status/log/lark/config/connection/token/regenerate-token/stats/update/connect/remote）"
 
     # 安装 shell 自动补全（通过统一完整初始化块写入）
     _ensure_full_shell_init_block
@@ -505,20 +490,13 @@ restart_lark_client() {
 show_usage() {
     print_header "安装完成！"
 
-    cat << EOF
-${YELLOW}快捷命令：${NC}
-
-  ${GREEN}cla${NC}  - 启动飞书客户端 + 以当前目录+时间戳为会话名启动 Claude
-  ${GREEN}cl${NC}   - 同 cla，但跳过权限确认
-  ${GREEN}cx${NC}   - 启动飞书客户端 + 以当前目录+时间戳为会话名启动 Codex（跳过权限）
-  ${GREEN}cdx${NC}  - 同 cx，但需确认权限
-
-详细使用说明请阅读 README.md
-
-${YELLOW}提示：${NC}请运行以下命令使 PATH 生效，或重新打开终端：
-  . $(get_shell_rc)
-
-EOF
+    printf '\n'
+    print_quick_commands_table
+    printf '\n'
+    printf '%b\n' "详细使用说明请阅读 README.md"
+    printf '\n'
+    print_shell_reload_hint "$(get_shell_rc)"
+    printf '\n'
 }
 
 # 主流程
@@ -538,12 +516,7 @@ main() {
         export CI_MODE=true
     fi
 
-    printf '\n'
-    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf '%b\n' "${GREEN}   Remote Claude 初始化脚本${NC}"
-    printf '%b\n' "${GREEN}   双端共享 Claude CLI 工具${NC}"
-    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf '\n'
+    print_banner "Remote Claude 初始化脚本" "双端共享 Claude/Codex CLI 工具"
 
     # 延迟初始化模式：只运行必要步骤
     if $LAZY_MODE; then

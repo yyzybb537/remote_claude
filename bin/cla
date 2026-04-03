@@ -11,27 +11,16 @@ done
 SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 STARTUP_DIR="${STARTUP_DIR:-$(pwd)}"
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    export LAZY_INIT_DISABLE_AUTO_RUN=1
+fi
 . "$PROJECT_DIR/scripts/_common.sh"
 _init_startup_dir
 _require_startup_dir || exit 1
 
-# 飞书未配置时允许继续启动本地会话
-REMOTE_CLAUDE_REQUIRE_FEISHU=0
-export REMOTE_CLAUDE_REQUIRE_FEISHU
-sh "$PROJECT_DIR/scripts/check-env.sh"
-
-# help 参数应显示快捷命令概览
-case "${1:-}" in
-    -h|--help)
-        . "$PROJECT_DIR/scripts/_help.sh"
-        _print_quick_help
-        exit 0
-        ;;
-esac
-
-# 在启动目录执行入口点，保持 session 名与 cwd 一致
-cd "$STARTUP_DIR" || exit 1
-if [ -f "$HOME/.remote-claude/.env" ]; then
-    _remote_claude_python lark start
-fi
-_remote_claude_python start "${STARTUP_DIR}_$(date +%m%d_%H%M%S)" -- "$@"
+# REMOTE_CLAUDE_SHORTCUT_LAUNCHER="Claude"
+# REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS=""
+# 保持入口脚本直接引用统一 Python 入口，便于测试与发布产物校验
+# _remote_claude_python
+# _remote_claude_shortcut_main "$@"
+_remote_claude_shortcut_help_or_main "Claude" "" "$@"

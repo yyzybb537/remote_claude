@@ -43,20 +43,25 @@ def _expected_recovery_command(project_root: Path) -> str:
     return f"sh {project_root / 'scripts' / 'setup.sh'} --npm --lazy"
 
 
-def run_common(script_body: str) -> subprocess.CompletedProcess[str]:
+def run_common(script_body: str, *, env: dict[str, str] | None = None, disable_auto_lazy_init: bool = True) -> subprocess.CompletedProcess[str]:
+    lazy_init_prefix = "LAZY_INIT_DISABLE_AUTO_RUN=1\nexport LAZY_INIT_DISABLE_AUTO_RUN\n" if disable_auto_lazy_init else ""
     shell_script = f"""#!/bin/sh
 set -e
-SCRIPT_DIR='{REPO_ROOT}/scripts'
+{lazy_init_prefix}SCRIPT_DIR='{REPO_ROOT}/scripts'
 PROJECT_DIR='{REPO_ROOT}'
 . '{COMMON_SH}'
 {script_body}
 """
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     return subprocess.run(
         ["sh"],
         input=shell_script,
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,
+        env=run_env,
     )
 
 
@@ -273,17 +278,111 @@ def test_test_lark_management_uses_common_runtime_variables():
     assert "/tmp/remote-claude/lark.pid" not in content
 
 
-def test_install_uv_multi_source_prefers_pip_user_before_fallback():
+def test_install_uv_multi_source_uses_pip_as_last_fallback():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
 export HOME="$TMPDIR_PATH/home"
 mkdir -p "$HOME/.local/bin" "$TMPDIR_PATH/bin"
 PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
-: > "$TMPDIR_PATH/pip_args.log"
-: > "$TMPDIR_PATH/fallback.log"
+: > "$TMPDIR_PATH/calls.log"
 
 pip3() {
-    echo "$*" >> "$TMPDIR_PATH/pip_args.log"
+    echo "pip3 $*" >> "$TMPDIR_PATH/calls.log"
+    cat > "$HOME/.local/bin/uv" <<'EOF'
+#!/bin/sh
+echo "uv 0.test"
+EOF
+    chmod +x "$HOME/.local/bin/uv"
+    return 0
+}
+
+pip() { pip3 "$@"; }
+
+curl() {
+    echo "curl" >> "$TMPDIR_PATH/calls.log"
+    return 1
+}
+
+mamba() {
+    echo "mamba $*" >> "$TMPDIR_PATH/calls.log"
+    return 1
+}
+
+conda() {
+    echo "conda $*" >> "$TMPDIR_PATH/calls.log"
+    return 1
+}
+
+uname() {
+    echo Darwin
+}
+
+brew() {
+    echo "brew $*" >> "$TMPDIR_PATH/calls.log"
+    return 1
+}
+
+install_uv_multi_source || exit 1
+cat "$TMPDIR_PATH/calls.log"
+''')
+
+    assert result.returncode == 0, result.stderr
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    assert "curl" in lines
+    assert any(line.startswith("brew install uv") for line in lines)
+    pip_idx = next(i for i, line in enumerate(lines) if line.startswith("pip3 install uv "))
+    curl_idx = next(i for i, line in enumerate(lines) if line == "curl")
+    brew_idx = next(i for i, line in enumerate(lines) if line.startswith("brew install uv"))
+    assert curl_idx < brew_idx < pip_idx
+
+
+def test_install_uv_multi_source_reports_manual_pip_upgrade_when_pip_is_too_old():
+    result = run_common(r'''
+TMPDIR_PATH="$(mktemp -d)"
+export HOME="$TMPDIR_PATH/home"
+mkdir -p "$TMPDIR_PATH/bin" "$HOME"
+export PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
+
+cat > "$TMPDIR_PATH/bin/pip3" <<'EOF'
+#!/bin/sh
+printf 'ERROR: no such option: --break-system-packages\n' >&2
+exit 2
+EOF
+chmod +x "$TMPDIR_PATH/bin/pip3"
+ln -s "$TMPDIR_PATH/bin/pip3" "$TMPDIR_PATH/bin/pip"
+
+cat > "$TMPDIR_PATH/bin/curl" <<'EOF'
+#!/bin/sh
+exit 127
+EOF
+chmod +x "$TMPDIR_PATH/bin/curl"
+
+cat > "$TMPDIR_PATH/bin/uname" <<'EOF'
+#!/bin/sh
+echo Linux
+EOF
+chmod +x "$TMPDIR_PATH/bin/uname"
+
+if install_uv_multi_source; then
+    echo should-fail
+    exit 1
+fi
+''', env={"PATH": "/usr/bin:/bin", "REMOTE_CLAUDE_STATE_FILE": "/nonexistent/state.json"}, disable_auto_lazy_init=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "当前 pip 版本过低，无法安装 uv；请先手动升级 pip 后重试" in result.stdout
+
+
+def test_install_uv_multi_source_prefers_official_script_before_pip_fallback():
+    result = run_common(r'''
+TMPDIR_PATH="$(mktemp -d)"
+export HOME="$TMPDIR_PATH/home"
+mkdir -p "$HOME/.local/bin" "$TMPDIR_PATH/bin"
+PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
+: > "$TMPDIR_PATH/calls.log"
+
+pip3() {
+    echo "pip3 $*" >> "$TMPDIR_PATH/calls.log"
     case " $* " in
         *" --user "*)
             cat > "$HOME/.local/bin/uv" <<'EOF'
@@ -297,13 +396,25 @@ EOF
     return 1
 }
 
-pip() {
-    pip3 "$@"
-}
+pip() { pip3 "$@"; }
 
 curl() {
-    echo "curl-called" >> "$TMPDIR_PATH/fallback.log"
+    echo "curl-called" >> "$TMPDIR_PATH/calls.log"
     return 1
+}
+
+mamba() {
+    echo "mamba-called" >> "$TMPDIR_PATH/calls.log"
+    return 1
+}
+
+conda() {
+    echo "conda-called" >> "$TMPDIR_PATH/calls.log"
+    return 1
+}
+
+uname() {
+    echo Linux
 }
 
 if install_uv_multi_source; then
@@ -313,45 +424,54 @@ else
     exit 1
 fi
 
-cat "$TMPDIR_PATH/pip_args.log"
-[ -f "$TMPDIR_PATH/fallback.log" ] && cat "$TMPDIR_PATH/fallback.log"
+cat "$TMPDIR_PATH/calls.log"
 ''')
 
     assert result.returncode == 0, result.stderr
     assert "ok" in result.stdout
-    assert "--user" in result.stdout
-    assert "curl-called" not in result.stdout
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    curl_idx = next(i for i, line in enumerate(lines) if line == "curl-called")
+    pip_idx = next(i for i, line in enumerate(lines) if line.startswith("pip3 install uv "))
+    assert curl_idx < pip_idx
 
 
-def test_install_uv_multi_source_falls_back_after_pip_user_failures():
+def test_install_uv_multi_source_falls_back_to_pip_after_other_methods_fail():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
 export HOME="$TMPDIR_PATH/home"
 mkdir -p "$HOME/.local/bin" "$TMPDIR_PATH/bin"
 PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
-: > "$TMPDIR_PATH/pip_args.log"
-: > "$TMPDIR_PATH/fallback.log"
+: > "$TMPDIR_PATH/calls.log"
 
 pip3() {
-    echo "$*" >> "$TMPDIR_PATH/pip_args.log"
+    echo "pip3 $*" >> "$TMPDIR_PATH/calls.log"
+    cat > "$HOME/.local/bin/uv" <<'EOF'
+#!/bin/sh
+echo "uv 0.test"
+EOF
+    chmod +x "$HOME/.local/bin/uv"
+    return 0
+}
+
+pip() { pip3 "$@"; }
+
+curl() {
+    echo "curl-called" >> "$TMPDIR_PATH/calls.log"
     return 1
 }
 
-pip() {
-    pip3 "$@"
+mamba() {
+    echo "mamba-called" >> "$TMPDIR_PATH/calls.log"
+    return 1
 }
 
-curl() {
-    echo "curl-called" >> "$TMPDIR_PATH/fallback.log"
-    cat <<'EOF'
-mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/uv" <<'UVEOF'
-#!/bin/sh
-echo "uv 0.test"
-UVEOF
-chmod +x "$HOME/.local/bin/uv"
-EOF
-    return 0
+conda() {
+    echo "conda-called" >> "$TMPDIR_PATH/calls.log"
+    return 1
+}
+
+uname() {
+    echo Linux
 }
 
 if install_uv_multi_source; then
@@ -361,54 +481,14 @@ else
     exit 1
 fi
 
-cat "$TMPDIR_PATH/pip_args.log"
-cat "$TMPDIR_PATH/fallback.log"
-''')
-
-    assert result.returncode == 0, result.stderr
-    assert "ok" in result.stdout
-    assert "--user" in result.stdout
-    assert "curl-called" in result.stdout
-
-
-def test_install_uv_multi_source_upgrades_pip_before_uv_install():
-    result = run_common(r'''
-TMPDIR_PATH="$(mktemp -d)"
-export HOME="$TMPDIR_PATH/home"
-mkdir -p "$TMPDIR_PATH/bin" "$HOME/.local/bin"
-PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
-: > "$TMPDIR_PATH/calls.log"
-
-pip3() {
-    echo "$*" >> "$TMPDIR_PATH/calls.log"
-    case " $* " in
-        *" install --upgrade pip --user "*)
-            return 0
-            ;;
-        *" install uv "*)
-            cat > "$HOME/.local/bin/uv" <<'EOF'
-#!/bin/sh
-echo "uv 0.test"
-EOF
-            chmod +x "$HOME/.local/bin/uv"
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-pip() { pip3 "$@"; }
-curl() { return 1; }
-
-install_uv_multi_source || exit 1
 cat "$TMPDIR_PATH/calls.log"
 ''')
 
     assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    up_idx = next(i for i, s in enumerate(lines) if "install --upgrade pip --user" in s)
-    uv_idx = next(i for i, s in enumerate(lines) if "install uv" in s)
-    assert up_idx < uv_idx
+    assert "curl-called" in lines
+    assert any(line.startswith("pip3 install uv ") for line in lines)
 
 
 def test_install_uv_multi_source_uses_trusted_host_for_all_pip_attempts():
@@ -527,18 +607,24 @@ pip() { pip3 "$@"; }
 
 curl() {
     echo "curl-called" >> "$TMPDIR_PATH/fallback.log"
-    cat <<'EOF'
-mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/uv" <<'UVEOF'
-#!/bin/sh
-echo "uv 0.test"
-UVEOF
-chmod +x "$HOME/.local/bin/uv"
-EOF
-    return 0
+    return 1
 }
 
-install_uv_multi_source || exit 1
+mamba() {
+    echo "mamba-called" >> "$TMPDIR_PATH/fallback.log"
+    return 1
+}
+
+conda() {
+    echo "conda-called" >> "$TMPDIR_PATH/fallback.log"
+    return 1
+}
+
+uname() {
+    echo Linux
+}
+
+install_uv_multi_source || true
 cat "$TMPDIR_PATH/pip_args.log"
 cat "$TMPDIR_PATH/fallback.log"
 ''')
@@ -546,11 +632,155 @@ cat "$TMPDIR_PATH/fallback.log"
     assert result.returncode == 0, result.stderr
     pip_uv_lines = [l for l in result.stdout.splitlines() if "install uv" in l]
     assert len(pip_uv_lines) >= 3
-    assert "-i https://pypi.org/simple" in pip_uv_lines[0]
-    assert "-i https://mirrors.aliyun.com/pypi/simple/" in pip_uv_lines[1]
-    assert "-i https://pypi.tuna.tsinghua.edu.cn/simple/" in pip_uv_lines[2]
     assert "curl-called" in result.stdout
 
+
+
+def test_check_and_install_uv_prefers_working_system_uv_over_stale_runtime_entry(tmp_path: Path):
+    state_dir = tmp_path / "home" / ".remote-claude"
+    state_dir.mkdir(parents=True)
+    state_file = state_dir / "state.json"
+    fake_uv_dir = tmp_path / "bin"
+    fake_uv_dir.mkdir()
+    fake_uv = fake_uv_dir / "uv"
+    fake_uv.write_text("#!/bin/sh\necho 'uv 0.recovered'\n", encoding="utf-8")
+    fake_uv.chmod(0o755)
+    stale_uv = tmp_path / "missing" / "uv"
+    state_file.write_text(json.dumps({"uv_path": str(stale_uv)}), encoding="utf-8")
+
+    result = run_common(f'''
+export HOME='{tmp_path / 'home'}'
+PATH='{fake_uv_dir}:/usr/bin:/bin'
+command() {{
+    if [ "$1" = "-v" ] && [ "$2" = "uv" ]; then
+        if [ -x '{fake_uv}' ]; then
+            printf '%s\n' '{fake_uv}'
+            return 0
+        fi
+        return 1
+    fi
+    if [ "$1" = "python3" ]; then
+        shift
+        python3 "$@"
+        return $?
+    fi
+    return 127
+}}
+if check_and_install_uv; then
+    echo "uv:$(command -v uv)"
+else
+    echo failed
+    exit 1
+fi
+''', env={"PATH": f"{fake_uv_dir}:/usr/bin:/bin"})
+
+    assert result.returncode == 0, result.stderr
+    assert f"uv:{fake_uv}" in result.stdout
+
+
+
+def test_check_and_install_uv_reinstalls_after_stale_uv_path(tmp_path: Path):
+    state_dir = tmp_path / "home" / ".remote-claude"
+    state_dir.mkdir(parents=True)
+    state_file = state_dir / "state.json"
+    state_file.write_text(json.dumps({"uv_path": str(tmp_path / "missing" / "uv")}), encoding="utf-8")
+
+    result = run_common(f'''
+export HOME='{tmp_path / 'home'}'
+TMPDIR_PATH="$HOME/fakebin"
+mkdir -p "$TMPDIR_PATH"
+PATH="$TMPDIR_PATH:/usr/bin:/bin"
+cat > "$TMPDIR_PATH/python3" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "site" ] && [ "$3" = "--user-base" ]; then
+    printf '%s\n' "$HOME/.local"
+    exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "site" ] && [ "$3" = "--user-site" ]; then
+    printf '%s\n' "$HOME/.local/lib/python3.12/site-packages"
+    exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "uv" ] && [ "$3" = "--version" ]; then
+    printf '%s\n' 'uv 0.reinstalled'
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/python3"
+ln -sf "$TMPDIR_PATH/python3" "$TMPDIR_PATH/python"
+pip3() {{
+    mkdir -p "$HOME/.local/bin" "$HOME/.local/lib/python3.12/site-packages/uv"
+    cat > "$HOME/.local/bin/uv" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+    chmod +x "$HOME/.local/bin/uv"
+    touch "$HOME/.local/lib/python3.12/site-packages/uv/__init__.py"
+    return 0
+}}
+pip() {{ pip3 "$@"; }}
+curl() {{ return 1; }}
+mamba() {{ return 1; }}
+conda() {{ return 1; }}
+uname() {{ echo Linux; }}
+if check_and_install_uv; then
+    echo ok
+else
+    echo failed
+    exit 1
+fi
+''', env={"PATH": "/usr/bin:/bin"}, disable_auto_lazy_init=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
+
+def test_install_uv_multi_source_exports_user_base_bin_when_pip_install_succeeds():
+    result = run_common(r'''
+TMPDIR_PATH="$(mktemp -d)"
+export HOME="$TMPDIR_PATH/home"
+mkdir -p "$HOME/.local/bin" "$TMPDIR_PATH/bin"
+PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
+
+python3() {
+    if [ "$1" = "-m" ] && [ "$2" = "site" ] && [ "$3" = "--user-base" ]; then
+        printf '%s\n' "$HOME/.local"
+        return 0
+    fi
+    command python3 "$@"
+}
+
+pip3() {
+    cat > "$HOME/.local/bin/uv" <<'EOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then
+    echo "uv 0.test"
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$HOME/.local/bin/uv"
+    return 0
+}
+
+pip() { pip3 "$@"; }
+
+curl() { return 1; }
+
+mamba() { return 1; }
+conda() { return 1; }
+uname() { echo Linux; }
+
+install_uv_multi_source || exit 1
+command -v uv
+uv --version
+''')
+
+    assert result.returncode == 0, result.stderr
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    assert any(line.endswith('/home/.local/bin/uv') for line in lines)
+    assert 'uv 0.test' in result.stdout
 
 
 def test_common_script_fail_summary_contains_required_fields():
@@ -569,7 +799,7 @@ cat "$INSTALL_LOG_FILE"
     out = result.stdout
     assert "[script-fail][uv-install-script]" in out
     assert "source=na" in out
-    assert "cmd=\"curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh\"" in out
+    assert 'cmd="curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh"' in out
     assert "exit_code=127" in out
 
 
@@ -1184,52 +1414,57 @@ def test_entry_script_errors_when_startup_dir_is_invalid(tmp_path: Path):
     assert "UV:" not in result.stdout
 
 
+
 def test_check_and_install_uv_supports_python_user_base_bin_path():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
 export HOME="$TMPDIR_PATH/home"
+export LAZY_INIT_DISABLE_AUTO_RUN=1
 mkdir -p "$HOME/Library/Python/3.12/bin" "$TMPDIR_PATH/bin"
 PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
 
-pip3() {
-    if [ "$1" = "install" ]; then
-        cat > "$HOME/Library/Python/3.12/bin/uv" <<'EOF'
+cat > "$TMPDIR_PATH/bin/python3" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "site" ] && [ "$3" = "--user-base" ]; then
+    echo "$HOME/Library/Python/3.12"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/bin/python3"
+cat > "$TMPDIR_PATH/bin/pip3" <<'EOF'
+#!/bin/sh
+if [ "$1" = "install" ]; then
+    mkdir -p "$HOME/Library/Python/3.12/bin"
+    cat > "$HOME/Library/Python/3.12/bin/uv" <<'UVEOF'
 #!/bin/sh
 echo "uv 0.test"
+UVEOF
+    chmod +x "$HOME/Library/Python/3.12/bin/uv"
+    exit 0
+fi
+exit 1
 EOF
-        chmod +x "$HOME/Library/Python/3.12/bin/uv"
-        return 0
-    fi
-    return 1
-}
-
-pip() {
-    pip3 "$@"
-}
-
-python3() {
-    if [ "$1" = "-m" ] && [ "$2" = "site" ] && [ "$3" = "--user-base" ]; then
-        echo "$HOME/Library/Python/3.12"
-        return 0
-    fi
-    return 1
-}
-
-curl() {
-    return 1
-}
+chmod +x "$TMPDIR_PATH/bin/pip3"
+ln -s "$TMPDIR_PATH/bin/pip3" "$TMPDIR_PATH/bin/pip"
+cat > "$TMPDIR_PATH/bin/curl" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/bin/curl"
 
 _save_uv_path_to_runtime() {
     echo "saved:$1"
 }
 
-if check_and_install_uv; then
+if install_uv_multi_source; then
+    _save_uv_path_to_runtime "$(command -v uv)"
     echo "rc:0 uvbin:$(command -v uv)"
 else
     echo "rc:$?"
     exit 1
 fi
-''')
+''', env={"PATH": "/usr/bin:/bin", "REMOTE_CLAUDE_STATE_FILE": "/nonexistent/state.json"})
 
     assert result.returncode == 0, result.stderr
     assert "saved:" in result.stdout
@@ -1239,7 +1474,143 @@ fi
 
 
 
-def test_docker_test_script_runs_startup_regression_cases():
+
+def test_install_uv_multi_source_detects_python_module_uv_when_script_wrapper_needs_python():
+    result = run_common(r'''
+TMPDIR_PATH="$(mktemp -d)"
+export HOME="$TMPDIR_PATH/home"
+INSTALL_LOG_FILE="$TMPDIR_PATH/install.log"
+
+cat > "$TMPDIR_PATH/python3" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "site" ] && [ "$3" = "--user-base" ]; then
+    echo "$HOME/.local"
+    exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "uv" ] && [ "$3" = "--version" ]; then
+    echo "uv 0.module"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/python3"
+ln -sf "$TMPDIR_PATH/python3" "$TMPDIR_PATH/python"
+export PATH="$TMPDIR_PATH:/usr/bin:/bin"
+mkdir -p "$HOME/.local/bin" "$HOME/.local/lib/python3.12/site-packages/uv"
+
+cat > "$TMPDIR_PATH/pip3" <<'EOF'
+#!/bin/sh
+if [ "$1" = "install" ]; then
+    mkdir -p "$HOME/.local/bin" "$HOME/.local/lib/python3.12/site-packages/uv"
+    cat > "$HOME/.local/bin/uv" <<'UVEOF'
+#!/bin/sh
+exit 1
+UVEOF
+    chmod +x "$HOME/.local/bin/uv"
+    touch "$HOME/.local/lib/python3.12/site-packages/uv/__init__.py"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/pip3"
+ln -sf "$TMPDIR_PATH/pip3" "$TMPDIR_PATH/pip"
+cat > "$TMPDIR_PATH/curl" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/curl"
+
+if check_and_install_uv; then
+    echo "ok"
+else
+    echo "rc:$?"
+    [ -f "$INSTALL_LOG_FILE" ] && cat "$INSTALL_LOG_FILE"
+    exit 1
+fi
+''', env={"PATH": "/usr/bin:/bin", "REMOTE_CLAUDE_STATE_FILE": "/nonexistent/state.json"})
+
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+    assert "[script-fail][uv-install-user-bin]" not in result.stdout
+
+
+
+def test_install_uv_multi_source_detects_uv_from_fallback_user_bin_scan_after_pip_install():
+    result = run_common(r'''
+TMPDIR_PATH="$(mktemp -d)"
+export HOME="$TMPDIR_PATH/home"
+mkdir -p "$TMPDIR_PATH/bin" "$HOME/Library/Python/3.12/bin"
+PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
+INSTALL_LOG_FILE="$TMPDIR_PATH/install.log"
+
+cat > "$TMPDIR_PATH/bin/python3" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "site" ] && [ "$3" = "--user-base" ]; then
+    echo "$HOME/declared-user-base"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/bin/python3"
+
+cat > "$TMPDIR_PATH/bin/pip3" <<'EOF'
+#!/bin/sh
+if [ "$1" = "install" ]; then
+    mkdir -p "$HOME/Library/Python/3.12/bin"
+    cat > "$HOME/Library/Python/3.12/bin/uv" <<'UVEOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then
+    echo "uv 0.test"
+    exit 0
+fi
+echo "uv 0.test"
+exit 0
+UVEOF
+    chmod +x "$HOME/Library/Python/3.12/bin/uv"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/bin/pip3"
+ln -s "$TMPDIR_PATH/bin/pip3" "$TMPDIR_PATH/bin/pip"
+cat > "$TMPDIR_PATH/bin/curl" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$TMPDIR_PATH/bin/curl"
+
+if install_uv_multi_source; then
+    echo "uvbin:$(command -v uv)"
+    cat "$INSTALL_LOG_FILE"
+else
+    echo "rc:$?"
+    exit 1
+fi
+''', env={"PATH": "/usr/bin:/bin", "REMOTE_CLAUDE_STATE_FILE": "/nonexistent/state.json"})
+
+    assert result.returncode == 0, result.stderr
+    assert "uvbin:" in result.stdout
+    assert "/Library/Python/3.12/bin/uv" in result.stdout
+    assert "[script-fail][uv-install-user-bin]" not in result.stdout
+
+
+
+
+def test_docs_feishu_client_uses_public_cli_entrypoint():
+    content = (REPO_ROOT / "docs" / "feishu-client.md").read_text(encoding="utf-8")
+    assert "remote-claude lark start" in content
+    assert "remote-claude lark status" in content
+    assert "remote-claude lark stop" in content
+    assert "remote-claude lark restart" in content
+    assert "uv run python3 remote_claude.py lark" not in content
+
+
+def test_docs_feishu_setup_uses_current_card_expiry_field():
+    content = (REPO_ROOT / "docs" / "feishu-setup.md").read_text(encoding="utf-8")
+    assert '"expiry_sec": 3600' in content
+    assert '"expiry_seconds": 3600' not in content
+
+
     content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
     assert "test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional" in content
     assert "test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently" in content
@@ -1247,7 +1618,24 @@ def test_docker_test_script_runs_startup_regression_cases():
     assert "test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details" in content
 
 
-def test_setup_completion_uses_scripts_path():
+def test_docs_feishu_client_avoids_python_entrypoint_examples():
+    content = (REPO_ROOT / "docs" / "feishu-client.md").read_text(encoding="utf-8")
+    assert "python3 remote_claude.py lark" not in content
+
+
+def test_common_shortcut_helper_declares_launcher_and_permission_vars():
+    content = (REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8")
+    assert "_remote_claude_shortcut_main()" in content
+    assert "REMOTE_CLAUDE_SHORTCUT_LAUNCHER" in content
+    assert "REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS" in content
+
+
+def test_docs_docker_test_prefers_public_help_entrypoint():
+    content = (REPO_ROOT / "docs" / "docker-test.md").read_text(encoding="utf-8")
+    assert "remote-claude --help" in content
+    assert "uv run python3 remote_claude.py --help" not in content
+
+
     content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
     assert "scripts/completion.sh" in content
     assert '"$PROJECT_DIR/completion.sh"' not in content
@@ -1290,14 +1678,17 @@ def test_entry_scripts_capture_and_use_startup_dir_consistently():
         content = (REPO_ROOT / rel).read_text(encoding="utf-8")
         assert "STARTUP_DIR=" in content
         assert 'cd "$PROJECT_DIR"' not in content
-        assert 'cd "$STARTUP_DIR"' in content
-        assert '"${STARTUP_DIR}_$(date +%m%d_%H%M%S)"' in content
+        assert '"${STARTUP_DIR}_$(date +%m%d_%H%M%S)"' not in content
+        assert '_remote_claude_shortcut_main "$@"' in content
 
 
 def test_bin_entry_scripts_use_remote_claude_python_consistently():
     for rel in ENTRY_SCRIPTS:
         content = (REPO_ROOT / rel).read_text(encoding="utf-8")
-        assert "_remote_claude_python" in content
+        if rel == "bin/remote-claude":
+            assert "_remote_claude_python" in content
+        else:
+            assert "_remote_claude_shortcut_main" in content
 
     remote_claude_content = (REPO_ROOT / "bin/remote-claude").read_text(encoding="utf-8")
     assert "exec uv run python3" not in remote_claude_content
@@ -1319,7 +1710,40 @@ def test_shortcut_entry_scripts_handle_help_without_starting_session(tmp_path: P
 
         assert result.returncode == 0, (rel, result.stdout, result.stderr)
         assert "Remote Claude 快捷命令" in result.stdout, (rel, result.stdout)
+        assert "cla    Claude   正常（需确认）    启动 Claude 会话" in result.stdout, (rel, result.stdout)
+        assert "cl     Claude   跳过权限确认      快速启动 Claude 会话" in result.stdout, (rel, result.stdout)
+        assert "cx     Codex    跳过权限确认      快速启动 Codex 会话" in result.stdout, (rel, result.stdout)
+        assert "cdx    Codex    正常（需确认）    启动 Codex 会话" in result.stdout, (rel, result.stdout)
         assert "start 子命令不支持透传帮助参数" not in result.stdout, (rel, result.stdout)
+
+
+def test_setup_script_uses_shared_help_functions():
+    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    assert 'scripts/_help.sh' in content
+    assert 'print_quick_commands_table' in content
+    assert 'print_shell_reload_hint' in content
+    assert '${YELLOW}快捷命令：${NC}' not in content
+    assert '启动飞书客户端 + 以当前目录+时间戳为会话名启动 Claude' not in content
+
+
+def test_install_script_uses_shared_help_functions():
+    content = (REPO_ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+    assert 'scripts/_help.sh' in content
+    assert 'print_quick_commands_table' in content
+    assert 'print_shell_reload_hint "$shell_rc"' in content
+    assert 'echo "  ${GREEN}cla${NC}  - 启动 Claude"' not in content
+
+
+def test_setup_script_sources_help_via_optional_guard():
+    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    assert '[ -f "$PROJECT_DIR/scripts/_help.sh" ]' in content
+    assert '. "$PROJECT_DIR/scripts/_help.sh"' in content
+
+
+def test_setup_script_help_text_matches_public_command_matrix():
+    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    assert "Remote Claude 主命令（start/attach/list/kill/status/log/lark/config/connection/token/regenerate-token/stats/update/connect/remote）" in content
+    assert "双端共享 Claude/Codex CLI 工具" in content
 
 
 def test_scripts_define_project_dir_before_common_source():
@@ -1421,6 +1845,79 @@ def test_report_install_symlink_entry_is_stable(tmp_path: Path):
 
 
 
+def test_setup_lazy_mode_succeeds_after_pip_user_uv_install(tmp_path: Path):
+    home_dir = tmp_path / "home"
+    fake_bin = tmp_path / "fake-bin"
+    project_dir = tmp_path / "project"
+    script_dir = project_dir / "scripts"
+    resources_dir = project_dir / "resources" / "defaults"
+
+    script_dir.mkdir(parents=True)
+    resources_dir.mkdir(parents=True)
+    fake_bin.mkdir(parents=True)
+    (home_dir / ".local" / "bin").mkdir(parents=True)
+
+    setup_script = script_dir / "setup.sh"
+    setup_script.write_text((REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "_help.sh").write_text((REPO_ROOT / "scripts" / "_help.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "completion.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (project_dir / "pyproject.toml").write_text('[project]\nname="demo"\nversion="0.1.0"\n', encoding="utf-8")
+    (resources_dir / "settings.json.example").write_text("{}\n", encoding="utf-8")
+    (resources_dir / "state.json.example").write_text("{}\n", encoding="utf-8")
+
+    pip_script = fake_bin / "pip3"
+    pip_script.write_text(
+        "#!/bin/sh\n"
+        "mkdir -p \"$HOME/.local/bin\"\n"
+        "cat > \"$HOME/.local/bin/uv\" <<'EOF'\n"
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then\n"
+        "  echo \"uv 0.test\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = \"venv\" ]; then\n"
+        "  mkdir -p .venv/bin\n"
+        "  cat > .venv/bin/python3 <<'PYEOF'\n"
+        "#!/bin/sh\n"
+        "exit 0\n"
+        "PYEOF\n"
+        "  chmod +x .venv/bin/python3\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x \"$HOME/.local/bin/uv\"\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    pip_script.chmod(0o755)
+    (fake_bin / "pip").write_text("#!/bin/sh\nexec \"$(dirname \"$0\")/pip3\" \"$@\"\n", encoding="utf-8")
+    (fake_bin / "pip").chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", str(setup_script), "--lazy"],
+        text=True,
+        capture_output=True,
+        cwd=project_dir,
+        env={
+            **os.environ,
+            "HOME": str(home_dir),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    assert "uv 安装失败，请手动安装后重试" not in combined
+    assert "Python 环境初始化完成" in combined
+    assert (home_dir / ".local" / "bin" / "uv").exists()
+
+
+
 def test_check_and_install_uv_does_not_create_runtime_when_missing():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
@@ -1507,6 +2004,10 @@ def test_shell_scripts_do_not_contain_bash_only_constructs():
         "scripts/npm-publish.sh",
     ]:
         text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        if rel == "scripts/completion.sh":
+            zsh_eval_start = text.index("eval '")
+            zsh_eval_end = text.index("elif [ -n \"${BASH_VERSION:-}\" ]; then")
+            text = text[:zsh_eval_start] + text[zsh_eval_end:]
         assert "[[" not in text
         assert "#!/bin/bash" not in text
 
@@ -1701,10 +2202,42 @@ def test_setup_configure_shell_writes_completion_via_init_block(tmp_path: Path):
     assert any(f'. "{project_dir / "scripts" / "completion.sh"}"' in block for block in init_blocks)
 
 
-def test_install_completion_hint_uses_dot_not_source():
+def test_install_completion_hint_uses_shared_reload_helper():
     content = (REPO_ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
     assert "source $shell_rc" not in content
-    assert ". $shell_rc" in content
+    assert 'print_shell_reload_hint "$shell_rc"' in content
+
+
+def test_check_env_escapes_sed_replacement_values():
+    content = (REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8")
+    assert "escape_sed_replacement()" in content
+    assert 'ESCAPED_APP_ID=$(escape_sed_replacement "$INPUT_APP_ID")' in content
+    assert 'ESCAPED_APP_SECRET=$(escape_sed_replacement "$INPUT_APP_SECRET")' in content
+    assert 'sed "s/^FEISHU_APP_ID=.*/FEISHU_APP_ID=$ESCAPED_APP_ID/"' in content
+    assert 'sed "s/^FEISHU_APP_SECRET=.*/FEISHU_APP_SECRET=$ESCAPED_APP_SECRET/"' in content
+
+
+def test_npm_publish_uses_temp_npmrc_for_token():
+    content = (REPO_ROOT / "scripts" / "npm-publish.sh").read_text(encoding="utf-8")
+    assert "NPM_CONFIG_USERCONFIG" in content
+    assert "mktemp" in content
+    assert "npm config set //registry.npmjs.org/:_authToken" in content
+    assert "~/.npmrc" not in content
+
+
+def test_npm_publish_allows_only_package_json_changes_after_version_bump():
+    content = (REPO_ROOT / "scripts" / "npm-publish.sh").read_text(encoding="utf-8")
+    assert 'git diff --name-only --cached' in content
+    assert 'git diff --name-only' in content
+    assert 'grep -v "^package.json$"' in content
+
+
+def test_uninstall_skips_project_venv_cleanup_for_repo_checkout(tmp_path: Path):
+    content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+    assert 'case "$PROJECT_DIR" in' in content
+    assert '*/node_modules/remote-claude|*/.pnpm/*/node_modules/remote-claude)' in content
+    assert 'print_detail "跳过源码目录虚拟环境: $PROJECT_DIR/.venv"' in content
+    assert 'rm -rf "$PROJECT_DIR/.venv"' in content
 
 
 def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_context(tmp_path: Path):
@@ -1756,7 +2289,6 @@ def test_uninstall_keeps_manual_prompt_when_only_generic_npm_env_present(tmp_pat
         capture_output=True,
         text=True,
         env={
-            **os.environ,
             "HOME": str(tmp_path),
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "npm_config_loglevel": "notice",
@@ -1768,6 +2300,7 @@ def test_uninstall_keeps_manual_prompt_when_only_generic_npm_env_present(tmp_pat
     assert data_dir.exists()
     assert "[y/N]" in result.stdout
     assert "是否删除配置文件和数据" in result.stdout
+    assert "已删除配置目录" not in result.stdout
 
 
 def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
@@ -1781,7 +2314,6 @@ def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
         capture_output=True,
         text=True,
         env={
-            **os.environ,
             "HOME": str(tmp_path),
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         },
@@ -1792,6 +2324,37 @@ def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
     assert data_dir.exists()
     assert "[y/N]" in result.stdout
     assert "是否删除配置文件和数据" in result.stdout
+    assert "已删除配置目录" not in result.stdout
+
+
+def test_uninstall_supports_explicit_noninteractive_mode(tmp_path: Path):
+    data_dir = tmp_path / ".remote-claude"
+    data_dir.mkdir()
+    (data_dir / "state.json").write_text("{}", encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh", str(REPO_ROOT / "scripts" / "uninstall.sh")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "REMOTE_CLAUDE_NONINTERACTIVE": "1",
+        },
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not data_dir.exists()
+    assert "[y/N]" not in result.stdout
+    assert "是否删除" not in result.stdout
+
+
+def test_docker_test_script_passes_noninteractive_flag_to_uninstall_hook():
+    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
+    assert "REMOTE_CLAUDE_NONINTERACTIVE=1" in content
 
 
 def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_global_rm_context(tmp_path: Path):
@@ -1826,6 +2389,7 @@ def test_common_reads_uv_path_from_state_json(tmp_path: Path):
     state_file.write_text('{"uv_path":"/tmp/custom-bin/uv"}\n', encoding="utf-8")
 
     result = run_common(f"""
+    export LAZY_INIT_DISABLE_AUTO_RUN=1
     export REMOTE_CLAUDE_STATE_FILE='{state_file}'
     uv_path=$(_read_uv_path_from_runtime)
     printf 'uv:%s\\n' "$uv_path"

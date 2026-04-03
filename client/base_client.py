@@ -22,7 +22,6 @@ import termios
 import signal
 import select
 import logging
-import websockets
 from abc import ABC, abstractmethod
 from typing import Optional
 from urllib.parse import urlencode
@@ -363,7 +362,9 @@ class BaseWSClient(BaseClient):
         Returns:
             响应字典，包含 success 和 message 字段
         """
-        async with websockets.connect(self._get_ws_url()) as ws:
+        from websockets import connect
+
+        async with connect(self._get_ws_url()) as ws:
             msg = ControlMessage(action, self.client_id)
             await ws.send(encode_message(msg))
 

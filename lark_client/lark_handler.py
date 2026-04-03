@@ -444,11 +444,16 @@ class LarkHandler:
             if not await self._start_server_session(session_name, work_dir, chat_id, cli_command=cli_command):
                 return
 
-            ok = await self._attach(chat_id, session_name, user_id=user_id)
-            if ok:
-                self._chat_bindings[chat_id] = session_name
-                self._save_chat_bindings()
-            else:
+            ok = False
+            for attempt in range(3):
+                ok = await self._attach(chat_id, session_name, user_id=user_id)
+                if ok:
+                    self._chat_bindings[chat_id] = session_name
+                    self._save_chat_bindings()
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(0.2)
+            if not ok:
                 await card_service.send_text(
                     chat_id,
                     f"会话已启动但连接失败\n使用 /attach {session_name} 重试"

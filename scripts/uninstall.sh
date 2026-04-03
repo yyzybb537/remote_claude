@@ -25,7 +25,7 @@ unset LAZY_INIT_DISABLE_AUTO_RUN
 # 2) pnpm 全局 remove/rm/uninstall（部分场景不会注入 npm_lifecycle_event）
 # 返回: 0 在 uninstall hook 上下文, 1 不在
 _is_npm_context() {
-    case "$npm_lifecycle_event" in
+    case "${npm_lifecycle_event:-}" in
         *uninstall*)
             return 0
             ;;
@@ -48,45 +48,49 @@ _is_npm_context() {
     return 1
 }
 
+_is_noninteractive() {
+    case "${REMOTE_CLAUDE_NONINTERACTIVE:-}" in
+        1|true|TRUE|yes|YES)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
 # 1. 清理符号链接
 cleanup_symlinks() {
     print_info "清理快捷命令符号链接..."
 
-    found=0
+    RC_REMOVED_SHORTCUT_COUNT=0
+    export RC_REMOVED_SHORTCUT_COUNT
+
     # 扩展的 bin 目录列表（覆盖常见安装路径）
-    for dir in /usr/local/bin /usr/bin "$HOME/bin" "$HOME/.local/bin" \
+    for dir in /usr/local/bin /usr/bin "$HOME/bin" "$HOME/.local/bin" "$HOME/local/bin" \
                /opt/homebrew/bin /usr/local/Cellar/node/*/bin \
                "$HOME/.nvm/*/bin" "$HOME/.config/nvm/*/bin"; do
         # 如果目录存在（处理通配符）
         for bindir in $dir; do
             [ -d "$bindir" ] || continue
-            for cmd in cla cl cx cdx remote-claude; do
-                link_path="$bindir/$cmd"
-                if [ -L "$link_path" ]; then
-                    target=$(readlink "$link_path" 2>/dev/null || true)
-                    # 只删除指向本项目的链接
-                    case "$target" in
-                        *"remote_claude"*|*"remote-claude"*)
-                            rm -f "$link_path"
-                            print_detail "已删除: $link_path"
-                            found=$((found + 1))
-                            ;;
-                    esac
-                fi
-            done
+            rc_remove_shortcuts_from_dir "$bindir"
         done
     done
 
-    if [ $found -eq 0 ]; then
+    if [ "$RC_REMOVED_SHORTCUT_COUNT" -eq 0 ]; then
         print_detail "没有找到需要清理的符号链接"
     else
-        print_success "已清理 $found 个符号链接"
+        print_success "已清理 $RC_REMOVED_SHORTCUT_COUNT 个符号链接"
     fi
 }
 
 # 2. 清理 shell 配置
 cleanup_shell_config() {
     print_info "清理 shell 配置..."
+
+    if _is_npm_context || _is_noninteractive; then
+        print_detail "非交互卸载跳过 shell 配置清理"
+        return
+    fi
 
     cleaned=0
     rc=
@@ -118,13 +122,23 @@ cleanup_shell_config() {
 cleanup_virtual_env() {
     print_info "清理虚拟环境..."
 
-    # 检查安装目录中的 .venv
-    if [ -d "$PROJECT_DIR/.venv" ]; then
-        rm -rf "$PROJECT_DIR/.venv"
-        print_success "已删除虚拟环境: $PROJECT_DIR/.venv"
-    else
-        print_detail "安装目录中没有虚拟环境"
-    fi
+    case "$PROJECT_DIR" in
+        */node_modules/remote-claude|*/.pnpm/*/node_modules/remote-claude)
+            if [ -d "$PROJECT_DIR/.venv" ]; then
+                rm -rf "$PROJECT_DIR/.venv"
+                print_success "已删除虚拟环境: $PROJECT_DIR/.venv"
+            else
+                print_detail "安装目录中没有虚拟环境"
+            fi
+            ;;
+        *)
+            if [ -d "$PROJECT_DIR/.venv" ]; then
+                print_detail "跳过源码目录虚拟环境: $PROJECT_DIR/.venv"
+            else
+                print_detail "安装目录中没有虚拟环境"
+            fi
+            ;;
+    esac
 
     # 检查其他可能的 venv 位置
     for venv_path in "$HOME/.remote-claude/.venv" "$HOME/.local/share/remote-claude/.venv"; do
@@ -203,9 +217,9 @@ cleanup_uv_path() {
 cleanup_uv_cache() {
     print_info "检查 uv 缓存..."
 
-    # npm 环境或 CI 环境跳过交互式询问
-    if _is_npm_context || [ -n "$CI" ]; then
-        print_detail "npm/CI 环境跳过 uv 缓存清理（保留用户工具）"
+    # npm 环境、CI 或显式非交互模式跳过交互式询问
+    if _is_npm_context || _is_noninteractive; then
+        print_detail "非交互环境跳过 uv 缓存清理（保留用户工具）"
         return
     fi
 
@@ -246,8 +260,8 @@ cleanup_config_files() {
         return
     fi
 
-    # npm/pnpm hook 环境：静默完全删除
-    if _is_npm_context; then
+    # npm/pnpm hook、CI 或显式非交互模式：静默完全删除
+    if _is_npm_context || _is_noninteractive; then
         rm -rf "$REMOTE_CLAUDE_HOME_DIR"
         print_success "已删除配置目录: $REMOTE_CLAUDE_HOME_DIR"
         return
@@ -296,9 +310,7 @@ cleanup_config_files() {
 
 # 8. 显示卸载后信息
 show_post_uninstall_info() {
-    printf "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-    printf "${GREEN}   Remote Claude 卸载清理完成${NC}\n"
-    printf "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n\n"
+    print_banner "Remote Claude 卸载清理完成" ""
 
     print_info "已清理项目:"
     print_detail "- 快捷命令符号链接 (cla, cl, cx, cdx, remote-claude)"
@@ -306,28 +318,23 @@ show_post_uninstall_info() {
     print_detail "- Python 虚拟环境 (.venv)"
     print_detail "- 运行时文件 (PID, socket, 日志)"
 
-    printf "\n${YELLOW}提示：${NC}\n"
-    print_detail "1. 重新打开终端使 PATH 更改生效"
-    print_detail "2. 如需完全清理，请手动检查 ~/.bashrc 和 ~/.zshrc"
-    print_detail "3. 活跃的会话可通过 'remote-claude kill <session>' 清理"
+    print_post_action_hint "提示：" \
+        "1. 重新打开终端使 PATH 更改生效" \
+        "2. 如需完全清理，请手动检查 ~/.bashrc 和 ~/.zshrc" \
+        "3. 活跃的会话可通过 'remote-claude kill <session>' 清理"
 
     # 检查是否还有残留的进程
     if pgrep -f "remote_claude.py" >/dev/null 2>&1 || \
        pgrep -f "lark_client/main.py" >/dev/null 2>&1; then
-        printf "\n${YELLOW}警告：检测到残留的 Remote Claude 进程${NC}\n"
-        print_detail "建议运行: pkill -f 'remote_claude|lark_client'"
+        print_post_action_hint "警告：检测到残留的 Remote Claude 进程" \
+            "建议运行: pkill -f 'remote_claude|lark_client'"
     fi
 
-    printf "\n"
+    printf '\n'
 }
 
 # 主流程
 main() {
-    # 非交互模式（CI环境）自动确认
-    if [ -n "$CI" ] || [ -n "$npm_config_loglevel" ]; then
-        export AUTO_CONFIRM=1
-    fi
-
     cleanup_symlinks
     cleanup_shell_config
     cleanup_virtual_env

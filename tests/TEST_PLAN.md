@@ -1,314 +1,121 @@
 # TEST_PLAN.md
 
-本文档描述 Remote Claude 项目的测试策略、分层和执行方法。
-
-## 本次变更补充
-
-- 验证 `README.md` 的快速开始以 `cla / cl / cx / cdx` 等 shell 入口为主，不再把 Python 启动方式暴露为日常用法
-- 验证 `server/token_manager.py` 统一负责 token 文件删除，且删除语义为幂等
-- 验证本地 `remote-claude kill <会话名>` 会删除对应 token 文件
-- 验证远程控制 `kill` 同样会删除对应 token 文件
+本文档聚焦当前有效的测试入口、关键回归项和 Docker 验证流程。
 
 ## 测试分层
 
-测试分为三层，从底层到顶层依次覆盖：
+### 层 1：本地回归（无需前置条件）
 
-### 层 1：单元测试（纯本地，无依赖）
-
-独立运行的测试脚本，验证纯逻辑功能，无需网络和服务。
-
-| 测试文件 | 覆盖范围 | 运行命令 |
-|---------|---------|---------|
-| `test_stream_poller.py` | 流式卡片模型（card_builder + poller） | `uv run python3 tests/test_stream_poller.py` |
-| `test_session_truncate.py` | 会话名称截断、映射存储、快捷命令验证 | `uv run python3 tests/test_session_truncate.py` |
-| `test_runtime_config.py` | 运行时配置加载/保存/迁移/可见性判断 | `uv run python3 tests/test_runtime_config.py` |
-| `test_history_buffer.py` | 环形历史缓冲区（Ring Buffer 实现） | `uv run python3 tests/test_history_buffer.py` |
-| `test_renderer.py` | 终端渲染器 | `uv run python3 tests/test_renderer.py` |
+| 类型 | 关注点 | 推荐命令 |
+|------|--------|---------|
+| 核心配置与命令行 | 会话名、配置迁移、help/remote 参数、启动 tracing | `uv run python3 -m pytest tests/test_session_truncate.py tests/test_runtime_config.py tests/test_custom_commands.py tests/test_cli_help_and_remote.py tests/test_startup_trace_logging.py -q` |
+| shell / 安装链路 | lazy init、shell 兼容、安装与入口脚本 | `uv run python3 -m pytest tests/test_entry_lazy_init.py -q` |
+| 飞书渲染与交互 | poller、卡片交互、断连展示、终端清理 | `uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_renderer.py -q` |
 
 ### 层 2：集成测试（需要活跃会话）
 
-直连 socket 的测试，验证真实消息传递和协议处理。
-
-| 测试文件 | 覆盖范围 | 运行命令 |
-|---------|---------|---------|
-| `test_integration.py` | 消息协议集成 | `uv run python3 tests/test_integration.py` |
-| `test_session.py` | 会话连接管理 | `uv run python3 tests/test_session.py` |
-| `test_real.py` | 实时数据渲染 | `uv run python3 tests/test_real.py` |
-| `test_e2e.py` | 端到端流程 | `uv run python3 tests/test_e2e.py` |
-| `test_mock_conversation.py` | 模拟多轮对话 | `uv run python3 tests/test_mock_conversation.py` |
-
-**前置条件**：启动一个测试会话
 ```bash
-uv run python3 remote_claude.py start test
-```
-
-### 层 3：飞书视觉测试
-
-验证飞书卡片的实际渲染效果，手动进行。
-
-**测试场景**：
-- 新会话连接：验证卡片初始状态
-- 流式输出：验证内容滚动和更新
-- 选项交互：验证按钮点击响应
-- 权限确认：验证权限提示卡片
-- Agent 面板：验证后台任务显示
-- 断开重连：验证连接状态切换
-- 快捷命令选择器：验证下拉选择和命令发送
-
----
-
-## 本功能测试场景（命令行与飞书用户体验增强）
-
-### User Story 1：会话名称自动截断处理
-
-**测试文件**：`tests/test_session_truncate.py`
-
-| 场景 | 验证点 | 测试方法 |
-|------|-------|---------|
-| 正常长度会话名 | 不截断，直接使用 | `test_safe_filename_normal()` |
-| 包含路径分隔符 | `/` 和 `.` 替换为 `_` | `test_safe_filename_with_slash()` |
-| 超长会话名截断 | 长度不超过限制，保留后缀 | `test_safe_filename_truncate()` |
-| 单部分超长 | 回退到 MD5 哈希 | `test_safe_filename_md5_fallback()` |
-| 映射存储 | RuntimeConfig 存取映射 | `test_runtime_config_session_mapping()` |
-| 映射数量限制 | 警告日志但不阻塞 | `test_runtime_config_mapping_limit()` |
-| 平台特定限制 | macOS/Linux 不同限制 | `test_max_filename_platform()` |
-
-**独立测试**：
-```bash
-# 创建超长路径
-mkdir -p /tmp/very/long/path/that/exceeds/the/maximum/socket/path/length/limit/test/project
-
-# 进入目录并启动会话
-cd /tmp/very/long/path/that/exceeds/the/maximum/socket/path/length/limit/test/project
-uv run python3 remote_claude.py start .
-
-# 验证：会话正常启动，无报错
-uv run python3 remote_claude.py list
-
-# 查看映射
-cat ~/.remote-claude/runtime.json | grep session_mappings -A 5
-```
-
-### User Story 2：飞书快捷命令选择器
-
-**测试文件**：`tests/test_runtime_config.py`
-
-| 场景 | 验证点 | 测试方法 |
-|------|-------|---------|
-| 默认不可见 | `enabled=false` 时不显示 | `test_quick_commands_visibility_disabled()` |
-| 启用但无命令 | `commands=[]` 时不显示 | `test_quick_commands_visibility_enabled_no_commands()` |
-| 启用且有命令 | 正常显示选择器 | `test_quick_commands_visibility_enabled_with_commands()` |
-| 禁用但有命令 | 仍不显示 | `test_quick_commands_visibility_disabled_with_commands()` |
-| 获取命令列表 | 正确返回列表 | `test_get_quick_commands()` |
-| 配置迁移 | 旧文件自动迁移 | `test_migrate_valid_legacy_file()` |
-| 配置损坏处理 | 备份并使用默认配置 | `test_load_config_corrupted()` |
-
-**独立测试**：
-1. 配置快捷命令：
-```bash
-vim ~/.remote-claude/runtime.json
-# 添加 ui_settings.quick_commands 配置
-```
-
-2. 重启飞书客户端：
-```bash
-uv run python3 remote_claude.py lark restart
-```
-
-3. 在飞书中验证卡片底部显示快捷命令选择器
-
-### User Story 3：默认日志级别设置
-
-| 场景 | 验证点 | 测试方法 |
-|------|-------|---------|
-| 未设置环境变量 | 默认 WARNING 级别 | 检查 `lark_client/config.py` 默认值 |
-| 设置 DEBUG | 输出调试信息 | `LARK_LOG_LEVEL=DEBUG uv run python3 remote_claude.py lark restart` |
-| 设置 INFO | 输出信息级别 | `LARK_LOG_LEVEL=INFO uv run python3 remote_claude.py lark restart` |
-
-**验证方法**：
-```bash
-# 查看日志输出量
-ls -la ~/.remote-claude/lark_client.log
-
-# 启用 DEBUG 后查看详细日志
-export LARK_LOG_LEVEL=DEBUG
-uv run python3 remote_claude.py lark restart
-tail -f ~/.remote-claude/lark_client.log
-```
-
-### User Story 4：Help 参数纯展示模式
-
-| 场景 | 验证点 | 测试方法 |
-|------|-------|---------|
-| 主命令帮助 | 只显示帮助，无错误 | `uv run python3 remote_claude.py --help` |
-| start 子命令帮助 | 不启动会话 | `uv run python3 remote_claude.py start --help` |
-| attach 子命令帮助 | 不检查会话存在 | `uv run python3 remote_claude.py attach --help` |
-| lark 子命令帮助 | 只显示帮助 | `uv run python3 remote_claude.py lark --help` |
-| lark status 子命令帮助 | 不检查客户端状态 | `uv run python3 remote_claude.py lark status --help` |
-| lark 无子命令 | 打印 lark 子解析器帮助并返回 0 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_lark_without_subcommand_prints_help_and_returns_zero -q` |
-| attach 远程参数兼容 | 保持 `--token/--port/--host <session> --save --remote` 顺序兼容 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_validate_remote_args_accepts_current_attach_order -q` |
-| 远程 tracing 日志 | attach/list 记录 `stage=remote_args_parsed`，token 脱敏 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_cmd_attach_remote_logs_tracing tests/test_cli_help_and_remote.py::test_cmd_list_remote_logs_tracing -q` |
-
-### User Story 5：远程断连原因透传
-
-**测试文件**：`tests/test_client_integration.py`
-
-| 场景 | 验证点 | 测试方法 |
-|------|-------|---------|
-| 远程 recv 关闭 | `read_message()` 返回 `None` 且记录断连原因 | `uv run python3 -m pytest tests/test_client_integration.py::TestRemoteClientIntegration::test_remote_client_read_message_closed_sets_disconnect_reason -q` |
-| 远程 send 失败 | `send_message()` 抛 `ConnectionError` 且记录原因 | `uv run python3 -m pytest tests/test_client_integration.py::TestRemoteClientIntegration::test_remote_client_send_message_failure_sets_disconnect_reason -q` |
-| 客户端断连展示 | `BaseClient` 输出 `已断开连接: <reason>` | `uv run python3 -m pytest tests/test_client_integration.py -k disconnect -q` |
-| 主日志路径统一 | client/server/lark 主日志均落到 `/tmp/remote-claude/` | `uv run python3 -m pytest tests/test_logging_setup.py -q` |
-| 主日志轮转参数 | 使用 `RotatingFileHandler`，配置为 `10MB × 5` | `uv run python3 -m pytest tests/test_logging_setup.py::test_setup_role_logging_uses_rotating_file_handler -q` |
-
----
-
-## 测试执行流程
-
-### 完整测试套件
-
-```bash
-# 层 1：单元测试（无需任何前置条件）
-uv run python3 tests/test_stream_poller.py
-uv run python3 tests/test_session_truncate.py
-uv run python3 tests/test_runtime_config.py
-uv run python3 tests/test_renderer.py
-
-# 层 2：集成测试（需要活跃会话）
-uv run python3 remote_claude.py start test
+uv run remote-claude start test
 uv run python3 tests/test_integration.py
-uv run python3 tests/test_session.py
-uv run python3 tests/test_real.py
-uv run python3 tests/test_e2e.py
-uv run python3 tests/test_mock_conversation.py
-
-# 清理
-uv run python3 remote_claude.py kill test
+uv run remote-claude kill test
 ```
 
-### 快速回归测试
+### 层 3：飞书视觉验证（手动）
 
-仅运行层 1 单元测试，快速验证核心逻辑：
+重点检查：
+- 新会话连接
+- 流式输出滚动与更新
+- 选项 / 权限卡片交互
+- 断开重连状态
+- 快捷命令选择器
+
+---
+
+## 快速回归
+
+当修改命令行入口、帮助输出、remote 参数、shell 启动链路时，优先运行：
 
 ```bash
-uv run python3 tests/test_session_truncate.py && \
-uv run python3 tests/test_runtime_config.py && \
-echo "快速回归测试通过"
+uv run python3 -m pytest \
+  tests/test_custom_commands.py \
+  tests/test_cli_help_and_remote.py \
+  tests/test_startup_trace_logging.py \
+  tests/test_entry_lazy_init.py -q
 ```
 
-### shell 自适应与 POSIX sh 回归
+---
 
-| 场景 | 验证点 | 命令 |
-|------|--------|------|
-| rc 自适应选择 | zsh/bash/unknown shell 选择正确 rc | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_get_shell_rc_prefers_zsh_when_shell_is_zsh -q` |
-| init 幂等 | 重复执行不重复写块 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_upsert_rc_block_is_idempotent -q` |
-| 脚本 shebang 统一 | 目标脚本均为 `#!/bin/sh`（独立测试，避免与 completion source 职责耦合） | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_scripts_use_sh_shebang_for_all_shell_scripts -q` |
-| 无 bash-only 语法残留 | `[[` 与 `#!/bin/bash` 被清理 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_shell_scripts_do_not_contain_bash_only_constructs -q` |
-| 无显式 bash 内部调用 | 脚本互调不依赖 `bash` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_scripts_no_explicit_bash_invocation_for_internal_calls -q` |
+## Docker 回归
 
-### scripts 路径统一回归
+当修改 npm 打包、安装链路、shell 入口、启动链路或 Docker 逻辑时运行：
 
-| 场景 | 验证点 | 命令 |
-|------|--------|------|
-| check-env 目录参数废弃 | 向 `check-env.sh` 传目录参数时应显式失败（非 0） | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_rejects_legacy_directory_argument -q` |
-| scripts 路径统一 | 所有 scripts 入口先定义 PROJECT_DIR 再 source `_common.sh` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_scripts_define_project_dir_before_common_source -q` |
-| symlink 执行稳定 | `check-env.sh` 在 symlink + 任意 cwd 下稳定 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_works_via_symlink_from_random_cwd -q` |
-| completion source 稳定 | `completion.sh` 在随机 cwd 下可被 source 且不报路径错误 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_completion_script_can_be_sourced_from_random_cwd -q` |
+```bash
+docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
+```
 
-### 依赖指纹与 shell 兼容回归
+当前 Docker 脚本覆盖：
+- `npm pack` / `npm install` 后的产物完整性
+- `check-env.sh` 在 `REMOTE_CLAUDE_REQUIRE_FEISHU=0` 下跳过飞书检查
+- `remote-claude lark start` 在 mock 凭证下不无限阻塞
+- `remote-claude start` 的 Claude / Codex 启动链路
+- 无效 launcher 配置下的失败退出检测
+- 关键单元测试与入口脚本静态检查
 
-| 场景 | 验证点 | 命令 |
-|------|--------|------|
-| 指纹一致不触发 sync | 写入指纹后再次 lazy init 返回 `no-sync-needed`，且不会执行 setup.sh | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_if_needed_reports_noop_when_sync_not_needed -q` |
-| 指纹变化触发 sync | 修改 `uv.lock` 后 lazy init 触发 setup.sh 并写回新指纹 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_if_needed_triggers_sync_when_dependency_fingerprint_changes -q` |
-| 指纹写回失败路径 | 哈希命令异常时写回失败、`_needs_sync` 仍返回需要同步且不生成指纹文件 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_dependency_fingerprint_write_fails_when_hash_command_errors -q` |
-| setup trap 新写法静态约束 | setup 使用 `trap 'cleanup_tmpdir' 0`，且不出现旧写法；同时校验 uninstall/completion 无 `local` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_shell_scripts_keep_posix_compat_static_guards -q` |
+### Docker 失败诊断
 
-### 安装可靠性回归
+```bash
+/project/docker/scripts/docker-diagnose.sh
+```
 
-| 场景 | 验证点 | 命令 |
-|------|--------|------|
-| 安装失败日志落盘 | 失败后提示并可在 `/tmp/remote-claude-install.log` 定位阶段 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_sh_initializes_install_log_helpers -q` |
-| pip 升级前置 | 安装 uv 前会先对最终选中的 pip 执行 `install --upgrade pip --user` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_upgrades_pip_before_uv_install -q` |
-| uv 安装源顺序 | `install_uv_multi_source` 按官方 → 阿里 → 清华顺序尝试 PyPI 源 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_official_then_aliyun_then_tuna_order -q` |
-| uv sync 多源回退 | `_run_uv_with_pypi_sources` / `install_dependencies` 按官方 → 阿里 → 清华依次回退，并附加 host trust 参数 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_run_uv_with_pypi_sources_uses_index_and_trusted_host_for_each_attempt -q` |
-| 镜像与 trusted-host 一致性 | pip 升级与 uv/pip 安装共用内置镜像回退并附带 `--trusted-host` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_uses_trusted_host_for_all_pip_attempts -q` |
-| 全部 PyPI 源失败后继续 fallback | pip 多源失败后仍继续官方脚本等后续安装兜底 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_uv_multi_source_keeps_fallback_after_all_pypi_sources_fail -q` |
-| 失败日志字段粒度（install-fail） | 安装步骤失败日志含 `stage/source/cmd/exit_code` 摘要 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_common_install_fail_summary_contains_required_fields -q` |
-| 失败日志字段粒度（script-fail） | 脚本步骤失败日志含 `stage/source/cmd/exit_code` 摘要（含新加 script-fail 字段用例） | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_common_script_fail_summary_contains_required_fields -q` |
-| 补全路径一致 | setup 写入补全路径为 `scripts/completion.sh` | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_setup_completion_uses_scripts_path -q` |
-| runtime 成功时创建 | runtime 初始化逻辑位于成功主流程 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_setup_runtime_creation_stays_in_success_flow -q` |
-
-### 启动链路与飞书解耦回归
-
-| 场景 | 验证点 | 命令 |
-|------|--------|------|
-| 飞书未配置时允许本地启动 | `cla/cl/cx/cdx` 不因飞书缺失阻塞本地会话启动 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q` |
-| bin 入口统一走项目 Python | `bin/remote-claude` 与 `bin/cla/cl/cx/cdx` 完成 lazy init 后统一调用 `_remote_claude_python`，不再保留 `exec uv run python3` 特例 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently -q` |
-| 显式跳过飞书配置检查 | `REMOTE_CLAUDE_REQUIRE_FEISHU=0` 时 `check-env.sh` 直接返回成功 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required -q` |
-| lazy init 失败信息可见 | 失败时 stderr 保留 setup 错误细节并提示安装日志路径 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details -q` |
+诊断脚本会收集：
+- 系统信息与依赖版本
+- npm / Python 包安装信息
+- 安装后文件结构
+- `remote-claude list` 输出
+- `/tmp/remote-claude` socket 目录状态
+- `tmux list-sessions` 输出
+- `~/.remote-claude/startup.log` 尾部日志
+- `test-results/` 下的日志与错误摘要
 
 ---
 
-## 特殊场景说明
+## 精选专项回归
 
-### 配置文件损坏恢复
+### 启动链路与飞书解耦
 
-当 `runtime.json` 损坏时：
-1. 系统自动备份损坏文件为 `runtime.json.bak`
-2. 使用默认配置继续运行
-3. 用户可手动恢复备份或重新配置
+| 验证点 | 命令 |
+|--------|------|
+| 飞书未配置时允许本地启动 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q` |
+| bin 入口统一走项目 Python | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently -q` |
+| 显式跳过飞书配置检查 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required -q` |
+| lazy init 失败信息可见 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details -q` |
 
-### 映射数量超限
+### shell 与安装链路
 
-当 `session_mappings` 超过 500 条时：
-1. 系统输出警告日志
-2. 新映射仍会保存（不阻塞）
-3. 建议用户手动清理旧映射
+| 验证点 | 命令 |
+|--------|------|
+| rc 自适应选择 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_get_shell_rc_prefers_zsh_when_shell_is_zsh -q` |
+| shell 脚本无 bash-only 语法 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_shell_scripts_do_not_contain_bash_only_constructs -q` |
+| scripts 路径统一 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_scripts_define_project_dir_before_common_source -q` |
+| completion source 稳定 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_completion_script_can_be_sourced_from_random_cwd -q` |
+| 安装失败日志落盘 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_sh_initializes_install_log_helpers -q` |
+| 补全路径一致 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_setup_completion_uses_scripts_path -q` |
 
-### 快捷命令验证失败
+### CLI / remote 参数
 
-当配置的快捷命令格式无效时：
-- 不以 `/` 开头：跳过该命令，输出警告
-- 包含空格：跳过该命令，输出警告
-- 超长：跳过该命令，输出警告
-
----
-
-## 回归防护清单
-
-在修改以下模块时，必须运行对应测试：
-
-| 修改模块 | 必须通过的测试 |
-|---------|--------------|
-| `utils/session.py` | `test_session_truncate.py` |
-| `utils/runtime_config.py` | `test_runtime_config.py` |
-| `lark_client/card_builder.py` | `test_stream_poller.py` |
-| `lark_client/config.py` | 手动验证日志级别 |
-| `server/parsers/*.py` | `test_component_parser.py` |
-| `utils/protocol.py` | `test_integration.py` |
-| `server/server.py` (HistoryBuffer) | `test_history_buffer.py` |
+| 验证点 | 命令 |
+|--------|------|
+| lark 无子命令返回帮助 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_lark_without_subcommand_prints_help_and_returns_zero -q` |
+| attach 远程参数顺序兼容 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_validate_remote_args_accepts_current_attach_order -q` |
+| attach/list tracing 日志脱敏 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_cmd_attach_remote_logs_tracing tests/test_cli_help_and_remote.py::test_cmd_list_remote_logs_tracing -q` |
 
 ---
 
 ## 调试工具
 
-### 捕获原始输出
-
 ```bash
 uv run python3 lark_client/capture_output.py <会话名> [秒数]
-```
-
-### 查看共享内存快照
-
-```bash
 cat /tmp/remote-claude/<name>_messages.log | jq .
-```
-
-### 查看屏幕快照
-
-```bash
-# 启动时添加 --debug-screen
-uv run python3 remote_claude.py start test --debug-screen
+uv run remote-claude start test --debug-screen
 cat /tmp/remote-claude/test_screen.log
 ```

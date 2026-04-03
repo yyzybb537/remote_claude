@@ -34,6 +34,38 @@ print_header() {
     echo ""
 }
 
+# 收集会话与启动诊断信息
+collect_session_diagnostics() {
+    print_header "收集会话与启动诊断"
+
+    local session_log="$DIAG_DIR/session.txt"
+    echo "=== remote-claude list ===" > "$session_log"
+
+    if uv run remote-claude list >> "$session_log" 2>&1; then
+        echo "" >> "$session_log"
+    else
+        echo "remote-claude list 执行失败" >> "$session_log"
+        echo "" >> "$session_log"
+    fi
+
+    echo "=== /tmp/remote-claude ===" >> "$session_log"
+    ls -la /tmp/remote-claude >> "$session_log" 2>&1 || echo "/tmp/remote-claude 不存在" >> "$session_log"
+    echo "" >> "$session_log"
+
+    echo "=== tmux list-sessions ===" >> "$session_log"
+    tmux list-sessions >> "$session_log" 2>&1 || echo "没有活跃的 tmux 会话" >> "$session_log"
+    echo "" >> "$session_log"
+
+    echo "=== startup.log (tail -100) ===" >> "$session_log"
+    if [ -f "$HOME/.remote-claude/startup.log" ]; then
+        tail -100 "$HOME/.remote-claude/startup.log" >> "$session_log" 2>&1
+    else
+        echo "startup.log 不存在" >> "$session_log"
+    fi
+
+    log_success "会话与启动诊断已收集"
+}
+
 # 收集系统信息
 collect_system_info() {
     print_header "收集系统信息"
@@ -267,6 +299,10 @@ $(cat "$DIAG_DIR/python.txt")
 $(cat "$DIAG_DIR/structure.txt")
 \`\`\`
 
+## 会话与启动诊断
+
+```\n$(cat "$DIAG_DIR/session.txt")\n```
+
 ## 错误汇总
 
 \`\`\`
@@ -323,6 +359,7 @@ main() {
     collect_npm_info
     collect_python_info
     collect_file_structure
+    collect_session_diagnostics
     collect_test_logs
     collect_errors
     generate_diagnosis_report

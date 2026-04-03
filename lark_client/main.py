@@ -171,7 +171,7 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         if isinstance(action_value, str):
             if action_value.startswith("key:"):
                 key_name = action_value.split(":", 1)[1]
-                allowed = set(handler._user_config.behavior.operation_panel.enabled_keys) if handler._user_config else {
+                allowed = set(handler._settings.ui.enabled_keys) if handler._settings else {
                     "up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"
                 }
                 if key_name not in allowed:

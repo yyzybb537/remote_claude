@@ -53,7 +53,7 @@ class LocalClient(BaseClient):
                 f"   会话名: {self.session_name}\n"
                 f"   Socket 路径: {self.socket_path}\n"
                 f"\n"
-                f"   请使用 `python3 remote_claude.py list` 查看可用会话"
+                f"   请使用 `remote-claude list` 查看可用会话"
             )
             return False
 
@@ -100,8 +100,8 @@ class LocalClient(BaseClient):
                 f"     2. Socket 文件权限错误\n"
                 f"\n"
                 f"   建议操作:\n"
-                f"     python3 remote_claude.py kill {self.session_name}\n"
-                f"     python3 remote_claude.py start {self.session_name}"
+                f"     remote-claude kill {self.session_name}\n"
+                f"     remote-claude start {self.session_name}"
             )
             return False
 

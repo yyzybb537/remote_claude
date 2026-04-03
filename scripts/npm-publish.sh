@@ -42,9 +42,19 @@ while [ "$#" -gt 0 ]; do
 done
 
 # 写入 token（如果提供）
+NPM_CONFIG_TEMP=
+cleanup_npm_config() {
+    if [ -n "$NPM_CONFIG_TEMP" ] && [ -f "$NPM_CONFIG_TEMP" ]; then
+        rm -f "$NPM_CONFIG_TEMP"
+    fi
+}
+trap 'cleanup_npm_config' EXIT
+
 if [ -n "$TOKEN" ]; then
+    NPM_CONFIG_TEMP=$(mktemp)
+    export NPM_CONFIG_USERCONFIG="$NPM_CONFIG_TEMP"
     npm config set //registry.npmjs.org/:_authToken "$TOKEN"
-    echo "🔑 npm token 已写入 ~/.npmrc"
+    echo "🔑 npm token 已写入临时 npm 配置"
 fi
 
 # 检查 npm 登录状态
@@ -54,8 +64,11 @@ if ! npm whoami --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
     exit 1
 fi
 
-# 检查 git 工作区干净（package.json 之外）
-DIRTY=$(git status --porcelain | grep -v "^.M package.json" || true)
+# 检查 git 工作区干净（只允许 package.json 变更）
+DIRTY=$( {
+    git diff --name-only --cached
+    git diff --name-only
+} | sort -u | grep -v "^package.json$" || true )
 if [ -n "$DIRTY" ]; then
     echo "❌ 工作区有未提交的改动，请先 commit："
     echo "$DIRTY"
