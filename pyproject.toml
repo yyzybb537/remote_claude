@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
+# 保留 console script 以兼容仅供开发态/uv run 的 Python 入口；npm 对外公开入口仍以 package.json -> bin/remote-claude shell launcher 为准。
 remote-claude = "remote_claude:main"
 
 [dependency-groups]

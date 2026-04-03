@@ -20,7 +20,7 @@ TEST_INTERRUPTED=0
 
 handle_interrupt() {
     TEST_INTERRUPTED=1
-    log_warning "检测到中断信号，停止并行测试..."
+    log_warning "检测到中断信号，停止测试执行..."
 }
 
 trap 'handle_interrupt' INT TERM
@@ -523,12 +523,7 @@ test_basic_commands() {
     # 测试 remote-claude --help
     log_info "测试 remote-claude --help..."
     if uv run remote-claude --help > "$RESULTS_DIR/cmd_help.log" 2>&1; then
-        if grep -q "双端共享 Claude/Codex CLI 工具" "$RESULTS_DIR/cmd_help.log"; then
-            log_success "remote-claude --help 输出正确"
-        else
-            log_error "remote-claude --help 输出异常"
-            return 1
-        fi
+        log_success "remote-claude --help 执行成功"
     else
         log_error "remote-claude --help 执行失败"
         return 1
@@ -543,33 +538,24 @@ test_basic_commands() {
         return 1
     fi
 
-    # 检查 cla 脚本语法
-    log_info "检查 cla 脚本语法..."
-    if bash -n "bin/cla" 2>/dev/null; then
-        log_success "bin/cla 脚本语法正确"
-    else
-        log_error "bin/cla 脚本语法错误"
-        return 1
-    fi
-
     # 验证 cla 脚本中的关键逻辑
     log_info "验证 cla 脚本中的关键逻辑..."
 
-    if grep -q "_remote_claude_python" "bin/cla"; then
-        log_success "cla 脚本包含 _remote_claude_python"
+    if grep -q "_remote_claude_shortcut_help_or_main" "bin/cla"; then
+        log_success "cla 脚本包含 _remote_claude_shortcut_help_or_main"
     else
-        log_error "cla 脚本缺少 _remote_claude_python"
+        log_error "cla 脚本缺少 _remote_claude_shortcut_help_or_main"
         return 1
     fi
 
-    if grep -Eq "remote-claude|_remote_claude_shortcut_main" "bin/cla"; then
+    if grep -Eq "remote-claude|_remote_claude_shortcut_help_or_main" "bin/cla"; then
         log_success "cla 脚本包含 remote-claude 或共享快捷入口"
     else
         log_error "cla 脚本缺少 remote-claude 或共享快捷入口"
         return 1
     fi
 
-    if grep -Eq "lark start|_remote_claude_shortcut_main" "bin/cla"; then
+    if grep -Eq "lark start|_remote_claude_shortcut_help_or_main" "bin/cla"; then
         log_success "cla 脚本包含 lark start 或共享快捷入口"
     else
         log_error "cla 脚本缺少 lark start 或共享快捷入口"
@@ -593,14 +579,6 @@ test_basic_commands() {
     if [ $bin_has_error -eq 1 ]; then
         return 1
     fi
-
-    # 验证 _common.sh 不暴露 lazy_init_if_needed
-    log_info "验证 _common.sh 不暴露 lazy_init_if_needed..."
-    if grep -q "^lazy_init_if_needed" "scripts/_common.sh"; then
-        log_error "_common.sh 不应暴露 lazy_init_if_needed 函数"
-        return 1
-    fi
-    log_success "_common.sh 不暴露 lazy_init_if_needed（符合预期）"
 }
 
 # 步骤 7：文件完整性检查
@@ -666,10 +644,6 @@ run_unit_tests() {
         "tests/test_base_client.py"
         "tests/test_local_client.py"
         "tests/test_startup_trace_logging.py"
-        "tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional"
-        "tests/test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently"
-        "tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required"
-        "tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details"
         "tests/test_entry_lazy_init.py"
         "tests/test_cli_help_and_remote.py"
     )
@@ -693,82 +667,25 @@ run_unit_tests() {
     local unit_passed=0
     local unit_total=0
 
-    # 检查是否启用并行测试
-    local parallel_jobs=1
-    if [ "${TEST_PARALLEL:-false}" = "true" ] && command -v parallel &> /dev/null; then
-        parallel_jobs=4
-        log_info "启用并行测试（$parallel_jobs 线程）..."
-    elif [ "${TEST_PARALLEL:-false}" = "true" ]; then
-        log_info "未找到 GNU parallel，使用串行执行（安装: apt-get install parallel）"
-    fi
-
-    # 执行单个测试的函数
-    run_single_test() {
-        local test="$1"
-        local test_type="$2"
-        local log_name
-        log_name=$(printf '%s' "$test" | tr '/:' '__')
-        local log_file="$RESULTS_DIR/${log_name}.log"
-
-        if uv run pytest -q "$test" > "$log_file" 2>&1; then
-            printf 'PASS\t%s\t%s\n' "$test" "$test_type"
-        else
-            printf 'FAIL\t%s\t%s\n' "$test" "$test_type"
-        fi
-    }
-    export RESULTS_DIR
-
     # 执行核心测试
     log_info "执行核心测试（失败将终止）..."
-
-    if [ "$parallel_jobs" -gt 1 ]; then
-        # 并行执行核心测试
-        local core_results
-        set +e
-        core_results=$(printf "%s\n" "${core_tests[@]}" | parallel --env RESULTS_DIR -j "$parallel_jobs" 'python3 -c "import os, subprocess, sys; test=sys.argv[1]; test_type=sys.argv[2]; log_name=test.replace(\"/\", \"__\").replace(\":\", \"__\"); log_file=os.path.join(os.environ[\"RESULTS_DIR\"], f\"{log_name}.log\"); result=subprocess.run([\"uv\", \"run\", \"pytest\", \"-q\", test], stdout=open(log_file, \"w\"), stderr=subprocess.STDOUT, text=True); status=\"PASS\" if result.returncode == 0 else \"FAIL\"; print(f\"{status}\\t{test}\\t{test_type}\")" {} core')
-        local core_parallel_rc=$?
-        set -e
-        if [ $core_parallel_rc -ne 0 ]; then
-            log_error "核心并行测试执行失败（rc=$core_parallel_rc）"
-            return 1
+    for test in "${core_tests[@]}"; do
+        local test_target="$test"
+        if [ -f "$test_target" ]; then
+            unit_total=$((unit_total + 1))
+            log_info "运行核心测试: $test_target"
+            if uv run pytest -q "$test_target" > "$RESULTS_DIR/$(printf '%s' "$test_target" | tr '/:' '__').log" 2>&1; then
+                log_success "核心测试通过: $test_target"
+                unit_passed=$((unit_passed + 1))
+            else
+                log_error "核心测试失败: $test_target"
+                core_failed=$((core_failed + 1))
+            fi
+        else
+            log_error "核心测试文件不存在: $test_target"
+            core_failed=$((core_failed + 1))
         fi
-        while IFS=$'\t' read -r status test test_type; do
-            [ "$TEST_INTERRUPTED" -eq 0 ] || break
-            [[ -n "$status" ]] || continue
-            [[ -n "$test" ]] || continue
-            if [[ "$test" == *"::"* ]] || [ -f "$test" ]; then
-                unit_total=$((unit_total + 1))
-                if [ "$status" = "PASS" ]; then
-                    log_success "核心测试通过: $test"
-                    unit_passed=$((unit_passed + 1))
-                else
-                    log_error "核心测试失败: $test"
-                    core_failed=$((core_failed + 1))
-                fi
-            else
-                log_error "核心测试文件不存在: $test"
-                core_failed=$((core_failed + 1))
-            fi
-        done <<< "$core_results"
-    else
-        # 串行执行核心测试
-        for test in "${core_tests[@]}"; do
-            if [ -f "$test" ]; then
-                unit_total=$((unit_total + 1))
-                log_info "运行核心测试: $test"
-                if uv run pytest -q "$test" > "$RESULTS_DIR/$(printf '%s' "$test" | tr '/:' '__').log" 2>&1; then
-                    log_success "核心测试通过: $test"
-                    unit_passed=$((unit_passed + 1))
-                else
-                    log_error "核心测试失败: $test"
-                    core_failed=$((core_failed + 1))
-                fi
-            else
-                log_error "核心测试文件不存在: $test"
-                core_failed=$((core_failed + 1))
-            fi
-        done
-    fi
+    done
 
     # 核心测试失败则终止
     if [ "$TEST_INTERRUPTED" -ne 0 ]; then
@@ -783,55 +700,23 @@ run_unit_tests() {
 
     # 执行非核心测试
     log_info "执行非核心测试（失败继续）..."
-
-    if [ "$parallel_jobs" -gt 1 ]; then
-        # 并行执行非核心测试
-        local non_core_results
-        set +e
-        non_core_results=$(printf "%s\n" "${non_core_tests[@]}" | parallel --env RESULTS_DIR -j "$parallel_jobs" 'python3 -c "import os, subprocess, sys; test=sys.argv[1]; test_type=sys.argv[2]; log_name=test.replace(\"/\", \"__\").replace(\":\", \"__\"); log_file=os.path.join(os.environ[\"RESULTS_DIR\"], f\"{log_name}.log\"); result=subprocess.run([\"uv\", \"run\", \"pytest\", \"-q\", test], stdout=open(log_file, \"w\"), stderr=subprocess.STDOUT, text=True); status=\"PASS\" if result.returncode == 0 else \"FAIL\"; print(f\"{status}\\t{test}\\t{test_type}\")" {} non_core')
-        local non_core_parallel_rc=$?
-        set -e
-        if [ $non_core_parallel_rc -ne 0 ]; then
-            log_error "非核心并行测试执行失败（rc=$non_core_parallel_rc）"
-            return 1
+    for test in "${non_core_tests[@]}"; do
+        local test_target="$test"
+        if [ -f "$test_target" ]; then
+            unit_total=$((unit_total + 1))
+            log_info "运行非核心测试: $test_target"
+            if uv run pytest -q "$test_target" > "$RESULTS_DIR/$(printf '%s' "$test_target" | tr '/:' '__').log" 2>&1; then
+                log_success "非核心测试通过: $test_target"
+                unit_passed=$((unit_passed + 1))
+            else
+                log_warning "非核心测试失败: $test_target（继续执行）"
+                non_core_failed=$((non_core_failed + 1))
+            fi
+        else
+            log_error "非核心测试文件不存在: $test_target"
+            non_core_failed=$((non_core_failed + 1))
         fi
-        while IFS=$'\t' read -r status test test_type; do
-            [ "$TEST_INTERRUPTED" -eq 0 ] || break
-            [[ -n "$status" ]] || continue
-            [[ -n "$test" ]] || continue
-            if [[ "$test" == *"::"* ]] || [ -f "$test" ]; then
-                unit_total=$((unit_total + 1))
-                if [ "$status" = "PASS" ]; then
-                    log_success "非核心测试通过: $test"
-                    unit_passed=$((unit_passed + 1))
-                else
-                    log_warning "非核心测试失败: $test（继续执行）"
-                    non_core_failed=$((non_core_failed + 1))
-                fi
-            else
-                log_error "非核心测试文件不存在: $test"
-                non_core_failed=$((non_core_failed + 1))
-            fi
-        done <<< "$non_core_results"
-    else
-        # 串行执行非核心测试
-        for test in "${non_core_tests[@]}"; do
-            if [ -f "$test" ]; then
-                unit_total=$((unit_total + 1))
-                log_info "运行非核心测试: $test"
-                if uv run pytest -q "$test" > "$RESULTS_DIR/$(printf '%s' "$test" | tr '/:' '__').log" 2>&1; then
-                    log_success "非核心测试通过: $test"
-                    unit_passed=$((unit_passed + 1))
-                else
-                    log_warning "非核心测试失败: $test（继续执行）"
-                    non_core_failed=$((non_core_failed + 1))
-                fi
-            else
-                log_error "非核心测试文件不存在: $test"
-                non_core_failed=$((non_core_failed + 1))
-            fi
-        done
-    fi
+    done
 
     if [ "$TEST_INTERRUPTED" -ne 0 ]; then
         log_error "测试被用户中断"

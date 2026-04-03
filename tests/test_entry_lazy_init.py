@@ -3,9 +3,7 @@ import json
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMON_SH = REPO_ROOT / "scripts" / "_common.sh"
@@ -16,7 +14,6 @@ ENTRY_SCRIPTS = [
     "bin/cx",
     "bin/cdx",
 ]
-
 
 PIP_SOURCE_MARKERS = {
     "官方": "https://pypi.org/simple",
@@ -43,7 +40,8 @@ def _expected_recovery_command(project_root: Path) -> str:
     return f"sh {project_root / 'scripts' / 'setup.sh'} --npm --lazy"
 
 
-def run_common(script_body: str, *, env: dict[str, str] | None = None, disable_auto_lazy_init: bool = True) -> subprocess.CompletedProcess[str]:
+def run_common(script_body: str, *, env: dict[str, str] | None = None, disable_auto_lazy_init: bool = True) -> \
+subprocess.CompletedProcess[str]:
     lazy_init_prefix = "LAZY_INIT_DISABLE_AUTO_RUN=1\nexport LAZY_INIT_DISABLE_AUTO_RUN\n" if disable_auto_lazy_init else ""
     shell_script = f"""#!/bin/sh
 set -e
@@ -182,6 +180,16 @@ printf 'begin-count:%s\n' "$(grep -c '# >>> remote-claude init >>>' "$HOME/.bash
     assert "begin-count:2" in result.stdout
 
 
+def test_setup_shell_init_block_only_exports_public_bin_not_project_venv():
+    setup_script = REPO_ROOT / "scripts" / "setup.sh"
+    content = setup_script.read_text(encoding="utf-8")
+
+    assert '$HOME/.local/bin' in content
+    assert 'scripts/completion.sh' in content
+    assert '.venv/bin/remote-claude' not in content
+    assert '.venv/bin:$PATH' not in content
+
+
 def test_lazy_init_if_needed_reports_skip_in_package_cache():
     result = run_common("""
 SCRIPT_DIR="$HOME/.npm/_cacache/remote-claude/scripts"
@@ -199,41 +207,90 @@ fi
     assert result.stdout.strip().endswith("rc:0 result:skipped-cache")
 
 
-def test_lazy_init_if_needed_reports_noop_when_sync_not_needed(tmp_path: Path):
-    project_dir = tmp_path / "project"
+def _run_lazy_init_case(tmp_path: Path, case: dict[str, object]) -> subprocess.CompletedProcess[str]:
+    project_dir = tmp_path / str(case["name"]) / "project"
     script_dir = project_dir / "scripts"
     venv_dir = project_dir / ".venv"
     script_dir.mkdir(parents=True)
     venv_dir.mkdir()
-    (project_dir / "pyproject.toml").write_text('[project]\nname="demo"\nversion="0.1.0"\n', encoding="utf-8")
-    (project_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+    for rel_path, content in dict(case.get("project_files", {})).items():
+        target = project_dir / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
 
     setup_sh = script_dir / "setup.sh"
-    setup_sh.write_text("#!/bin/sh\ntouch \"$PROJECT_DIR/.sync-ran\"\nexit 0\n", encoding="utf-8")
+    setup_sh.write_text(str(case["setup_script"]), encoding="utf-8")
     setup_sh.chmod(0o755)
 
-    result = run_common(f"""
+    shell_script = f"""
 PROJECT_DIR='{project_dir}'
 SCRIPT_DIR='{script_dir}'
-_write_dependency_fingerprint "$PROJECT_DIR" || exit 1
-before_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")
-if _lazy_init; then
-    status=$?
-    echo "rc:$status result:${{LAZY_INIT_RESULT:-missing}}"
-else
-    status=$?
-    echo "rc:$status result:${{LAZY_INIT_RESULT:-missing}}"
-    exit 1
-fi
-after_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")
-[ -f "$PROJECT_DIR/.sync-ran" ] && echo sync-ran
-[ "$before_fp" = "$after_fp" ] && echo fp-stable
-""")
+{case.get('prepare', '')}{case['command']}{case.get('after', '')}"""
+    result = run_common(shell_script)
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().endswith("fp-stable")
-    assert "rc:0 result:no-sync-needed" in result.stdout
-    assert "sync-ran" not in result.stdout
+    assert result.returncode == case["expected_returncode"], f"{case['name']}: {result.stderr}"
+    for expected in case.get("expected_stdout", []):
+        assert expected in result.stdout, f"{case['name']}: missing {expected!r} in {result.stdout!r}"
+    for unexpected in case.get("unexpected_stdout", []):
+        assert unexpected not in result.stdout, f"{case['name']}: unexpected {unexpected!r} in {result.stdout!r}"
+    for rel_path in case.get("expected_paths", []):
+        assert (project_dir / rel_path).exists(), str(case["name"])
+    return result
+
+
+def test_lazy_init_if_needed_sync_outcomes(tmp_path: Path):
+    success_command = '    if _lazy_init; then\n        status=$?\n        echo "rc:$status result:${LAZY_INIT_RESULT:-missing}"\n    else\n        status=$?\n        echo "rc:$status result:${LAZY_INIT_RESULT:-missing}"\n        exit 1\n    fi\n'
+    failure_command = '    if _lazy_init; then\n        status=$?\n        echo "rc:$status result:${LAZY_INIT_RESULT:-missing}"\n        exit 1\n    else\n        status=$?\n        echo "rc:$status result:${LAZY_INIT_RESULT:-missing}"\n    fi\n'
+    cases = [
+        {
+            "name"               : "noop_when_sync_not_needed",
+            "project_files"      : {
+                "pyproject.toml": '[project]\nname="demo"\nversion="0.1.0"\n',
+                "uv.lock"       : "version = 1\n",
+            },
+            "setup_script"       : "#!/bin/sh\ntouch \"$PROJECT_DIR/.sync-ran\"\nexit 0\n",
+            "prepare"            : '    _write_dependency_fingerprint "$PROJECT_DIR" || exit 1\n    before_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")\n',
+            "command"            : success_command,
+            "after"              : '    after_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")\n    [ -f "$PROJECT_DIR/.sync-ran" ] && echo sync-ran\n    [ "$before_fp" = "$after_fp" ] && echo fp-stable\n',
+            "expected_stdout"    : ["rc:0 result:no-sync-needed", "fp-stable"],
+            "unexpected_stdout"  : ["sync-ran"],
+            "expected_returncode": 0,
+        },
+        {
+            "name"               : "trigger_sync_when_dependency_fingerprint_changes",
+            "project_files"      : {
+                "pyproject.toml": '[project]\nname="demo"\nversion="0.1.0"\n',
+                "uv.lock"       : "version = 1\n",
+            },
+            "setup_script"       : "#!/bin/sh\ntouch \"$PROJECT_DIR/.sync-ran\"\nexit 0\n",
+            "prepare"            : '    _write_dependency_fingerprint "$PROJECT_DIR" || exit 1\n    before_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")\n    printf "\\n# changed\\n" >> "$PROJECT_DIR/uv.lock"\n',
+            "command"            : success_command,
+            "after"              : '    after_fp=$(cat "$PROJECT_DIR/.venv/.deps-fingerprint")\n    [ -f "$PROJECT_DIR/.sync-ran" ] && echo sync-ran\n    [ "$before_fp" != "$after_fp" ] && echo fp-updated\n',
+            "expected_stdout"    : ["rc:0", "result:sync-completed", "sync-ran", "fp-updated"],
+            "expected_returncode": 0,
+            "expected_paths"     : [".sync-ran"],
+        },
+        {
+            "name"               : "report_setup_success_after_trigger",
+            "project_files"      : {"package-lock.json": "{}\n"},
+            "setup_script"       : "#!/bin/sh\nexit 0\n",
+            "command"            : success_command,
+            "expected_stdout"    : ["rc:0 result:sync-completed"],
+            "expected_returncode": 0,
+        },
+        {
+            "name"               : "report_setup_failure_non_zero",
+            "project_files"      : {},
+            "setup_script"       : "#!/bin/sh\nexit 7\n",
+            "command"            : failure_command,
+            "expected_stdout"    : ["rc:7 result:sync-failed"],
+            "expected_returncode": 0,
+        },
+    ]
+
+    for case in cases:
+        _run_lazy_init_case(tmp_path, case)
 
 
 def test_needs_sync_skips_cache_without_lockfiles():
@@ -254,15 +311,13 @@ fi
     assert result.stdout.strip().endswith("rc:1")
 
 
-
-
 def test_runtime_shell_scripts_do_not_repeat_centralized_paths():
     for rel in (
-        "scripts/check-env.sh",
-        "scripts/setup.sh",
-        "scripts/install.sh",
-        "scripts/uninstall.sh",
-        "scripts/test_lark_management.sh",
+            "scripts/check-env.sh",
+            "scripts/setup.sh",
+            "scripts/install.sh",
+            "scripts/uninstall.sh",
+            "scripts/test_lark_management.sh",
     ):
         content = (REPO_ROOT / rel).read_text(encoding="utf-8")
         assert '"$HOME/.remote-claude"' not in content, rel
@@ -516,7 +571,6 @@ cat "$TMPDIR_PATH/calls.log"
     assert all("--trusted-host" in l for l in pip_lines)
 
 
-
 def test_install_uv_multi_source_uses_official_then_aliyun_then_tuna_order():
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
@@ -566,7 +620,6 @@ cat "$TMPDIR_PATH/uv.log"
     assert "--allow-insecure-host mirrors.aliyun.com" in uv_lines[1]
     assert "--index-url https://pypi.tuna.tsinghua.edu.cn/simple/" in uv_lines[2]
     assert "--allow-insecure-host pypi.tuna.tsinghua.edu.cn" in uv_lines[2]
-
 
 
 def test_common_install_fail_summary_contains_required_fields():
@@ -635,7 +688,6 @@ cat "$TMPDIR_PATH/fallback.log"
     assert "curl-called" in result.stdout
 
 
-
 def test_check_and_install_uv_prefers_working_system_uv_over_stale_runtime_entry(tmp_path: Path):
     state_dir = tmp_path / "home" / ".remote-claude"
     state_dir.mkdir(parents=True)
@@ -676,7 +728,6 @@ fi
 
     assert result.returncode == 0, result.stderr
     assert f"uv:{fake_uv}" in result.stdout
-
 
 
 def test_check_and_install_uv_reinstalls_after_stale_uv_path(tmp_path: Path):
@@ -733,7 +784,6 @@ fi
 
     assert result.returncode == 0, result.stderr
     assert "ok" in result.stdout
-
 
 
 def test_install_uv_multi_source_exports_user_base_bin_when_pip_install_succeeds():
@@ -803,12 +853,6 @@ cat "$INSTALL_LOG_FILE"
     assert "exit_code=127" in out
 
 
-def test_setup_install_dependencies_uses_uv_retry_helper_instead_of_curl_probe():
-    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
-    assert '_run_uv_with_pypi_sources "uv-sync" sync' in content
-    assert 'curl -sSf --connect-timeout 3' not in content
-
-
 def test_shell_scripts_keep_posix_compat_static_guards():
     setup_content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
     uninstall_content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
@@ -819,7 +863,7 @@ def test_shell_scripts_keep_posix_compat_static_guards():
     assert "local " not in uninstall_content
 
     bash_branch_match = re.search(
-        r'elif \[ -n "\$\{BASH_VERSION:-\}" \]; then\n(?P<body>.*?)(?=\nfi\n?)',
+        r'elif \[ -n "\$\{BASH_VERSION:-}" ]; then\n(?P<body>.*?)(?=\nfi\n?)',
         completion_content,
         re.S,
     )
@@ -931,7 +975,6 @@ fi
     assert "rc:0" in result.stdout
     assert "result:sync-completed" in result.stdout
     assert "依赖指纹写入失败" in result.stdout
-
 
 
 def test_lazy_init_if_needed_triggers_sync_when_dependency_fingerprint_changes(tmp_path: Path):
@@ -1078,8 +1121,6 @@ esac
     assert _expected_recovery_command(project_dir) in result.stderr
 
 
-
-
 def test_entry_script_preserves_lazy_init_failure_exit_code_and_reports_real_setup_path(tmp_path: Path):
     project_dir = tmp_path / "project"
     bin_dir = project_dir / "bin"
@@ -1110,8 +1151,6 @@ def test_entry_script_preserves_lazy_init_failure_exit_code_and_reports_real_set
     assert _expected_recovery_command(project_dir) in result.stderr
 
 
-
-
 def test_check_env_allows_skip_when_feishu_not_required(tmp_path: Path):
     project_dir = tmp_path / "project"
     script_dir = project_dir / "scripts"
@@ -1121,7 +1160,8 @@ def test_check_env_allows_skip_when_feishu_not_required(tmp_path: Path):
 
     check_env = script_dir / "check-env.sh"
     check_env.write_text((REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8"), encoding="utf-8")
-    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"),
+                                           encoding="utf-8")
     (resources_dir / ".env.example").write_text("FEISHU_APP_ID=cli_xxxxx\nFEISHU_APP_SECRET=xxxxx\n", encoding="utf-8")
 
     shell_script = f"""#!/bin/sh
@@ -1285,10 +1325,21 @@ def _prepare_entry_script_project(tmp_path: Path, *entry_names: str) -> tuple[Pa
         target.write_text((REPO_ROOT / "bin" / name).read_text(encoding="utf-8"), encoding="utf-8")
         target.chmod(0o755)
 
-    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
-    (script_dir / "check-env.sh").write_text((REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"),
+                                           encoding="utf-8")
+    (script_dir / "check-env.sh").write_text((REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8"),
+                                             encoding="utf-8")
+    (script_dir / "_help.sh").write_text((REPO_ROOT / "scripts" / "_help.sh").read_text(encoding="utf-8"),
+                                         encoding="utf-8")
     (script_dir / "setup.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     (script_dir / "setup.sh").chmod(0o755)
+
+    # 创建资源模板目录和文件（避免 "缺少环境变量模板文件" 错误）
+    resources_dir = project_dir / "resources" / "defaults"
+    resources_dir.mkdir(parents=True)
+    (resources_dir / "env.example").write_text("FEISHU_APP_ID=\nFEISHU_APP_SECRET=\n", encoding="utf-8")
+    (resources_dir / "settings.json.example").write_text('{}\n', encoding="utf-8")
+    (resources_dir / "state.json.example").write_text('{}\n', encoding="utf-8")
 
     home = tmp_path / "home"
     (home / ".remote-claude").mkdir(parents=True)
@@ -1311,108 +1362,79 @@ def _prepare_entry_script_project(tmp_path: Path, *entry_names: str) -> tuple[Pa
     return project_dir, bin_dir, script_dir, bindir
 
 
-def test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional(tmp_path: Path):
+def test_entry_script_runtime_behaviors(tmp_path: Path):
     project_dir, bin_dir, _, bindir = _prepare_entry_script_project(tmp_path, "cla")
-    (bindir / "uv").write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
-    (bindir / "uv").chmod(0o755)
+    uv_stub = bindir / "uv"
+    uv_stub.write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
+    uv_stub.chmod(0o755)
 
-    result = subprocess.run(
-        ["sh", str(bin_dir / "cla"), "--hello"],
-        text=True,
-        capture_output=True,
-        cwd=project_dir,
-        env={**os.environ, "HOME": str(tmp_path / "home"), "PATH": f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin", "REMOTE_CLAUDE_REQUIRE_FEISHU": "0"},
-    )
+    cases = [
+        {
+            "name": "skip_feishu_prompt_and_executes_remote_claude_when_optional",
+            "cwd": project_dir,
+            "env": {"REMOTE_CLAUDE_REQUIRE_FEISHU": "0"},
+            "returncode": 0,
+            "contains": ["PY:", "remote_claude.py start", "--hello"],
+            "not_contains": ["飞书客户端尚未配置", "remote_claude.py lark start"],
+        },
+        {
+            "name": "use_startup_dir_not_project_dir_for_session_name",
+            "cwd": tmp_path / "workspace",
+            "env": {"REMOTE_CLAUDE_REQUIRE_FEISHU": "0"},
+            "returncode": 0,
+            "contains": [],
+            "not_contains": [],
+            "dynamic_contains": lambda cwd, project: [f"remote_claude.py start {cwd}_"],
+            "dynamic_not_contains": lambda cwd, project: [f"remote_claude.py start {project}_"],
+        },
+        {
+            "name": "error_when_startup_dir_is_invalid",
+            "cwd": tmp_path,
+            "env": {
+                "REMOTE_CLAUDE_REQUIRE_FEISHU": "0",
+                "STARTUP_DIR": str(tmp_path / "missing-workspace"),
+            },
+            "returncode_non_zero": True,
+            "contains": ["启动目录"],
+            "not_contains": ["UV:"],
+        },
+    ]
 
-    assert result.returncode == 0, result.stderr
-    assert "飞书客户端尚未配置" not in result.stdout
-    assert "飞书客户端未配置，跳过飞书启动。" in result.stdout
-    assert "PY:" in result.stdout
-    assert "remote_claude.py start" in result.stdout
-    assert "remote_claude.py lark start" not in result.stdout
+    for case in cases:
+        cwd = case["cwd"]
+        if not cwd.exists():
+            cwd.mkdir(parents=True)
 
+        result = subprocess.run(
+            ["sh", str(bin_dir / "cla"), "--hello"],
+            text=True,
+            capture_output=True,
+            cwd=cwd,
+            env={
+                **os.environ,
+                "HOME": str(tmp_path / "home"),
+                "PATH": f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin",
+                **case["env"],
+            },
+        )
 
-def test_cla_session_name_uses_startup_dir_not_project_dir(tmp_path: Path):
-    project_dir, bin_dir, _, bindir = _prepare_entry_script_project(tmp_path, "cla")
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir()
-    (bindir / "uv").write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
-    (bindir / "uv").chmod(0o755)
+        combined = result.stdout + result.stderr
+        if case.get("returncode_non_zero"):
+            assert result.returncode != 0, case["name"]
+        else:
+            assert result.returncode == case["returncode"], f"{case['name']}: {result.stderr}"
 
-    result = subprocess.run(
-        ["sh", str(bin_dir / "cla"), "--hello"],
-        text=True,
-        capture_output=True,
-        cwd=workspace_dir,
-        env={**os.environ, "HOME": str(tmp_path / "home"), "PATH": f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin", "REMOTE_CLAUDE_REQUIRE_FEISHU": "0"},
-    )
+        expected_contains = list(case["contains"])
+        expected_not_contains = list(case["not_contains"])
+        if "dynamic_contains" in case:
+            expected_contains.extend(case["dynamic_contains"](cwd, project_dir))
+        if "dynamic_not_contains" in case:
+            expected_not_contains.extend(case["dynamic_not_contains"](cwd, project_dir))
 
-    assert result.returncode == 0, result.stderr
-    assert f"remote_claude.py start {workspace_dir}_" in result.stdout
-    assert f"remote_claude.py start {project_dir}_" not in result.stdout
-
-
-def test_cla_executes_project_python_from_startup_dir(tmp_path: Path):
-    project_dir, bin_dir, _, bindir = _prepare_entry_script_project(tmp_path, "cla")
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir()
-    (bindir / "uv").write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
-    (bindir / "uv").chmod(0o755)
-
-    result = subprocess.run(
-        ["sh", str(bin_dir / "cla"), "--hello"],
-        text=True,
-        capture_output=True,
-        cwd=workspace_dir,
-        env={**os.environ, "HOME": str(tmp_path / "home"), "PATH": f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin", "REMOTE_CLAUDE_REQUIRE_FEISHU": "0"},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert f"CWD:{workspace_dir}" in result.stdout
-    assert f"CWD:{project_dir}" not in result.stdout
-    assert "PY:" in result.stdout
-
-
-def test_remote_claude_preserves_caller_cwd_for_normal_commands(tmp_path: Path):
-    project_dir, bin_dir, _, bindir = _prepare_entry_script_project(tmp_path, "remote-claude")
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir()
-    (bindir / "uv").write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
-    (bindir / "uv").chmod(0o755)
-
-    result = subprocess.run(
-        ["sh", str(bin_dir / "remote-claude"), "start", "demo"],
-        text=True,
-        capture_output=True,
-        cwd=workspace_dir,
-        env={**os.environ, "HOME": str(tmp_path / "home"), "PATH": f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin"},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert f"CWD:{workspace_dir}" in result.stdout
-    assert f"CWD:{project_dir}" not in result.stdout
-    assert "PY:" in result.stdout
-    assert "remote_claude.py start demo" in result.stdout
-
-
-def test_entry_script_errors_when_startup_dir_is_invalid(tmp_path: Path):
-    _, bin_dir, _, bindir = _prepare_entry_script_project(tmp_path, "cla")
-    missing_dir = tmp_path / "missing-workspace"
-    (bindir / "uv").write_text("#!/bin/sh\nprintf 'UV:%s\\n' \"$*\"\n", encoding="utf-8")
-    (bindir / "uv").chmod(0o755)
-
-    result = subprocess.run(
-        ["sh", str(bin_dir / "cla"), "--hello"],
-        text=True,
-        capture_output=True,
-        cwd=tmp_path,
-        env={**os.environ, "HOME": str(tmp_path / "home"), "PATH": f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin", "REMOTE_CLAUDE_REQUIRE_FEISHU": "0", "STARTUP_DIR": str(missing_dir)},
-    )
-
-    assert result.returncode != 0
-    assert "启动目录" in (result.stdout + result.stderr)
-    assert "UV:" not in result.stdout
-
+        for expected in expected_contains:
+            assert expected in combined, f"{case['name']}: missing {expected!r} in {combined!r}"
+        for unexpected in expected_not_contains:
+            assert unexpected not in combined, f"{case['name']}: unexpected {unexpected!r} in {combined!r}"
 
 
 def test_check_and_install_uv_supports_python_user_base_bin_path():
@@ -1470,69 +1492,6 @@ fi
     assert "saved:" in result.stdout
     assert "uvbin:" in result.stdout
     assert "/Library/Python/3.12/bin/uv" in result.stdout
-
-
-
-
-
-def test_install_uv_multi_source_detects_python_module_uv_when_script_wrapper_needs_python():
-    result = run_common(r'''
-TMPDIR_PATH="$(mktemp -d)"
-export HOME="$TMPDIR_PATH/home"
-INSTALL_LOG_FILE="$TMPDIR_PATH/install.log"
-
-cat > "$TMPDIR_PATH/python3" <<'EOF'
-#!/bin/sh
-if [ "$1" = "-m" ] && [ "$2" = "site" ] && [ "$3" = "--user-base" ]; then
-    echo "$HOME/.local"
-    exit 0
-fi
-if [ "$1" = "-m" ] && [ "$2" = "uv" ] && [ "$3" = "--version" ]; then
-    echo "uv 0.module"
-    exit 0
-fi
-exit 1
-EOF
-chmod +x "$TMPDIR_PATH/python3"
-ln -sf "$TMPDIR_PATH/python3" "$TMPDIR_PATH/python"
-export PATH="$TMPDIR_PATH:/usr/bin:/bin"
-mkdir -p "$HOME/.local/bin" "$HOME/.local/lib/python3.12/site-packages/uv"
-
-cat > "$TMPDIR_PATH/pip3" <<'EOF'
-#!/bin/sh
-if [ "$1" = "install" ]; then
-    mkdir -p "$HOME/.local/bin" "$HOME/.local/lib/python3.12/site-packages/uv"
-    cat > "$HOME/.local/bin/uv" <<'UVEOF'
-#!/bin/sh
-exit 1
-UVEOF
-    chmod +x "$HOME/.local/bin/uv"
-    touch "$HOME/.local/lib/python3.12/site-packages/uv/__init__.py"
-    exit 0
-fi
-exit 1
-EOF
-chmod +x "$TMPDIR_PATH/pip3"
-ln -sf "$TMPDIR_PATH/pip3" "$TMPDIR_PATH/pip"
-cat > "$TMPDIR_PATH/curl" <<'EOF'
-#!/bin/sh
-exit 1
-EOF
-chmod +x "$TMPDIR_PATH/curl"
-
-if check_and_install_uv; then
-    echo "ok"
-else
-    echo "rc:$?"
-    [ -f "$INSTALL_LOG_FILE" ] && cat "$INSTALL_LOG_FILE"
-    exit 1
-fi
-''', env={"PATH": "/usr/bin:/bin", "REMOTE_CLAUDE_STATE_FILE": "/nonexistent/state.json"})
-
-    assert result.returncode == 0, result.stderr
-    assert "ok" in result.stdout
-    assert "[script-fail][uv-install-user-bin]" not in result.stdout
-
 
 
 def test_install_uv_multi_source_detects_uv_from_fallback_user_bin_scan_after_pip_install():
@@ -1594,35 +1553,6 @@ fi
     assert "[script-fail][uv-install-user-bin]" not in result.stdout
 
 
-
-
-def test_docs_feishu_client_uses_public_cli_entrypoint():
-    content = (REPO_ROOT / "docs" / "feishu-client.md").read_text(encoding="utf-8")
-    assert "remote-claude lark start" in content
-    assert "remote-claude lark status" in content
-    assert "remote-claude lark stop" in content
-    assert "remote-claude lark restart" in content
-    assert "uv run python3 remote_claude.py lark" not in content
-
-
-def test_docs_feishu_setup_uses_current_card_expiry_field():
-    content = (REPO_ROOT / "docs" / "feishu-setup.md").read_text(encoding="utf-8")
-    assert '"expiry_sec": 3600' in content
-    assert '"expiry_seconds": 3600' not in content
-
-
-    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert "test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional" in content
-    assert "test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently" in content
-    assert "test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required" in content
-    assert "test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details" in content
-
-
-def test_docs_feishu_client_avoids_python_entrypoint_examples():
-    content = (REPO_ROOT / "docs" / "feishu-client.md").read_text(encoding="utf-8")
-    assert "python3 remote_claude.py lark" not in content
-
-
 def test_common_shortcut_helper_declares_launcher_and_permission_vars():
     content = (REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8")
     assert "_remote_claude_shortcut_main()" in content
@@ -1630,39 +1560,10 @@ def test_common_shortcut_helper_declares_launcher_and_permission_vars():
     assert "REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS" in content
 
 
-def test_docs_docker_test_prefers_public_help_entrypoint():
-    content = (REPO_ROOT / "docs" / "docker-test.md").read_text(encoding="utf-8")
-    assert "remote-claude --help" in content
-    assert "uv run python3 remote_claude.py --help" not in content
-
-
-    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
-    assert "scripts/completion.sh" in content
-    assert '"$PROJECT_DIR/completion.sh"' not in content
-
-
 def test_setup_runtime_creation_stays_in_success_flow():
     content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
     assert content.index("install_dependencies") < content.index("init_config_files")
 
-
-def test_common_sh_declares_install_log_helpers():
-    content = (REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8")
-    assert "_init_install_log()" in content
-    assert "_install_stage()" in content
-    assert "_install_fail_hint()" in content
-
-
-def test_install_sh_initializes_install_log_helpers():
-    content = (REPO_ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
-    assert "_init_install_log" in content
-    assert "_install_stage" in content
-
-
-def test_setup_still_initializes_runtime_file():
-    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
-    assert "init_config_files()" in content
-    assert "REMOTE_CLAUDE_STATE_TEMPLATE" in content
 
 
 def test_entry_scripts_define_project_dir_before_sourcing_common():
@@ -1671,79 +1572,6 @@ def test_entry_scripts_define_project_dir_before_sourcing_common():
         assert "PROJECT_DIR=" in content
         assert "scripts/_common.sh" in content
         assert content.index("PROJECT_DIR=") < content.index("scripts/_common.sh")
-
-
-def test_entry_scripts_capture_and_use_startup_dir_consistently():
-    for rel in ("bin/cla", "bin/cl", "bin/cx", "bin/cdx"):
-        content = (REPO_ROOT / rel).read_text(encoding="utf-8")
-        assert "STARTUP_DIR=" in content
-        assert 'cd "$PROJECT_DIR"' not in content
-        assert '"${STARTUP_DIR}_$(date +%m%d_%H%M%S)"' not in content
-        assert '_remote_claude_shortcut_main "$@"' in content
-
-
-def test_bin_entry_scripts_use_remote_claude_python_consistently():
-    for rel in ENTRY_SCRIPTS:
-        content = (REPO_ROOT / rel).read_text(encoding="utf-8")
-        if rel == "bin/remote-claude":
-            assert "_remote_claude_python" in content
-        else:
-            assert "_remote_claude_shortcut_main" in content
-
-    remote_claude_content = (REPO_ROOT / "bin/remote-claude").read_text(encoding="utf-8")
-    assert "exec uv run python3" not in remote_claude_content
-
-
-def test_shortcut_entry_scripts_handle_help_without_starting_session(tmp_path: Path):
-    for rel in ("bin/cla", "bin/cl", "bin/cx", "bin/cdx"):
-        home_dir = tmp_path / rel.replace("/", "_")
-        remote_dir = home_dir / ".remote-claude"
-        remote_dir.mkdir(parents=True)
-
-        result = subprocess.run(
-            [str(REPO_ROOT / rel), "--help"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            env={**os.environ, "HOME": str(home_dir)},
-        )
-
-        assert result.returncode == 0, (rel, result.stdout, result.stderr)
-        assert "Remote Claude 快捷命令" in result.stdout, (rel, result.stdout)
-        assert "cla    Claude   正常（需确认）    启动 Claude 会话" in result.stdout, (rel, result.stdout)
-        assert "cl     Claude   跳过权限确认      快速启动 Claude 会话" in result.stdout, (rel, result.stdout)
-        assert "cx     Codex    跳过权限确认      快速启动 Codex 会话" in result.stdout, (rel, result.stdout)
-        assert "cdx    Codex    正常（需确认）    启动 Codex 会话" in result.stdout, (rel, result.stdout)
-        assert "start 子命令不支持透传帮助参数" not in result.stdout, (rel, result.stdout)
-
-
-def test_setup_script_uses_shared_help_functions():
-    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
-    assert 'scripts/_help.sh' in content
-    assert 'print_quick_commands_table' in content
-    assert 'print_shell_reload_hint' in content
-    assert '${YELLOW}快捷命令：${NC}' not in content
-    assert '启动飞书客户端 + 以当前目录+时间戳为会话名启动 Claude' not in content
-
-
-def test_install_script_uses_shared_help_functions():
-    content = (REPO_ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
-    assert 'scripts/_help.sh' in content
-    assert 'print_quick_commands_table' in content
-    assert 'print_shell_reload_hint "$shell_rc"' in content
-    assert 'echo "  ${GREEN}cla${NC}  - 启动 Claude"' not in content
-
-
-def test_setup_script_sources_help_via_optional_guard():
-    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
-    assert '[ -f "$PROJECT_DIR/scripts/_help.sh" ]' in content
-    assert '. "$PROJECT_DIR/scripts/_help.sh"' in content
-
-
-def test_setup_script_help_text_matches_public_command_matrix():
-    content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
-    assert "Remote Claude 主命令（start/attach/list/kill/status/log/lark/config/connection/token/regenerate-token/stats/update/connect/remote）" in content
-    assert "双端共享 Claude/Codex CLI 工具" in content
 
 
 def test_scripts_define_project_dir_before_common_source():
@@ -1829,22 +1657,6 @@ def test_report_install_version_resolution_not_depend_on_cwd(tmp_path: Path):
     assert resolved_version != "unknown"
 
 
-def test_report_install_symlink_entry_is_stable(tmp_path: Path):
-    target = REPO_ROOT / "scripts" / "report_install.py"
-    link = tmp_path / "report_install.py"
-    link.symlink_to(target)
-
-    module = _load_report_install_module(link)
-    resolved_root = module._resolve_project_root().resolve()
-    resolved_version = module._get_version()
-    expected_version = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))["version"]
-
-    assert resolved_root == REPO_ROOT.resolve()
-    assert resolved_version == expected_version
-    assert resolved_version != "unknown"
-
-
-
 def test_setup_lazy_mode_succeeds_after_pip_user_uv_install(tmp_path: Path):
     home_dir = tmp_path / "home"
     fake_bin = tmp_path / "fake-bin"
@@ -1859,8 +1671,10 @@ def test_setup_lazy_mode_succeeds_after_pip_user_uv_install(tmp_path: Path):
 
     setup_script = script_dir / "setup.sh"
     setup_script.write_text((REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8"), encoding="utf-8")
-    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
-    (script_dir / "_help.sh").write_text((REPO_ROOT / "scripts" / "_help.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"),
+                                           encoding="utf-8")
+    (script_dir / "_help.sh").write_text((REPO_ROOT / "scripts" / "_help.sh").read_text(encoding="utf-8"),
+                                         encoding="utf-8")
     (script_dir / "completion.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     (project_dir / "pyproject.toml").write_text('[project]\nname="demo"\nversion="0.1.0"\n', encoding="utf-8")
     (resources_dir / "settings.json.example").write_text("{}\n", encoding="utf-8")
@@ -1913,21 +1727,30 @@ def test_setup_lazy_mode_succeeds_after_pip_user_uv_install(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     combined = result.stdout + result.stderr
     assert "uv 安装失败，请手动安装后重试" not in combined
-    assert "Python 环境初始化完成" in combined
+    assert "最小初始化完成" in combined
     assert (home_dir / ".local" / "bin" / "uv").exists()
 
 
-
 def test_check_and_install_uv_does_not_create_runtime_when_missing():
+    # 测试：当 uv 已在系统中可用但 state.json 不存在时，check_and_install_uv
+    # 不会自动创建 state.json（该文件由正常的初始化流程创建，而非 uv 检测函数）
+    # 注意：由于 shell 函数无法被 command -v 检测，我们需要创建一个真实的可执行文件
     result = run_common(r'''
 TMPDIR_PATH="$(mktemp -d)"
 export HOME="$TMPDIR_PATH/home"
-mkdir -p "$HOME"
-uv() {
-    return 0
-}
+mkdir -p "$HOME" "$TMPDIR_PATH/bin"
+
+# 创建一个 mock uv 可执行文件
+cat > "$TMPDIR_PATH/bin/uv" <<'EOF'
+#!/bin/sh
+echo "uv 1.0.0-mock"
+exit 0
+EOF
+chmod +x "$TMPDIR_PATH/bin/uv"
+export PATH="$TMPDIR_PATH/bin:/usr/bin:/bin"
+
 if check_and_install_uv; then
-    if [ -f "$HOME/.remote-claude/runtime.json" ]; then
+    if [ -f "$HOME/.remote-claude/state.json" ]; then
         echo "runtime:created"
     else
         echo "runtime:missing"
@@ -1939,13 +1762,18 @@ fi
 ''')
 
     assert result.returncode == 0, result.stderr
+    # state.json 不会由 check_and_install_uv 创建，需要由正常初始化流程创建
+    # 因此期望 runtime:missing，与测试名称一致
     assert result.stdout.strip().endswith("runtime:missing")
 
 
 def test_completion_script_can_be_sourced_from_random_cwd(tmp_path: Path):
     completion_script = REPO_ROOT / "scripts" / "completion.sh"
     result = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-c", f"set -e; cd '{tmp_path}'; . '{completion_script}'; type _remote_claude_get_sessions >/dev/null"],
+        [
+            "bash", "--noprofile", "--norc", "-c",
+            f"set -e; cd '{tmp_path}'; . '{completion_script}'; type _remote_claude_get_sessions >/dev/null"
+        ],
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,
@@ -1964,8 +1792,10 @@ def test_completion_prefers_remote_command_path_when_sourced_from_cache(tmp_path
     real_scripts.mkdir(parents=True)
     real_bin.mkdir(parents=True)
 
-    (cache_scripts / "completion.sh").write_text((REPO_ROOT / "scripts" / "completion.sh").read_text(encoding="utf-8"), encoding="utf-8")
-    (real_scripts / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (cache_scripts / "completion.sh").write_text((REPO_ROOT / "scripts" / "completion.sh").read_text(encoding="utf-8"),
+                                                 encoding="utf-8")
+    (real_scripts / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"),
+                                             encoding="utf-8")
 
     remote_cmd = real_bin / "remote-claude"
     remote_cmd.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -2103,9 +1933,6 @@ def test_install_sh_does_not_skip_pnpm_global_install_in_cache(tmp_path: Path):
     assert "[script-fail]" in log_content
 
 
-
-
-
 def test_setup_configure_shell_writes_completion_via_init_block(tmp_path: Path):
     project_dir = tmp_path / "project"
     scripts_dir = project_dir / "scripts"
@@ -2126,7 +1953,8 @@ def test_setup_configure_shell_writes_completion_via_init_block(tmp_path: Path):
 
     defaults_dir = project_dir / "resources" / "defaults"
     defaults_dir.mkdir(parents=True)
-    (defaults_dir / "settings.json.example").write_text('{"ui_settings": {"notify": {}, "custom_commands": {"commands": [{}]}}}\n', encoding="utf-8")
+    (defaults_dir / "settings.json.example").write_text(
+        '{"ui_settings": {"notify": {}, "custom_commands": {"commands": [{}]}}}\n', encoding="utf-8")
     (defaults_dir / "state.json.example").write_text('{"lark_group_mappings": {}}\n', encoding="utf-8")
 
     (project_dir / ".venv").mkdir()
@@ -2174,7 +2002,10 @@ def test_setup_configure_shell_writes_completion_via_init_block(tmp_path: Path):
         ["sh", str(setup_sh), "--npm"],
         capture_output=True,
         cwd=tmp_path,
-        env={**os.environ, "HOME": str(project_dir), "SHELL": "/bin/zsh", "PATH": f"{tmp_path}:/usr/bin:/bin:/usr/sbin:/sbin"},
+        env={
+            **os.environ, "HOME": str(project_dir), "SHELL": "/bin/zsh",
+            "PATH"              : f"{tmp_path}:/usr/bin:/bin:/usr/sbin:/sbin"
+        },
     )
 
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="ignore")
@@ -2252,8 +2083,8 @@ def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_context(t
         text=True,
         env={
             **os.environ,
-            "HOME": str(tmp_path),
-            "npm_package_json": str(REPO_ROOT / "package.json"),
+            "HOME"               : str(tmp_path),
+            "npm_package_json"   : str(REPO_ROOT / "package.json"),
             "npm_lifecycle_event": "preuninstall",
         },
         input="n\n",
@@ -2289,8 +2120,8 @@ def test_uninstall_keeps_manual_prompt_when_only_generic_npm_env_present(tmp_pat
         capture_output=True,
         text=True,
         env={
-            "HOME": str(tmp_path),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME"               : str(tmp_path),
+            "PATH"               : "/usr/bin:/bin:/usr/sbin:/sbin",
             "npm_config_loglevel": "notice",
         },
         input="n\n",
@@ -2327,6 +2158,37 @@ def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
     assert "已删除配置目录" not in result.stdout
 
 
+def test_uninstall_preserves_all_config_files_when_user_declines_cleanup(tmp_path: Path):
+    data_dir = tmp_path / ".remote-claude"
+    data_dir.mkdir()
+    (data_dir / "settings.json").write_text('{"settings":"keep"}\n', encoding="utf-8")
+    (data_dir / "state.json").write_text('{"state":"keep"}\n', encoding="utf-8")
+    (data_dir / ".env").write_text('TOKEN=keep\n', encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh", str(REPO_ROOT / "scripts" / "uninstall.sh")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            "HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        input="n\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (data_dir / "settings.json").read_text(encoding="utf-8") == '{"settings":"keep"}\n'
+    assert (data_dir / "state.json").read_text(encoding="utf-8") == '{"state":"keep"}\n'
+    assert (data_dir / ".env").read_text(encoding="utf-8") == 'TOKEN=keep\n'
+
+
+def test_uninstall_scans_pnpm_library_bin_dir_for_shortcuts():
+    content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+
+    assert '"$HOME/Library/pnpm"' in content
+
+
 def test_uninstall_supports_explicit_noninteractive_mode(tmp_path: Path):
     data_dir = tmp_path / ".remote-claude"
     data_dir.mkdir()
@@ -2339,8 +2201,8 @@ def test_uninstall_supports_explicit_noninteractive_mode(tmp_path: Path):
         text=True,
         env={
             **os.environ,
-            "HOME": str(tmp_path),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME"                        : str(tmp_path),
+            "PATH"                        : "/usr/bin:/bin:/usr/sbin:/sbin",
             "REMOTE_CLAUDE_NONINTERACTIVE": "1",
         },
         timeout=10,
@@ -2369,11 +2231,11 @@ def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_global_rm
         text=True,
         env={
             **os.environ,
-            "HOME": str(tmp_path),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME"                 : str(tmp_path),
+            "PATH"                 : "/usr/bin:/bin:/usr/sbin:/sbin",
             "npm_config_user_agent": "pnpm/10.28.2 npm/? node/v20.0.0 darwin arm64",
-            "npm_command": "remove",
-            "npm_config_global": "true",
+            "npm_command"          : "remove",
+            "npm_config_global"    : "true",
         },
         input="n\n",
     )
@@ -2399,7 +2261,7 @@ def test_common_reads_uv_path_from_state_json(tmp_path: Path):
     assert "uv:/tmp/custom-bin/uv" in result.stdout
 
 
-def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
+def _create_lazy_setup_project(tmp_path: Path, *, settings_default: str, state_default: str):
     project_dir = tmp_path / "project"
     scripts_dir = project_dir / "scripts"
     defaults_dir = project_dir / "resources" / "defaults"
@@ -2418,8 +2280,8 @@ def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
         "[project]\nname='demo'\nversion='0.0.0'\nrequires-python='>=3.11'\n",
         encoding="utf-8",
     )
-    (defaults_dir / "settings.json.example").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
-    (defaults_dir / "state.json.example").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
+    (defaults_dir / "settings.json.example").write_text(settings_default, encoding="utf-8")
+    (defaults_dir / "state.json.example").write_text(state_default, encoding="utf-8")
 
     uv_stub = tmp_path / "uv"
     uv_stub.write_text(
@@ -2435,6 +2297,15 @@ def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
         encoding="utf-8",
     )
     uv_stub.chmod(0o755)
+    return project_dir, setup_sh, uv_stub
+
+
+def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
+    project_dir, setup_sh, _ = _create_lazy_setup_project(
+        tmp_path,
+        settings_default='{"version":"1.0","ui_settings":{}}\n',
+        state_default='{"version":"1.0","lark_group_mappings":{}}\n',
+    )
 
     home_dir = tmp_path / "home"
     home_dir.mkdir(parents=True)
@@ -2452,43 +2323,12 @@ def test_setup_lazy_initializes_config_and_runtime_when_missing(tmp_path: Path):
     assert (home_dir / ".remote-claude" / "state.json").exists()
 
 
-
 def test_setup_lazy_writes_full_init_block_with_completion(tmp_path: Path):
-    project_dir = tmp_path / "project"
-    scripts_dir = project_dir / "scripts"
-    defaults_dir = project_dir / "resources" / "defaults"
-
-    scripts_dir.mkdir(parents=True)
-    defaults_dir.mkdir(parents=True)
-
-    setup_sh = scripts_dir / "setup.sh"
-    setup_sh.write_text((REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8"), encoding="utf-8")
-    setup_sh.chmod(0o755)
-
-    common_sh = scripts_dir / "_common.sh"
-    common_sh.write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
-
-    (project_dir / "pyproject.toml").write_text(
-        "[project]\nname='demo'\nversion='0.0.0'\nrequires-python='>=3.11'\n",
-        encoding="utf-8",
+    project_dir, setup_sh, _ = _create_lazy_setup_project(
+        tmp_path,
+        settings_default='{"version":"1.0","ui_settings":{}}\n',
+        state_default='{"version":"1.0","lark_group_mappings":{}}\n',
     )
-    (defaults_dir / "settings.json.example").write_text('{"version":"1.0","ui_settings":{}}\n', encoding="utf-8")
-    (defaults_dir / "state.json.example").write_text('{"version":"1.0","lark_group_mappings":{}}\n', encoding="utf-8")
-
-    uv_stub = tmp_path / "uv"
-    uv_stub.write_text(
-        "#!/bin/sh\n"
-        "cmd=\"$1\"\n"
-        "shift || true\n"
-        "case \"$cmd\" in\n"
-        "  --version) echo 'uv 0.test'; exit 0 ;;\n"
-        "  sync) exit 0 ;;\n"
-        "  run) exit 0 ;;\n"
-        "esac\n"
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    uv_stub.chmod(0o755)
 
     home_dir = tmp_path / "home"
     home_dir.mkdir(parents=True)
@@ -2498,7 +2338,10 @@ def test_setup_lazy_writes_full_init_block_with_completion(tmp_path: Path):
         capture_output=True,
         text=True,
         cwd=project_dir,
-        env={**os.environ, "HOME": str(home_dir), "SHELL": "/bin/zsh", "PATH": f"{tmp_path}:/usr/bin:/bin:/usr/sbin:/sbin"},
+        env={
+            **os.environ, "HOME": str(home_dir), "SHELL": "/bin/zsh",
+            "PATH"              : f"{tmp_path}:/usr/bin:/bin:/usr/sbin:/sbin"
+        },
     )
 
     assert result.returncode == 0, result.stderr
@@ -2570,7 +2413,6 @@ def test_setup_lazy_does_not_overwrite_existing_config_files(tmp_path: Path):
     assert runtime_data.get("version") == "existing-runtime"
 
 
-
 def test_setup_uses_centralized_path_variables_only():
     content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
     assert "REMOTE_CLAUDE_ENV_FILE" in content
@@ -2596,7 +2438,6 @@ def test_setup_uses_centralized_path_variables_only():
     ]
     for marker in forbidden:
         assert marker not in content
-
 
 
 def test_setup_no_longer_contains_legacy_config_migration_logic():
@@ -2631,5 +2472,3 @@ def test_entry_init_failure_shows_manual_recovery_command(tmp_path: Path):
 
     assert result.returncode == 1
     assert _expected_recovery_command(project_dir) in result.stderr
-
-

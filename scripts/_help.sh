@@ -54,6 +54,12 @@ Remote Claude - 双端共享 Claude/Codex CLI 工具
   update           更新到最新版本           remote-claude update
   connect          连接到远程会话           remote-claude connect <host>
   remote           远程控制                 remote-claude remote shutdown <host>:<port>/<session> --token <TOKEN>
+  uninstall        清理环境                 remote-claude uninstall
+
+快捷参数：
+  -. 或 --here     以当前目录名启动会话     remote-claude -.
+                                            remote-claude --here
+  等价于: remote-claude start <当前目录名>
 
 选项：
   --remote    远程连接模式

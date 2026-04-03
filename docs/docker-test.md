@@ -84,8 +84,7 @@ test-results/
 │   ├── .venv/                   # Python 虚拟环境（便携式）
 │   └── node_modules/
 │       └── remote-claude/       # 完整项目代码
-│           ├── bin/             # 可执行脚本（cla, cl, cx, cdx）
-│           └── remote_claude.py # 主入口
+│           └── bin/             # 可执行脚本（remote-claude, cla, cl, cx, cdx）
 ├── test_report.md               # 测试报告
 └── version.txt                  # 版本号
 ```
@@ -108,10 +107,11 @@ remote-claude --help
 
 ### 可执行脚本
 
-`bin/` 目录下提供以下快捷命令：
+`bin/` 目录下提供公开 CLI 主入口和常用快捷命令：
 
 | 脚本 | 说明 |
 |------|------|
+| `remote-claude` | 公开 CLI 主入口 |
 | `cla` | 启动 Claude 会话 |
 | `cl` | 快速启动 Claude 会话（跳过权限确认） |
 | `cx` | 快速启动 Codex 会话（跳过权限确认） |

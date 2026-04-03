@@ -1548,16 +1548,8 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
             "type": "default",
             "disabled": True,
         }
-    elif urgent_enabled:
-        urgent_label = "🔔 加急通知: 开"
-        urgent_button = {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": urgent_label},
-            "type": "default",
-            "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_urgent"}}]
-        }
     else:
-        urgent_label = "🔕 加急通知: 关"
+        urgent_label = "🔔 加急通知: 开" if urgent_enabled else "🔕 加急通知: 关"
         urgent_button = {
             "tag": "button",
             "text": {"tag": "plain_text", "content": urgent_label},

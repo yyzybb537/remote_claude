@@ -49,8 +49,14 @@ def test_main_help_exits_cleanly(capsys):
 
     assert exc_info.value.code == 0
     out = capsys.readouterr().out
-    assert "usage: remote_claude.py lark" in out
+    assert "usage: remote-claude lark" in out
+    assert "usage: remote_claude.py lark" not in out
     assert "查看飞书客户端状态" in out
+
+
+def test_main_help_includes_uninstall_command():
+    content = (REPO_ROOT / "remote_claude.py").read_text(encoding="utf-8")
+    assert 'subparsers.add_parser("uninstall"' in content
 
 
 def test_bin_remote_claude_lark_help_exits_cleanly_without_env_prompt(tmp_path):
@@ -66,7 +72,8 @@ def test_bin_remote_claude_lark_help_exits_cleanly_without_env_prompt(tmp_path):
     )
 
     assert result.returncode == 0
-    assert "usage: remote_claude.py lark" in result.stdout
+    assert "usage: remote-claude lark" in result.stdout
+    assert "usage: remote_claude.py lark" not in result.stdout
     assert "飞书客户端尚未配置" not in result.stdout
 
 
@@ -78,7 +85,8 @@ def test_lark_without_subcommand_prints_help_and_returns_zero():
 
     assert result == 0
     text = output.getvalue()
-    assert "usage: remote_claude.py lark" in text
+    assert "usage: remote-claude lark" in text
+    assert "usage: remote_claude.py lark" not in text
     assert "查看飞书客户端状态" in text
 
 
@@ -97,6 +105,7 @@ def test_bin_remote_claude_help_exits_cleanly_without_spawning_session(tmp_path)
     assert result.returncode == 0
     assert "Remote Claude - 双端共享 Claude/Codex CLI 工具" in result.stdout
     assert "启动新会话" in result.stdout
+    assert "remote_claude.py" not in result.stdout
 
 
 def test_main_help_uses_launcher_wording_only(tmp_path):
@@ -138,6 +147,7 @@ def test_management_subcommand_help_and_empty_invocation_do_not_create_side_effe
         ["remote", "--help"],
         ["token", "--help"],
         ["regenerate-token", "--help"],
+        ["uninstall", "--help"],
         ["connection", "list", "--help"],
         ["connection", "show", "--help"],
         ["connection", "delete", "--help"],

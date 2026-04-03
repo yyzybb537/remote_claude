@@ -27,7 +27,6 @@ services:
       - UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
       - SKIP_CLAUDE_LOGIN=1  # 跳过 Claude 登录
       - CI=true              # CI 模式
-      - TEST_PARALLEL=true   # 启用并行测试
     stdin_open: true
     tty: true
 

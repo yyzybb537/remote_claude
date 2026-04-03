@@ -1133,6 +1133,29 @@ def cmd_update(args):
     return 0
 
 
+def cmd_uninstall(args):
+    """执行本地清理并提示卸载命令"""
+    uninstall_script = SCRIPT_DIR / "scripts" / "uninstall.sh"
+    if not uninstall_script.exists():
+        print(f"✗ 未找到卸载脚本: {uninstall_script}")
+        return 1
+
+    command = ["sh", str(uninstall_script)]
+    if getattr(args, "yes", False):
+        command.append("--yes")
+
+    result = subprocess.run(command, cwd=str(SCRIPT_DIR))
+    if result.returncode != 0:
+        return result.returncode
+
+    print()
+    print("Remote Claude 本地清理已完成。")
+    print("如需卸载包，请按安装方式执行：")
+    print("  npm uninstall -g remote-claude")
+    print("  pnpm remove -g remote-claude")
+    return 0
+
+
 def cmd_connect(args):
     """连接到远程会话"""
     # 解析 host/session/port
@@ -1452,6 +1475,7 @@ def cmd_connection(args):
 
 def main():
     parser = argparse.ArgumentParser(
+        prog="remote-claude",
         description="Remote Claude - 双端共享 Claude/Codex CLI 工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -1698,6 +1722,11 @@ def main():
     # update 命令
     update_parser = subparsers.add_parser("update", help="更新 remote-claude 到最新版本")
     update_parser.set_defaults(func=cmd_update)
+
+    # uninstall 命令
+    uninstall_parser = subparsers.add_parser("uninstall", help="清理本地数据并提示卸载命令")
+    uninstall_parser.add_argument("-y", "--yes", action="store_true", help="跳过确认，直接执行清理")
+    uninstall_parser.set_defaults(func=cmd_uninstall)
 
     # connect 命令
     connect_parser = subparsers.add_parser("connect", help="连接到远程会话")

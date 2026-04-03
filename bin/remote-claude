@@ -15,6 +15,14 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 STARTUP_DIR="${STARTUP_DIR:-$(pwd)}"
 
+_use_here_mode=0
+case "${1:-}" in
+    -.|--here)
+        _use_here_mode=1
+        shift
+        ;;
+esac
+
 # -h/--help 与纯管理帮助应在 shell 层短路，避免触发 _common.sh 的 lazy init
 case "${1:-}" in
     -h|--help)
@@ -37,7 +45,7 @@ case "${1:-}" in
             exit $?
         fi
         ;;
-    config|connection|conn|connect|remote|token|regenerate-token|lark)
+    config|connection|conn|connect|remote|token|regenerate-token|lark|uninstall)
         second_arg="${2:-}"
         third_arg="${3:-}"
         if [ "$second_arg" = "--help" ] || [ "$second_arg" = "-h" ] \
@@ -48,7 +56,7 @@ case "${1:-}" in
                 python3 "$PROJECT_DIR/remote_claude.py" "$@"
                 RC=$?
                 if [ "$RC" -eq 0 ]; then
-                  return
+                    exit 0
                 fi
             fi
             _remote_claude_python "$@"
@@ -103,6 +111,11 @@ fi
 # lark 子命令：仅在真实执行管理动作时检查 .env，help 不应触发交互配置
 if [ "$1" = "lark" ] && [ "${2:-}" != "--help" ] && [ "${2:-}" != "-h" ]; then
     sh "${PROJECT_DIR}/scripts/check-env.sh"
+fi
+
+if [ "$_use_here_mode" = "1" ]; then
+    _session_name="$(basename "$STARTUP_DIR")"
+    set -- start "$_session_name" "$@"
 fi
 
 # 在启动目录执行入口点，保持调用方 cwd

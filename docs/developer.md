@@ -18,7 +18,9 @@ Remote Claude 是共享 Claude/Codex CLI 会话的双端工具：本地会话运
 
 ## 项目结构
 
-- `remote_claude.py`：CLI 主入口，负责参数解析与命令分发
+- `remote-claude`：公开 CLI 主入口
+- `remote_claude.py`：CLI 实现入口，负责参数解析与命令分发
+- `bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx`：面向常用场景的快捷启动脚本
 - `server/`：PTY 代理、输出广播、远程连接、token 管理
 - `client/`：本地 Unix Socket / 远程 WebSocket 客户端
 - `lark_client/`：飞书消息、卡片交互与共享状态展示

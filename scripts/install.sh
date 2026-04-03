@@ -1,7 +1,8 @@
 #!/bin/sh
 #
-# Remote Claude 一键安装脚本
-# 自动安装 uv 并创建虚拟环境，用户无需预装 Python
+# Remote Claude 安装引导脚本
+# 负责准备 uv / Python 运行时，并调用 scripts/setup.sh 完成完整初始化
+# 用户无需预装 Python
 #
 # 用法：curl -fsSL https://raw.githubusercontent.com/.../scripts/install.sh | sh
 # 或：./scripts/install.sh
@@ -125,6 +126,7 @@ show_completion() {
     printf '\n'
     print_quick_commands_table
     printf '%b\n' "  ${GREEN}remote-claude${NC} - 管理工具"
+    print_info "公开入口统一为 shell launcher（如 /usr/local/bin/remote-claude 或 ~/.local/bin/remote-claude）；项目 .venv 仅作内部运行时，不会加入用户 PATH"
     printf '\n'
     print_shell_reload_hint "$shell_rc"
 }
@@ -148,7 +150,7 @@ main() {
         exit 0
     fi
 
-    print_banner "Remote Claude 一键安装" "零依赖安装 - 自动配置 Python 环境"
+    print_banner "Remote Claude 安装引导" "准备运行时并调用 setup.sh 完成初始化"
 
     # 延迟模式：只运行必要步骤
     if $LAZY_MODE; then

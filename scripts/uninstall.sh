@@ -4,6 +4,25 @@
 
 set -e
 
+RC_UNINSTALL_ASSUME_YES=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -y|--yes)
+            RC_UNINSTALL_ASSUME_YES=1
+            ;;
+        -h|--help)
+            echo "Usage: uninstall.sh [-y|--yes]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
 SOURCE="$0"
 while [ -L "$SOURCE" ]; do
     BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -48,6 +67,10 @@ _is_npm_context() {
     return 1
 }
 
+_assume_yes() {
+    [ "$RC_UNINSTALL_ASSUME_YES" = "1" ]
+}
+
 _is_noninteractive() {
     case "${REMOTE_CLAUDE_NONINTERACTIVE:-}" in
         1|true|TRUE|yes|YES)
@@ -65,12 +88,18 @@ cleanup_symlinks() {
     RC_REMOVED_SHORTCUT_COUNT=0
     export RC_REMOVED_SHORTCUT_COUNT
 
+    npm_prefix=$(npm config get prefix 2>/dev/null || true)
+    pnpm_home=${PNPM_HOME:-}
+
     # 扩展的 bin 目录列表（覆盖常见安装路径）
     for dir in /usr/local/bin /usr/bin "$HOME/bin" "$HOME/.local/bin" "$HOME/local/bin" \
                /opt/homebrew/bin /usr/local/Cellar/node/*/bin \
-               "$HOME/.nvm/*/bin" "$HOME/.config/nvm/*/bin"; do
+               "$HOME/.nvm/*/bin" "$HOME/.config/nvm/*/bin" \
+               "$HOME/Library/pnpm" "$HOME/Library/pnpm/global/*" \
+               "$npm_prefix/bin" "$pnpm_home"; do
         # 如果目录存在（处理通配符）
         for bindir in $dir; do
+            [ -n "$bindir" ] || continue
             [ -d "$bindir" ] || continue
             rc_remove_shortcuts_from_dir "$bindir"
         done
@@ -87,7 +116,7 @@ cleanup_symlinks() {
 cleanup_shell_config() {
     print_info "清理 shell 配置..."
 
-    if _is_npm_context || _is_noninteractive; then
+    if _assume_yes || _is_npm_context || _is_noninteractive; then
         print_detail "非交互卸载跳过 shell 配置清理"
         return
     fi
@@ -218,7 +247,7 @@ cleanup_uv_cache() {
     print_info "检查 uv 缓存..."
 
     # npm 环境、CI 或显式非交互模式跳过交互式询问
-    if _is_npm_context || _is_noninteractive; then
+    if _assume_yes || _is_npm_context || _is_noninteractive; then
         print_detail "非交互环境跳过 uv 缓存清理（保留用户工具）"
         return
     fi
@@ -261,7 +290,7 @@ cleanup_config_files() {
     fi
 
     # npm/pnpm hook、CI 或显式非交互模式：静默完全删除
-    if _is_npm_context || _is_noninteractive; then
+    if _assume_yes || _is_npm_context || _is_noninteractive; then
         rm -rf "$REMOTE_CLAUDE_HOME_DIR"
         print_success "已删除配置目录: $REMOTE_CLAUDE_HOME_DIR"
         return
@@ -296,7 +325,7 @@ cleanup_config_files() {
                     print_detail "已删除: $file"
                 fi
             done
-            if rmdir "$REMOTE_CLAUDE_HOME_DIR" 2>/dev/null; then
+            if rm -rf "$REMOTE_CLAUDE_HOME_DIR" 2>/dev/null; then
                 print_success "已删除配置目录: $REMOTE_CLAUDE_HOME_DIR"
             else
                 print_success "已删除配置文件"

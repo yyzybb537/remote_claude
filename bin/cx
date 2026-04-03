@@ -18,7 +18,4 @@ fi
 _init_startup_dir
 _require_startup_dir || exit 1
 
-# REMOTE_CLAUDE_SHORTCUT_LAUNCHER="Codex"
-# REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS="--dangerously-bypass-approvals-and-sandbox"
-# _remote_claude_shortcut_main "$@"
 _remote_claude_shortcut_help_or_main "Codex" "--dangerously-bypass-approvals-and-sandbox" "$@"

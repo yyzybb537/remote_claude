@@ -12,7 +12,7 @@
   "scripts": {
     "preinstall": "sh scripts/preinstall.sh",
     "postinstall": "sh scripts/install.sh --npm",
-    "preuninstall": "sh scripts/uninstall.sh"
+    "preuninstall": "sh scripts/uninstall.sh -y"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -38,7 +38,7 @@
     "resources/",
     "docs/*.md",
     "docs/*.json",
-    "docker/scripts/docker-test.sh",
+    "docker/",
     ".npmrc"
   ],
   "os": [

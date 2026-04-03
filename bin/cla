@@ -18,9 +18,4 @@ fi
 _init_startup_dir
 _require_startup_dir || exit 1
 
-# REMOTE_CLAUDE_SHORTCUT_LAUNCHER="Claude"
-# REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS=""
-# 保持入口脚本直接引用统一 Python 入口，便于测试与发布产物校验
-# _remote_claude_python
-# _remote_claude_shortcut_main "$@"
 _remote_claude_shortcut_help_or_main "Claude" "" "$@"

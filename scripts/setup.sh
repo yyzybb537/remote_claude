@@ -41,8 +41,10 @@ print_warnings() {
     fi
 }
 
-# 构建完整 shell 初始化块（PATH + 自动补全）
+# 构建完整 shell 初始化块（仅暴露公开 shell launcher 入口，不暴露项目 .venv 运行时）
 _build_shell_init_block() {
+    # 用户 PATH 只收口到 ~/.local/bin；公开入口由该目录中的 shell launcher 提供。
+    # 项目内 .venv 仅供 launcher/脚本内部调用，绝不写入用户 shell PATH。
     printf '%s' "export PATH=\"\$HOME/.local/bin:\$PATH\"; . \"$PROJECT_DIR/scripts/completion.sh\""
 }
 
@@ -392,22 +394,16 @@ init_config_files() {
         return 1
     fi
 
-    rc_copy_if_missing "$REMOTE_CLAUDE_SETTINGS_TEMPLATE" "$REMOTE_CLAUDE_SETTINGS_FILE" "默认配置"
-    if [ -f "$REMOTE_CLAUDE_SETTINGS_FILE" ] && [ ! -s "$REMOTE_CLAUDE_SETTINGS_FILE" ]; then
+    if [ -f "$REMOTE_CLAUDE_SETTINGS_FILE" ]; then
         print_info "配置文件已存在: $REMOTE_CLAUDE_SETTINGS_FILE"
-    elif [ -f "$REMOTE_CLAUDE_SETTINGS_FILE" ] && [ "$(wc -c < "$REMOTE_CLAUDE_SETTINGS_FILE" 2>/dev/null)" -gt 0 ]; then
-        if ! cmp -s "$REMOTE_CLAUDE_SETTINGS_TEMPLATE" "$REMOTE_CLAUDE_SETTINGS_FILE" 2>/dev/null; then
-            print_info "配置文件已存在: $REMOTE_CLAUDE_SETTINGS_FILE"
-        fi
+    else
+        rc_copy_if_missing "$REMOTE_CLAUDE_SETTINGS_TEMPLATE" "$REMOTE_CLAUDE_SETTINGS_FILE" "默认配置"
     fi
 
-    rc_copy_if_missing "$REMOTE_CLAUDE_STATE_TEMPLATE" "$REMOTE_CLAUDE_STATE_FILE" "运行时配置"
-    if [ -f "$REMOTE_CLAUDE_STATE_FILE" ] && [ ! -s "$REMOTE_CLAUDE_STATE_FILE" ]; then
+    if [ -f "$REMOTE_CLAUDE_STATE_FILE" ]; then
         print_info "运行时配置已存在: $REMOTE_CLAUDE_STATE_FILE"
-    elif [ -f "$REMOTE_CLAUDE_STATE_FILE" ] && [ "$(wc -c < "$REMOTE_CLAUDE_STATE_FILE" 2>/dev/null)" -gt 0 ]; then
-        if ! cmp -s "$REMOTE_CLAUDE_STATE_TEMPLATE" "$REMOTE_CLAUDE_STATE_FILE" 2>/dev/null; then
-            print_info "运行时配置已存在: $REMOTE_CLAUDE_STATE_FILE"
-        fi
+    else
+        rc_copy_if_missing "$REMOTE_CLAUDE_STATE_TEMPLATE" "$REMOTE_CLAUDE_STATE_FILE" "运行时配置"
     fi
 }
 
@@ -424,7 +420,7 @@ set_permissions() {
     print_success "已设置执行权限"
 }
 
-# 安装快捷命令（符号链接到 bin 目录）
+# 安装快捷命令（符号链接到公开 bin 目录；项目 .venv 仅作内部运行时）
 configure_shell() {
     print_header "安装快捷命令"
 
@@ -455,6 +451,7 @@ configure_shell() {
     fi
 
     print_success "已安装 $REMOTE_CLAUDE_SHORTCUT_COMMANDS 到 $BIN_DIR"
+    print_info "公开入口统一为 $BIN_DIR/remote-claude shell launcher；项目 .venv 仅供内部运行时使用，不会加入用户 PATH"
     print_info "  cla           - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Claude"
     print_info "  cl            - 同 cla，但跳过权限确认"
     print_info "  cx            - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Codex（跳过权限）"
@@ -529,7 +526,7 @@ main() {
         create_directories || { rc=$?; _log_script_fail "setup-lazy-config" "create_directories" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
         init_config_files || { rc=$?; _log_script_fail "setup-lazy-config" "init_config_files" "$rc"; _install_fail_hint "$rc"; exit "$rc"; }
         _install_stage "setup-lazy-done"
-        print_success "Python 环境初始化完成"
+        print_success "最小初始化完成"
         return 0
     fi
 

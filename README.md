@@ -29,29 +29,33 @@ curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/script
 
 ### 启动
 
+`remote-claude` 是公开 CLI 主入口，`cla`、`cl`、`cx`、`cdx` 是面向常用场景的快捷启动脚本。
+
 | 命令 | CLI | 权限模式 | 用途 |
 |------|-----|---------|------|
-| `cla` | Claude | 正常（需确认） | 启动 Claude 会话 |
+| `cla` | Claude | 默认权限模式 | 启动 Claude 会话 |
 | `cl` | Claude | 跳过权限确认 | 快速启动 Claude 会话 |
 | `cx` | Codex | 跳过权限确认 | 快速启动 Codex 会话 |
-| `cdx` | Codex | 正常（需确认） | 启动 Codex 会话 |
-| `remote-claude start <name>` | Claude/Codex | 按配置执行 | 启动命名会话 |
+| `cdx` | Codex | 默认权限模式 | 启动 Codex 会话 |
+| `remote-claude start <name>` | Claude/Codex | 按启动器配置执行 | 启动命名会话 |
 | `remote-claude attach <name>` | Claude/Codex | 连接已有会话 | 从另一个终端接入 |
 
 ```bash
 cla        # 在当前目录启动 Claude 会话
 cl         # 启动 Claude，跳过权限确认
 cx         # 启动 Codex，跳过权限确认
-cdx        # 启动 Codex，需确认权限
+cdx        # 启动 Codex，使用默认权限模式
 remote-claude start demo
 remote-claude attach demo
 ```
 
-### 从其他终端连接
+### 从其他终端连接与清理
 
 ```bash
 remote-claude list              # 查看所有会话
 remote-claude attach <会话名>   # 连接现有会话
+remote-claude uninstall         # 清理本地数据并提示 npm/pnpm 卸载命令
+remote-claude uninstall --yes   # 跳过确认，直接执行清理
 ```
 
 ## 飞书客户端

@@ -42,7 +42,7 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 
 ## 架构速览
 
-- `bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx`、`bin/remote-claude` 是 shell launcher；实际 CLI 逻辑集中在 `remote_claude.py`。
+- `bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx`、`bin/remote-claude` 是 shell launcher；公开 CLI 主入口是 `remote-claude`，实际实现位于 `remote_claude.py`。
 - `package.json` 负责 npm 分发与安装脚本，`pyproject.toml` 负责 Python 依赖与 pytest 配置；这是 npm + Python 双入口项目。
 - `server/` 负责 PTY 代理、输出广播、ANSI 解析和终端状态恢复。
 - `client/base_client.py` 抽象终端客户端共性；本地/远程客户端仅实现传输差异。

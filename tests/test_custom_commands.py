@@ -12,14 +12,16 @@
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+import remote_claude
 
 from utils.runtime_config import (
     Launcher,
     Settings,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -209,8 +211,8 @@ class TestDirStartCallback:
     def test_dir_start_callback_without_cli_command(self):
         """测试 dir_start 回调无 cli_command 时使用默认值"""
         value = {
-            "action": "dir_start",
-            "path": "/path/to/project",
+            "action"      : "dir_start",
+            "path"        : "/path/to/project",
             "session_name": "myproject",
         }
         # 验证默认值
@@ -245,81 +247,52 @@ def test_docker_negative_test_uses_launcher_for_codex_startup():
     assert "start_cmd=\"uv run remote-claude start '$session' --cli codex\"" not in content
 
 
-def test_docker_basic_command_check_accepts_shared_python_entrypoint_marker():
+def test_docker_basic_command_check_no_longer_depends_on_help_copy():
     content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert 'grep -Eq "remote-claude|_remote_claude_shortcut_main" "bin/cla"' in content
+    assert 'uv run remote-claude --help > "$RESULTS_DIR/cmd_help.log" 2>&1' in content
+    assert 'log_success "remote-claude --help 执行成功"' in content
 
 
-def test_docker_basic_command_check_accepts_shared_feishu_start_marker():
+def test_docker_test_script_no_longer_contains_parallel_dependencies_and_keeps_serial_loops():
     content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert 'grep -Eq "lark start|_remote_claude_shortcut_main" "bin/cla"' in content
+    assert "TEST_PARALLEL" not in content
+    assert 'parallel --' not in content
+    assert ' --jobs ' not in content
+    assert 'for test in "${core_tests[@]}"; do' in content
+    assert 'for test in "${non_core_tests[@]}"; do' in content
 
 
-def test_docker_parallel_test_aggregation_uses_test_path_not_filesystem_check():
-    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert 'if [[ "$test" == *"::"* ]] || [ -f "$test" ]; then' in content
-    assert 'done <<< "$core_results"' in content
-    assert 'done <<< "$non_core_results"' in content
+def test_docker_compose_test_does_not_enable_parallel_mode():
+    content = (REPO_ROOT / "docker" / "docker-compose.test.yml").read_text(encoding="utf-8")
+    assert 'TEST_PARALLEL=true' not in content
+    assert 'CI=true' in content
 
 
-def test_docker_parallel_test_uses_tab_delimited_output_without_tagstring():
-    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert 'parallel --env RESULTS_DIR -j "$parallel_jobs"' in content
-    assert 'python3 -c "import os, subprocess, sys' in content
-    assert "--tagstring '{1}'" not in content
-    assert "while IFS=$'\\t' read -r status test test_type; do" in content
-    assert "printf 'PASS\\t%s\\t%s\\n' \"$test\" \"$test_type\"" in content
-    assert 'python3 -c "import os, subprocess, sys' in content
-    assert 'echo "PASS:$test:$test_type"' not in content
-    assert 'echo "FAIL:$test:$test_type"' not in content
-
-
-def test_docker_parallel_test_uses_python_worker_and_checks_parallel_rc():
-    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert 'parallel_runner_prefix' not in content
-    assert 'run_single_test {} core' not in content
-    assert 'run_single_test {} non_core' not in content
-    assert 'parallel --env RESULTS_DIR -j "$parallel_jobs"' in content
-    assert 'core_parallel_rc=$?' in content
-    assert 'non_core_parallel_rc=$?' in content
-    assert 'if [ $core_parallel_rc -ne 0 ]; then' in content
-    assert 'if [ $non_core_parallel_rc -ne 0 ]; then' in content
-
-
-def test_docker_parallel_test_skips_blank_parallel_output_lines_before_counting_failures():
-    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert '[[ -n "$status" ]] || continue' in content
-    assert '[[ -n "$test" ]] || continue' in content
-    assert 'trap ' in content
-    assert 'TEST_INTERRUPTED=1' in content
-    assert '检测到中断信号，停止并行测试...' in content
-    assert '测试被用户中断' in content
-    assert 'log_error "核心测试文件不存在: $test"' in content
-    assert 'log_error "非核心测试文件不存在: $test"' in content
+def test_dockerfile_test_no_longer_installs_parallel_or_parallel_home_setup():
+    content = (REPO_ROOT / "docker" / "Dockerfile.test").read_text(encoding="utf-8")
+    assert ' parallel \\' not in content
+    assert ' parallel && \\' not in content
+    assert '~/.parallel' not in content
+    assert ' jq \\' in content or ' jq && \\' in content
 
 
 def test_docker_negative_test_uses_settings_launchers_schema():
-    content = (Path(__file__).resolve().parents[1] / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
+    content = (Path(__file__).resolve().parents[1] / "docker" / "scripts" / "docker-test.sh").read_text(
+        encoding="utf-8")
     assert "$HOME/.remote-claude/settings.json" in content
     assert ".launchers = [{\"name\": \"Invalid\", \"cli_type\": \"claude\", \"command\": \"/nonexistent/path/to/claude-invalid\"" in content
     assert "config.json" not in content
     assert "session.custom_commands" not in content
 
 
-def test_bin_cla_delegates_to_shared_shortcut_main():
-    content = (REPO_ROOT / "bin" / "cla").read_text(encoding="utf-8")
-    assert '_remote_claude_shortcut_main "$@"' in content
-    assert 'REMOTE_CLAUDE_SHORTCUT_LAUNCHER="Claude"' in content
-
-
 def test_remote_list_does_not_require_session_name():
     from remote_claude import validate_remote_args
 
     args = type("Args", (), {
-        "host": "example.com",
-        "port": 8765,
+        "host" : "example.com",
+        "port" : 8765,
         "token": "secret-token",
-        "name": "",
+        "name" : "",
     })()
 
     result = validate_remote_args(args, session_fallback="list")
@@ -396,6 +369,20 @@ def test_readme_and_cli_reference_use_launcher_wording_only():
         assert "--cli_type" not in content
 
 
+def test_readme_documents_uninstall_command():
+    content = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "remote-claude uninstall" in content
+    assert "remote-claude uninstall --yes" in content
+
+
+def test_cli_reference_documents_uninstall_command_and_yes_flags():
+    content = (REPO_ROOT / "docs" / "cli-reference.md").read_text(encoding="utf-8")
+    assert "### uninstall - 卸载清理" in content
+    assert "remote-claude uninstall [选项]" in content
+    assert "--yes" in content
+    assert "-y" in content
+
+
 def test_supporting_docs_do_not_expose_cli_type_flag():
     files = [
         REPO_ROOT / "docs" / "docker-test.md",
@@ -409,19 +396,6 @@ def test_supporting_docs_do_not_expose_cli_type_flag():
         assert "--cli_type" not in content
 
 
-def test_shortcut_scripts_use_shared_start_helper():
-    for rel in ("bin/cla", "bin/cl", "bin/cx", "bin/cdx"):
-        content = (REPO_ROOT / rel).read_text(encoding="utf-8")
-        assert "_remote_claude_shortcut_main" in content
-        assert "STARTUP_DIR=\"${STARTUP_DIR:-$(pwd)}\"" in content
-        assert '_remote_claude_python start' not in content
-
-
-    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert '双端共享 Claude/Codex CLI 工具' in content
-    assert '双端共享 Claude CLI 工具' not in content
-
-
 def test_local_client_uses_public_remote_claude_hints():
     content = (REPO_ROOT / "client" / "local_client.py").read_text(encoding="utf-8")
     assert "remote-claude list" in content
@@ -432,6 +406,56 @@ def test_local_client_uses_public_remote_claude_hints():
     assert "python3 remote_claude.py start" not in content
 
 
+def test_cmd_uninstall_calls_uninstall_script_and_prints_followup(monkeypatch, capsys):
+    called = {}
+
+    def fake_run(cmd, **kwargs):
+        called["cmd"] = cmd
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(remote_claude.subprocess, "run", fake_run)
+    args = SimpleNamespace(yes=False)
+
+    result = remote_claude.cmd_uninstall(args)
+
+    assert result == 0
+    assert called["cmd"][:2] == ["sh", str(remote_claude.SCRIPT_DIR / "scripts" / "uninstall.sh")]
+    out = capsys.readouterr().out
+    assert "npm uninstall -g remote-claude" in out
+    assert "pnpm remove -g remote-claude" in out
+
+
+def test_uninstall_script_accepts_yes_flags():
+    content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+    assert "-y|--yes" in content
+    assert "RC_UNINSTALL_ASSUME_YES" in content
+    assert "_assume_yes()" in content
+
+
+def test_cmd_uninstall_passes_yes_flag_to_shell(monkeypatch):
+    called = {}
+
+    def fake_run(cmd, **kwargs):
+        called["cmd"] = cmd
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(remote_claude.subprocess, "run", fake_run)
+    args = SimpleNamespace(yes=True)
+
+    remote_claude.cmd_uninstall(args)
+
+    assert called["cmd"][-1] == "--yes"
+
+
+def test_completion_extracts_session_names_from_list_output():
     result = subprocess.run(
         ["bash"],
         input=f"""#!/usr/bin/env bash
@@ -506,19 +530,33 @@ _remote_claude_get_sessions
     assert result.stdout.splitlines() == ["loaded"]
 
 
-def test_completion_declares_management_commands():
-    content = (REPO_ROOT / "scripts" / "completion.sh").read_text(encoding="utf-8")
-    assert '"connection:远程连接配置管理"' in content
-    assert '"token:显示会话 token"' in content
-    assert '"regenerate-token:重新生成 token"' in content
-    assert '"connect:连接到远程会话"' in content
-    assert '"remote:远程控制"' in content
-    assert '_rc_bash_commands="start attach list kill status lark stats log update config connection token regenerate-token connect remote"' in content
-
-
 def test_setup_script_does_not_reference_removed_client_entry():
     content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
     assert "client/client.py" not in content
+
+
+def test_setup_configure_shell_links_remote_claude_to_shell_launcher():
+    setup_content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    common_content = (REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8")
+
+    assert 'bin/remote-claude' in setup_content
+    assert 'rc_link_shortcuts_into_dir "$BIN_DIR"' in setup_content
+    assert '$PROJECT_DIR/bin/$shortcut_cmd' in common_content
+    assert '.venv/bin/remote-claude' not in setup_content
+    assert '$PROJECT_DIR/.venv/bin/$shortcut_cmd' not in common_content
+
+
+def test_pyproject_console_script_is_not_the_public_npm_entry():
+    pyproject_content = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    setup_content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
+    common_content = (REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8")
+
+    assert 'remote-claude = "remote_claude:main"' in pyproject_content
+    assert '仅供开发态/uv run' in pyproject_content
+    assert 'bin/remote-claude' in setup_content
+    assert '$PROJECT_DIR/bin/$shortcut_cmd' in common_content
+    assert '.venv/bin/remote-claude' not in setup_content
+    assert '$PROJECT_DIR/.venv/bin/$shortcut_cmd' not in common_content
 
 
 if __name__ == "__main__":
