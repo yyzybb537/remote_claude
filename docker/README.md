@@ -24,15 +24,23 @@ docker-compose -f docker/docker-compose.test.yml build
 
 ### 运行测试
 
-```bash
-# 运行测试（测试完成后容器保持运行，可继续进入调试）
-docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
+**CI 模式（推荐）：**
 
-# 交互式运行（直接进入 bash，手动执行测试）
-docker-compose -f docker/docker-compose.test.yml run npm-test /bin/bash
-# 容器内执行：
-/project/docker/scripts/docker-test.sh
+```bash
+KEEP_CONTAINER_ALIVE=0 docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
 ```
+
+成功后容器自动退出，失败时也不会在脚本内部驻留。
+
+**本地调试模式：**
+
+```bash
+docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
+```
+
+默认 `KEEP_CONTAINER_ALIVE=1`，脚本执行完成后容器保持运行，便于查看测试产物。
+
+**交互式运行（直接进入 bash）：**
 
 ### 查看结果
 
@@ -49,11 +57,12 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 2. **打包 npm 包** - 执行 `npm pack` 生成 `.tgz` 文件
 3. **模拟用户安装** - 在临时目录执行 `npm install <packaged_file>`
 4. **验证 postinstall** - 检查 .venv、pyproject.toml、Python 依赖
-5. **测试基本命令** - 验证 `remote-claude --help`、`remote-claude list`、`cla` 脚本
-6. **执行单元测试** - 运行独立单元测试（不需要活跃会话）
-7. **文件完整性检查** - 验证关键文件是否存在
-8. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
-9. **清理** - 停止会话、清理 socket 文件、清理 npm 缓存
+5. **测试 env 配置与启动行为** - 验证 `check-env.sh` 非阻塞、`lark start`/`remote-claude start` 启动链路
+6. **测试基本命令** - 验证 `remote-claude --help`、`remote-claude list`、`cla` 脚本
+7. **执行单元测试** - 运行独立单元测试（不需要活跃会话）
+8. **文件完整性检查** - 验证当前打包产物中的关键入口与模板文件存在
+9. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
+10. **清理** - 停止会话、清理 socket 文件、清理 npm 缓存
 
 ## 独立单元测试
 
@@ -79,7 +88,7 @@ docker exec -it remote-claude-npm-test /bin/bash
 
 ```bash
 cd /project
-/home/testuser/docker/docker-test.sh
+/project/docker/scripts/docker-test.sh
 ```
 
 ### 手动执行失败的测试
@@ -92,7 +101,7 @@ python3 tests/test_format_unit.py
 ### 收集诊断信息
 
 ```bash
-/home/testuser/docker/scripts/docker-diagnose.sh
+/project/docker/scripts/docker-diagnose.sh
 ```
 
 诊断信息将保存到 `/home/testuser/test-results/diagnosis/` 目录。
@@ -130,17 +139,17 @@ rm -rf test-results
 
 ## 设计决策
 
-### 为什么选择 Ubuntu 而非 Alpine？
+### 为什么选择 Debian slim 而非 Alpine？
 
 - Alpine 缺少 PTY 所需的系统库，需要额外构建
 - tmux 在 Alpine 上编译复杂
-- Ubuntu 22.04 稳定且体积可控
+- Debian slim 稳定且体积可控
 
-### 为什么跳过 Codex CLI？
+### 为什么保留 Codex CLI？
 
-- 用户明确选择不需要
-- 节省构建时间和镜像空间
-- Codex 是可选功能，不影响核心流程
+- 项目支持 Claude/Codex 双入口
+- Docker 回归需要覆盖 Codex 安装可用性
+- 避免 npm 包发布后出现入口缺失
 
 ### 为什么使用非 root 用户？
 

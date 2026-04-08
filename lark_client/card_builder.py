@@ -212,7 +212,24 @@ def _safe_truncate(text: str, limit: int) -> str:
     return truncated.rstrip() + '\n\n*...（内容过长，仅显示部分）*'
 
 
-def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False) -> List[Dict[str, Any]]:
+def _get_matching_commands(settings) -> List[Dict[str, str]]:
+    """返回目录卡片可选的启动命令列表。"""
+    if not settings or not getattr(settings, "launchers", None):
+        return [
+            {"name": "Claude", "command": "claude"},
+            {"name": "Codex", "command": "codex"},
+        ]
+
+    return [
+        {"name": launcher.name, "command": launcher.command}
+        for launcher in settings.launchers
+    ]
+
+
+def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False,
+                           is_loading: bool = False, enter_to_submit: bool = True,
+                           form_error_message: Optional[str] = None,
+                           form_error_action: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """底部快捷菜单按钮行，用于流式卡片
 
     - 连接状态（session_name 有值, disconnected=False）:
@@ -230,6 +247,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "⚡ 菜单"},
                     "type": "default",
+                    "disabled": is_loading,
                     "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
                 }]
             },
@@ -240,6 +258,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "🔗 重新连接"},
                     "type": "primary",
+                    "disabled": is_loading,
                     "behaviors": [{"type": "callback", "value": {
                         "action": "stream_reconnect", "session": session_name or ""
                     }}]
@@ -258,6 +277,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "⚡ 菜单"},
                     "type": "default",
+                    "disabled": is_loading,
                     "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
                 }]
             },
@@ -268,6 +288,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "🔌 断开"},
                     "type": "danger",
+                    "disabled": is_loading,
                     "behaviors": [{"type": "callback", "value": {
                         "action": "stream_detach", "session": session_name
                     }}]
@@ -285,9 +306,11 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "elements": [{
                     "tag": "button",
                     "name": "enter_submit",
-                    "text": {"tag": "plain_text", "content": "Enter ↵"},
+                    "text": {"tag": "plain_text", "content": "发送" if enter_to_submit else "点击发送"},
                     "type": "primary",
                     "action_type": "form_submit",
+                    "value": {"submit_source": "button_click"},
+                    "disabled": is_loading,
                 }]
             },
         ]
@@ -300,6 +323,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "⚡ 菜单"},
                     "type": "default",
+                    "disabled": is_loading,
                     "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
                 }]
             },
@@ -315,9 +339,11 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "elements": [{
                     "tag": "button",
                     "name": "enter_submit",
-                    "text": {"tag": "plain_text", "content": "Enter ↵"},
+                    "text": {"tag": "plain_text", "content": "发送" if enter_to_submit else "点击发送"},
                     "type": "primary",
                     "action_type": "form_submit",
+                    "value": {"submit_source": "button_click"},
+                    "disabled": is_loading,
                 }]
             },
         ]
@@ -327,17 +353,18 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
     input_box = {
         "tag": "input",
         "name": "command",
-        "placeholder": {"tag": "plain_text", "content": "输入消息..."},
+        "placeholder": {"tag": "plain_text", "content": "输入消息后按回车发送" if enter_to_submit else "输入消息后点击发送"},
         "width": "fill",
+        "disabled": is_loading,
     }
 
     shortcut_keys = [
-        ("↑", {"action": "send_key", "key": "up"}),
-        ("↓", {"action": "send_key", "key": "down"}),
-        ("Ctrl+O", {"action": "send_key", "key": "ctrl_o"}),
-        ("Shift+Tab", {"action": "send_key", "key": "shift_tab"}),
-        ("ESC", {"action": "send_key", "key": "esc"}),
-        ("(↹)×3", {"action": "send_key", "key": "shift_tab", "times": 3}),
+        ("↑", {"action": "send_key", "key": "up", "meta": "key:up"}),
+        ("↓", {"action": "send_key", "key": "down", "meta": "key:down"}),
+        ("Ctrl+O", {"action": "send_key", "key": "ctrl_o", "meta": "key:ctrl_o"}),
+        ("Shift+Tab", {"action": "send_key", "key": "shift_tab", "meta": "key:shift_tab"}),
+        ("ESC", {"action": "send_key", "key": "esc", "meta": "key:esc"}),
+        ("(↹)×3", {"action": "send_key", "key": "shift_tab", "times": 3, "meta": "key:shift_tab"}),
     ]
 
     def _make_key_column(label, value):
@@ -350,6 +377,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "text": {"tag": "plain_text", "content": label},
                 "type": "default",
                 "width": "fill",
+                "disabled": is_loading,
                 "behaviors": [{"type": "callback", "value": value}],
             }]
         }
@@ -374,10 +402,42 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
         "elements": [row1, row2],
     }
 
+    form_elements: List[Dict[str, Any]] = [menu_enter_row]
+    if form_error_message:
+        action_label = "连接到现有会话" if (form_error_action or {}).get("action") == "stream_attach_existing" else "重试"
+        action_button = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": action_label},
+            "type": "primary",
+            "disabled": is_loading,
+            "behaviors": [{"type": "callback", "value": form_error_action or {}}],
+        }
+        form_elements.append({
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [{
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [{"tag": "markdown", "content": form_error_message}],
+            }, {
+                "tag": "column",
+                "width": "auto",
+                "elements": [action_button],
+            }],
+        })
+        form_elements.append({"tag": "hr"})
+    form_elements.append(input_box)
+    if session_name:
+        form_elements.append({
+            "tag": "markdown",
+            "content": "当前高亮选项可直接回车确认" if enter_to_submit else "请选择后点击确认",
+        })
+
     form = {
         "tag": "form",
         "name": "claude_input",
-        "elements": [menu_enter_row, input_box],
+        "elements": form_elements,
     }
 
     return [form, collapsible]
@@ -647,6 +707,11 @@ def build_stream_card(
     session_name: Optional[str] = None,
     disconnected: bool = False,
     cli_type: str = "claude",
+    settings: Optional[Any] = None,
+    is_loading: bool = False,
+    loading_text: Optional[str] = None,
+    form_error_message: Optional[str] = None,
+    form_error_action: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """从共享内存 blocks 流构建飞书卡片
 
@@ -661,6 +726,11 @@ def build_stream_card(
         option_block=option_block, disconnected=disconnected,
         cli_type=cli_type,
     )
+    if is_loading:
+        title = f"⏳ {loading_text or '处理中...'}"
+        template = "orange"
+
+    enter_submit = True if settings is None else bool(getattr(getattr(settings, 'card', None), 'enter_to_submit', True))
 
     # === 第一层：内容区 ===
     elements = []
@@ -751,10 +821,60 @@ def build_stream_card(
         buttons = _extract_buttons(blocks, option_block=option_block)
         if buttons:
             elements.extend(_build_buttons_v2(buttons))
+            if is_loading:
+                for elem in elements:
+                    if elem.get("tag") == "action":
+                        for action in elem.get("actions", []):
+                            if action.get("tag") == "button":
+                                action["disabled"] = True
 
     # === 第四层：菜单按钮 ===
     elements.append({"tag": "hr"})
-    elements.extend(_build_menu_button_row(session_name=session_name, disconnected=disconnected))
+    if session_name and not disconnected:
+        if settings and getattr(getattr(settings, 'card', None), 'quick_commands', None):
+            quick_cols = []
+            for cmd in settings.card.quick_commands:
+                icon = f"{cmd.icon} " if getattr(cmd, 'icon', '') else ""
+                quick_cols.append({
+                    "tag": "column",
+                    "width": "auto",
+                    "elements": [{
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": f"{icon}{cmd.label}".strip()},
+                        "type": "default",
+                        "disabled": is_loading,
+                        "behaviors": [{"type": "callback", "value": {"action": "quick_command", "command": cmd.value, "meta": f"cmd:{cmd.value}"}}],
+                    }]
+                })
+            elements.append({"tag": "markdown", "content": "**操作**"})
+            elements.append({"tag": "column_set", "flex_mode": "wrap", "columns": quick_cols})
+        else:
+            elements.append({"tag": "markdown", "content": "**操作**"})
+
+        elements.append({
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [{
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "自动应答"},
+                    "type": "default",
+                    "disabled": is_loading,
+                    "behaviors": [{"type": "callback", "value": {"action": "stream_toggle_auto_answer", "session": session_name}}]
+                }]
+            }]
+        })
+
+    elements.extend(_build_menu_button_row(
+        session_name=session_name,
+        disconnected=disconnected,
+        is_loading=is_loading,
+        enter_to_submit=enter_submit,
+        form_error_message=form_error_message,
+        form_error_action=form_error_action,
+    ))
 
     _cb_logger.debug(
         f"build_stream_card: blocks={len(blocks)} frozen={is_frozen} "
@@ -769,7 +889,28 @@ def build_stream_card(
     }
 
 
-# === 辅助卡片（保留不变）===
+def build_expired_card(session_name: str) -> Dict[str, Any]:
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "enable_forward": True},
+        "header": _build_header("⌛ 卡片已过期", "grey"),
+        "body": {"elements": [
+            {"tag": "markdown", "content": f"会话 **{session_name}** 的卡片已过期，请返回菜单重新进入。"},
+            {"tag": "hr"},
+            {"tag": "column_set", "flex_mode": "none", "columns": [{
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "⚡ 菜单"},
+                    "type": "default",
+                    "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
+                }]
+            }]}
+        ]}
+    }
+
+
 
 def _build_session_list_elements(sessions: List[Dict], current_session: Optional[str], session_groups: Optional[Dict[str, str]], page: int = 0) -> List[Dict]:
     """构建会话列表元素（供 build_menu_card 复用）"""
@@ -966,7 +1107,9 @@ def _dir_session_name(path: str) -> str:
     return name or "session"
 
 
-def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool = False, session_groups: Optional[Dict[str, str]] = None, page: int = 0) -> Dict[str, Any]:
+def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool = False,
+                   session_groups: Optional[Dict[str, str]] = None, page: int = 0,
+                   settings: Optional[Any] = None) -> Dict[str, Any]:
     """构建目录浏览卡片
 
     顶层目录（depth==0）带两个操作按钮：
@@ -1210,7 +1353,7 @@ def build_session_closed_card(session_name: str) -> Dict[str, Any]:
 def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     session_groups: Optional[Dict[str, str]] = None, page: int = 0,
                     notify_enabled: bool = True, urgent_enabled: bool = False,
-                    bypass_enabled: bool = False) -> Dict[str, Any]:
+                    bypass_enabled: bool = False, settings: Optional[Any] = None) -> Dict[str, Any]:
     """构建快捷操作菜单卡片（/menu 和 /list 共用）：内嵌会话列表 + 快捷操作"""
     elements = []
 
@@ -1311,10 +1454,18 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
 
     bypass_label = "🔓 新会话bypass: 开" if bypass_enabled else "🔒 新会话bypass: 关"
     elements.append({
-        "tag": "button",
-        "text": {"tag": "plain_text", "content": bypass_label},
-        "type": "default",
-        "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_bypass"}}]
+        "tag": "column_set",
+        "flex_mode": "none",
+        "columns": [{
+            "tag": "column",
+            "width": "auto",
+            "elements": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": bypass_label},
+                "type": "default",
+                "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_bypass"}}]
+            }]
+        }]
     })
 
     return {

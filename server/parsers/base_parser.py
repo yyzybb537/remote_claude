@@ -5,9 +5,26 @@ ClaudeParser 和 CodexParser 均继承此类。
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 import pyte
+
+
+@dataclass
+class AutoAnswerBlock:
+    """自动应答记录块
+
+    用于记录自动应答的执行情况，写入共享内存后由客户端渲染。
+    """
+    block_id: str
+    content: str
+    action_type: str  # "select" | "input"
+    selected_value: Optional[str] = None
+    selected_label: Optional[str] = None
+    input_text: Optional[str] = None
+    timestamp: float = 0.0
+    start_row: int = 0
 
 
 class BaseParser(ABC):

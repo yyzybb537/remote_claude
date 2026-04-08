@@ -1,18 +1,35 @@
+x-orphans:
+  remove: true
+
 services:
   npm-test:
     build:
       context: ..
       dockerfile: docker/Dockerfile.test
+      args:
+        - BUILDKIT_INLINE_CACHE=1
     container_name: remote-claude-npm-test
     volumes:
       # 只读挂载项目代码（防止测试意外修改源代码）
       - ..:/project:ro
-      # 测试结果输出目录（可写）
+      # 可写挂载 venv 和 uv.lock（uv 需要写入这些文件）
+      - ../.venv:/project/.venv
+      - ../uv.lock:/project/uv.lock
+      # 测试结果输出目录（可写，包含 npm 安装产物和测试报告）
       - ../test-results:/home/testuser/test-results
+      # 持久化缓存目录，加速后续构建
+      - npm-cache:/tmp/npm-cache
+      - uv-cache:/tmp/uv-cache
     working_dir: /project
     environment:
       - NPM_CONFIG_CACHE=/tmp/npm-cache
+      - UV_CACHE_DIR=/tmp/uv-cache
+      - UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
       - SKIP_CLAUDE_LOGIN=1  # 跳过 Claude 登录
       - CI=true              # CI 模式
     stdin_open: true
     tty: true
+
+volumes:
+  npm-cache:
+  uv-cache:

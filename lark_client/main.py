@@ -17,6 +17,7 @@ from pathlib import Path
 
 # 设置 sys.path 以导入 utils 模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from utils.runtime_config import get_lark_enter_submit_enabled
 from utils.session import USER_DATA_DIR
 
 
@@ -170,16 +171,57 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         form_value = getattr(action, 'form_value', None)
         if form_value is not None:
             command_text = (form_value.get("command") or "").strip()
-            print(f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}")
+            submit_source = action_value.get("submit_source", "")
+            print(f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}, source={submit_source!r}")
             if command_text:
-                # 有输入内容 → 直通 Claude
-                asyncio.create_task(handler.forward_to_claude(user_id, chat_id, command_text))
+                enter_enabled = get_lark_enter_submit_enabled()
+                attached_session = handler._chat_sessions.get(chat_id)
+                if not enter_enabled and submit_source != "button_click" and attached_session:
+                    asyncio.create_task(handler.handle_disabled_enter_submit(user_id, chat_id, command_text))
+                else:
+                    asyncio.create_task(handler.forward_to_claude(user_id, chat_id, command_text))
             else:
                 # 空输入 → 发送原始 Enter 键（用于确认默认选项等场景）
                 asyncio.create_task(handler.send_raw_key(user_id, chat_id, "enter"))
             return None
 
-        action_type = action_value.get("action", "")
+        action_type = action_value.get("action", "") if isinstance(action_value, dict) else ""
+
+        # 处理快捷命令选择器回调（select_static 返回的 value 是命令字符串，如 "/clear"）
+        if isinstance(action_value, str):
+            if action_value.startswith("key:"):
+                key_name = action_value.split(":", 1)[1]
+                allowed = set(handler._settings.ui.enabled_keys) if handler._settings else {
+                    "up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"
+                }
+                if key_name not in allowed:
+                    return None
+
+                print(f"[Lark] 操作下拉快捷键: key={key_name}")
+
+                async def _multi_send():
+                    if key_name == "shift_tab_x3":
+                        for _ in range(3):
+                            await handler.send_raw_key(user_id, chat_id, "shift_tab")
+                            await asyncio.sleep(0.15)
+                    else:
+                        await handler.send_raw_key(user_id, chat_id, key_name)
+
+                asyncio.create_task(_multi_send())
+                return None
+
+            if action_value.startswith("cmd:"):
+                command = action_value.split(":", 1)[1]
+                print(f"[Lark] 操作下拉自定义命令: command={command}")
+                asyncio.create_task(handler.handle_quick_command(user_id, chat_id, command))
+                return None
+
+            if action_value.startswith("/"):
+                print(f"[Lark] 快捷命令选择: command={action_value}")
+                asyncio.create_task(handler.handle_quick_command(user_id, chat_id, action_value))
+                return None
+
+            return None
 
         # 处理选项选择动作
         if action_type == "select_option":
@@ -250,8 +292,9 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         if action_type == "dir_start":
             path = action_value.get("path", "")
             session_name = action_value.get("session_name", "")
-            print(f"[Lark] dir_start: path={path}, session={session_name}")
-            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}"))
+            cli_command = action_value.get("cli_command", "claude")
+            print(f"[Lark] dir_start: path={path}, session={session_name}, cli_command={cli_command}")
+            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}", cli_command=cli_command))
             return None
 
         # 目录卡片：在该目录启动会话并创建专属群聊
@@ -281,6 +324,13 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
 
         if action_type == "menu_tree":
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, "", tree=True, message_id=message_id))
+            return None
+
+        # 流式卡片：连接到已存在会话
+        if action_type == "stream_attach_existing":
+            session_name = action_value.get("session", "")
+            print(f"[Lark] stream_attach_existing: session={session_name}")
+            asyncio.create_task(handler._cmd_attach(user_id, chat_id, session_name, message_id=message_id))
             return None
 
         # 流式卡片：断开连接
@@ -319,6 +369,14 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
 
         if action_type == "menu_toggle_bypass":
             asyncio.create_task(handler._cmd_toggle_bypass(user_id, chat_id, message_id=message_id))
+            return None
+
+        if action_type == "menu_toggle_auto_answer":
+            asyncio.create_task(handler._cmd_toggle_auto_answer(user_id, chat_id, message_id=message_id))
+            return None
+
+        if action_type == "stream_toggle_auto_answer":
+            asyncio.create_task(handler._cmd_toggle_auto_answer(user_id, chat_id, message_id=message_id, refresh_stream=True))
             return None
 
         # 各卡片底部菜单按钮：辅助卡片就地→菜单，流式卡片降级新卡

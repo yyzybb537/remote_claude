@@ -7,23 +7,42 @@
 """
 
 import hashlib
+import logging
 import os
+import platform
+import re
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Optional, List
 import uuid
 
+from server.biz_enum import CliType
 
 # 常量
 SOCKET_DIR = Path("/tmp/remote-claude")
 USER_DATA_DIR = Path.home() / ".remote-claude"
 TMUX_SESSION_PREFIX = "rc-"
 
+_UNDERSCORE_RE = re.compile(r'_+')
+
+# 平台特定的 socket 路径限制
 # macOS AF_UNIX sun_path 限制 104 字节
-# /tmp/remote-claude/ = 19 字节, .sock = 5 字节
-_MAX_SOCKET_PATH = 104
+# Linux AF_UNIX sun_path 限制 108 字节
+_SYSTEM = platform.system()
+if _SYSTEM == "Darwin":
+    _MAX_SOCKET_PATH = 104
+elif _SYSTEM == "Linux":
+    _MAX_SOCKET_PATH = 108
+else:
+    # 其他平台使用更保守的 macOS 限制
+    _MAX_SOCKET_PATH = 104
+
+# Socket 路径格式：/tmp/remote-claude/<name>.sock
+# 固定前缀 19 字节 + 文件名 + 后缀 5 字节
 _MAX_FILENAME = _MAX_SOCKET_PATH - len(str(SOCKET_DIR)) - 1 - len(".sock")
+
+# 日志器
+_session_logger = logging.getLogger('Session')
 
 
 def get_env_file() -> Path:
@@ -36,23 +55,125 @@ def get_chat_bindings_file() -> Path:
     return USER_DATA_DIR / "lark_chat_bindings.json"
 
 
-def get_lark_log_file() -> Path:
-    """获取飞书客户端日志文件路径"""
-    return USER_DATA_DIR / "lark_client.log"
-
-
 def ensure_user_data_dir():
     """确保用户数据目录存在"""
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _safe_filename(session_name: str) -> str:
-    """将会话名转为安全文件名（/ 和 . 替换为 _），超长时用完整 MD5"""
+    """将会话名转为安全文件名
+
+    优化策略：优先保留目录路径后缀，从右向左保留语义信息
+
+    Args:
+        session_name: 原始会话名（可能包含路径分隔符）
+
+    Returns:
+        安全的文件名，长度不超过 _MAX_FILENAME
+    """
+    # 检查空会话名
+    if not session_name or not session_name.strip():
+        raise ValueError("会话名不能为空")
+
+    # 替换特殊字符
     name = session_name.replace('/', '_').replace('.', '_')
+
+    # 合并连续下划线（如 a__b → a_b）
+    name = _UNDERSCORE_RE.sub('_', name)
+
+    # 去除首尾下划线
+    name = name.strip('_')
+
+    # 再次检查空（如原名称只有特殊字符）
+    if not name:
+        raise ValueError(f"会话名 '{session_name}' 无效（只包含特殊字符）")
+
     if len(name) <= _MAX_FILENAME:
         return name
-    # 超长：直接用完整 32 字符 MD5，彻底避免路径超限
-    return hashlib.md5(session_name.encode()).hexdigest()
+
+    # 超长：从右向左保留路径后缀（优先保留目录标识）
+    parts = name.split('_')
+    result = []
+    total_len = 0
+
+    for part in reversed(parts):
+        # 计算添加该部分后的长度（包括分隔符）
+        new_len = total_len + len(part) + (1 if result else 0)
+        if new_len > _MAX_FILENAME:
+            break
+        result.insert(0, part)
+        total_len = new_len
+
+    # 如果单个部分都超长，回退到 MD5 哈希
+    if not result:
+        hash_val = hashlib.md5(session_name.encode()).hexdigest()
+        _session_logger.warning(
+            f"会话名称 '{session_name[:50]}...' 超长且无法截断，使用 MD5 哈希: {hash_val}"
+        )
+        return hash_val[:_MAX_FILENAME]
+
+    truncated = '_'.join(result)
+    _session_logger.warning(
+        f"会话名称 '{session_name[:50]}...' 被截断为 '{truncated}'"
+    )
+    return truncated
+
+
+def resolve_session_name(original_path: str, state: "State" = None) -> str:
+    """解析会话名称，处理截断和冲突
+
+    Args:
+        original_path: 原始会话名/路径
+        state: 运行时状态对象（可选，用于映射存储）
+
+    Returns:
+        最终的会话名（已处理截断和冲突）
+    """
+    # 延迟导入避免循环依赖：session.py ← → runtime_config.py
+    # runtime_config.py 在模块级导入了 session.py 的 USER_DATA_DIR
+    from utils.runtime_config import load_state, save_state
+
+    # 生成截断后的名称
+    truncated = _safe_filename(original_path)
+
+    # 如果名称未被截断，直接返回
+    if truncated == original_path.replace('/', '_').replace('.', '_'):
+        return truncated
+
+    # 需要状态对象进行映射检查
+    if state is None:
+        state = load_state()
+
+    # 检查映射
+    existing = state.get_session_path(truncated)
+    result_name = truncated
+    need_save = False
+
+    if existing:
+        if existing == original_path:
+            # 同一路径，复用已有会话
+            _session_logger.debug(f"复用已有会话映射: {truncated} -> {original_path}")
+            return truncated
+        else:
+            # 不同路径，使用完整 MD5 哈希确保唯一性
+            unique_name = hashlib.md5(original_path.encode()).hexdigest()[:_MAX_FILENAME]
+            _session_logger.warning(
+                f"会话名冲突: '{truncated}' 已映射到 '{existing}'，"
+                f"'{original_path}' 使用完整 MD5 哈希 '{unique_name}'"
+            )
+            state.set_session_path(unique_name, original_path)
+            result_name = unique_name
+            need_save = True
+    else:
+        # 新映射，记录并保存
+        state.set_session_path(truncated, original_path)
+        need_save = True
+        _session_logger.info(f"记录会话映射: {truncated} -> {original_path}")
+
+    if need_save:
+        save_state(state)
+
+    return result_name
 
 
 def get_socket_path(session_name: str) -> Path:
@@ -215,8 +336,14 @@ def get_process_cwd(pid: int) -> Optional[str]:
         for line in result.stdout.splitlines():
             if line.startswith("n"):
                 return line[1:].strip()
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        _session_logger.debug(f"lsof 命令超时: pid={pid}")
+    except FileNotFoundError:
+        _session_logger.debug(f"lsof 命令不存在")
+    except OSError as e:
+        _session_logger.debug(f"lsof 执行失败: {e}")
+    except Exception as e:
+        _session_logger.warning(f"获取进程 CWD 发生意外错误: {e}")
     return None
 
 
@@ -257,13 +384,13 @@ def list_active_sessions() -> List[dict]:
                     from server.shared_state import SharedStateReader
                     reader = SharedStateReader(session_name)
                     snapshot = reader.read()
-                    cli_type = snapshot.get("cli_type", "claude")
+                    cli_type = snapshot.get("cli_type", CliType.CLAUDE)
                 except Exception as e:
                     # 添加详细日志记录，便于诊断问题
                     import logging
                     logger = logging.getLogger('Session')
                     logger.warning(f"读取共享内存 cli_type 失败: session={session_name}, error={e}")
-                    cli_type = "claude"  # 读取失败时使用默认值
+                    cli_type = CliType.CLAUDE  # 读取失败时使用默认值
 
                 sessions.append({
                     "name": session_name,

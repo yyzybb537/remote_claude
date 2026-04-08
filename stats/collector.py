@@ -7,11 +7,15 @@ StatsCollector：事件收集器
 - 所有异常均被捕获，绝不影响主流程
 """
 
+import base64
+import datetime
+import json
 import logging
 import os
 import sqlite3
 import threading
 import time
+import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Optional
@@ -334,10 +338,6 @@ class StatsCollector:
 
         def _send() -> None:
             try:
-                import base64
-                import json
-                import urllib.request
-
                 props = {**machine_info, 'token': mp_token, 'distinct_id': machine_id}
                 data = base64.b64encode(json.dumps([{
                     'event': 'install',
@@ -356,7 +356,6 @@ class StatsCollector:
             # 同时更新 user profile（仅 SDK 可用时）
             if mp:
                 try:
-                    import datetime
                     mp.people_set(machine_id, {
                         '$name': machine_info['hostname'],
                         **machine_info,

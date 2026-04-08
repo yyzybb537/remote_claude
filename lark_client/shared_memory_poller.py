@@ -35,6 +35,21 @@ try:
 except Exception:
     def _track_stats(*args, **kwargs): pass
 
+
+def _safe_track_stats(*args, **kwargs):
+    try:
+        _track_stats(*args, **kwargs)
+    except Exception:
+        pass
+
+from utils.runtime_config import (
+    get_bypass_enabled,
+    get_notify_ready_enabled,
+    get_notify_urgent_enabled,
+    get_vague_commands_config,
+    increment_ready_notify_count,
+    load_settings,
+)
 from utils.session import ensure_user_data_dir, USER_DATA_DIR
 
 # ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -55,6 +70,17 @@ class CardSlice:
     sequence: int = 0
     start_idx: int = 0       # blocks[start_idx:] 开始渲染
     frozen: bool = False
+    last_activity_time: float = field(default_factory=time.time)
+    expired: bool = False
+
+
+@dataclass(frozen=True)
+class CardRenderContext:
+    status_line: Optional[dict]
+    bottom_bar: Optional[dict]
+    agent_panel: Optional[dict] = None
+    option_block: Optional[dict] = None
+    cli_type: str = "claude"
 
 
 @dataclass
@@ -69,6 +95,8 @@ class StreamTracker:
     prev_is_ready: bool = True     # 上一帧是否就绪（初始 True 避免首次误触发）
     notify_user_id: Optional[str] = None  # 就绪通知 @ 的用户 open_id
     last_notify_message_id: Optional[str] = None  # 上一条就绪通知的 message_id（用于后续加急复用）
+    auto_answer_enabled: bool = False
+    pending_auto_answer: Optional[Any] = None
 
 
 # ── 轮询器 ────────────────────────────────────────────────────────────────────
@@ -81,12 +109,50 @@ class SharedMemoryPoller:
     每秒读取 .mq 文件中的 blocks 流，通过 hash diff 触发飞书卡片创建/更新。
     """
 
+    CARD_METADATA_LIMIT = 5
+
     def __init__(self, card_service: Any):
         self._card_service = card_service
         self._trackers: Dict[str, StreamTracker] = {}  # chat_id → StreamTracker
         self._tasks: Dict[str, asyncio.Task] = {}       # chat_id → Task
         self._kick_events: Dict[str, asyncio.Event] = {}  # chat_id → Event（唤醒轮询）
         self._rapid_until: Dict[str, float] = {}           # chat_id → 快速模式截止时间
+        self._memory_log_counter = 0
+
+    def _get_settings(self):
+        return load_settings()
+
+    def _prune_cards(self, tracker: StreamTracker) -> None:
+        if len(tracker.cards) <= self.CARD_METADATA_LIMIT:
+            return
+
+        active_card = tracker.cards[-1] if tracker.cards else None
+        frozen_cards = tracker.cards[:-1] if active_card else tracker.cards
+        keep_frozen = max(0, self.CARD_METADATA_LIMIT - (1 if active_card else 0))
+        tracker.cards = frozen_cards[-keep_frozen:] + ([active_card] if active_card else [])
+
+    def get_memory_stats(self) -> dict:
+        card_counts = [len(tracker.cards) for tracker in self._trackers.values()]
+        return {
+            "tracker_count": len(self._trackers),
+            "total_card_count": sum(card_counts),
+            "max_cards_per_tracker": max(card_counts, default=0),
+            "task_count": len(self._tasks),
+            "kick_event_count": len(self._kick_events),
+            "rapid_mode_count": len(self._rapid_until),
+        }
+
+    def log_memory_stats(self) -> None:
+        stats = self.get_memory_stats()
+        logger.info(
+            "[memory] tracker_count=%s total_card_count=%s max_cards_per_tracker=%s task_count=%s kick_event_count=%s rapid_mode_count=%s",
+            stats["tracker_count"],
+            stats["total_card_count"],
+            stats["max_cards_per_tracker"],
+            stats["task_count"],
+            stats["kick_event_count"],
+            stats["rapid_mode_count"],
+        )
 
     def start(self, chat_id: str, session_name: str, is_group: bool = False,
               notify_user_id: Optional[str] = None) -> None:
@@ -171,6 +237,13 @@ class SharedMemoryPoller:
         if ev:
             ev.set()
 
+    def get_active_card_id(self, chat_id: str) -> Optional[str]:
+        """获取活跃（未冻结）卡片的 card_id，用于就地更新。不停止轮询。"""
+        tracker = self._trackers.get(chat_id)
+        if tracker and tracker.cards and not tracker.cards[-1].frozen:
+            return tracker.cards[-1].card_id
+        return None
+
     async def _poll_loop(self, chat_id: str) -> None:
         """轮询循环：支持 kick 唤醒 + 快速轮询模式"""
         while True:
@@ -196,6 +269,9 @@ class SharedMemoryPoller:
                 if not tracker:
                     break
                 await self._poll_once(tracker)
+                self._memory_log_counter += 1
+                if self._memory_log_counter % 300 == 0:
+                    self.log_memory_stats()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -235,30 +311,86 @@ class SharedMemoryPoller:
         should_notify = self._update_ready_state(tracker, blocks, status_line, option_block)
 
         # 步骤 3：卡片操作（含创建/更新/拆分）
-        await self._do_card_update(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type)
+        context = CardRenderContext(
+            status_line=status_line,
+            bottom_bar=bottom_bar,
+            agent_panel=agent_panel,
+            option_block=option_block,
+            cli_type=cli_type,
+        )
+        await self._do_card_update(tracker, blocks, context)
 
         # 步骤 4：通知在卡片操作之后发送，确保新卡先出现
         if should_notify:
             await self._send_ready_notification(tracker, cli_type)
 
+    def _check_card_expiry(self, tracker: StreamTracker) -> None:
+        """检查并标记过期卡片。"""
+        from utils.runtime_config import get_card_expiry_enabled, get_card_expiry_seconds
+
+        if not get_card_expiry_enabled():
+            return
+
+        expiry_seconds = get_card_expiry_seconds()
+        now = time.time()
+
+        for card_slice in tracker.cards:
+            if card_slice.expired or card_slice.frozen:
+                continue
+
+            elapsed = now - card_slice.last_activity_time
+            if elapsed > expiry_seconds:
+                card_slice.expired = True
+                logger.info(
+                    f"卡片已过期: card_id={card_slice.card_id}, "
+                    f"elapsed={elapsed:.0f}s, expiry={expiry_seconds}s"
+                )
+
+    async def _update_card_content(self, chat_id: str, tracker: StreamTracker,
+                                    card_content: dict) -> bool:
+        """更新卡片内容，处理过期/冻结逻辑。"""
+        if not tracker.cards:
+            return False
+
+        active_slice = tracker.cards[-1]
+        if active_slice.expired or active_slice.frozen:
+            logger.info(f"卡片不可更新，需要创建新卡片: chat_id={chat_id[:8]}...")
+            return False
+
+        try:
+            success = await self._card_service.update_card(
+                card_id=active_slice.card_id,
+                sequence=active_slice.sequence + 1,
+                card_content=card_content,
+            )
+            if success:
+                active_slice.sequence += 1
+                active_slice.last_activity_time = time.time()
+                return True
+        except Exception as e:
+            logger.warning(f"卡片更新失败: {e}")
+
+        return False
+
     async def _do_card_update(
-        self, tracker: StreamTracker, blocks: List[dict],
-        status_line: Optional[dict], bottom_bar: Optional[dict],
-        agent_panel: Optional[dict], option_block: Optional[dict],
-        cli_type: str,
+        self, tracker: StreamTracker, blocks: List[dict], context: CardRenderContext,
     ) -> None:
         """卡片操作主体：获取活跃卡片 → 创建/更新/拆分"""
-        # 获取活跃卡片（最后一张且未冻结）
-        active = None
-        if tracker.cards and not tracker.cards[-1].frozen:
-            active = tracker.cards[-1]
+        self._check_card_expiry(tracker)
 
-        if not blocks and not status_line and not bottom_bar and not agent_panel and not option_block and active is None:
+        # 获取活跃卡片（最后一张且未冻结且未过期）
+        active = None
+        if tracker.cards:
+            last_card = tracker.cards[-1]
+            if not last_card.frozen and not last_card.expired:
+                active = last_card
+
+        if not blocks and not context.status_line and not context.bottom_bar and not context.agent_panel and not context.option_block and active is None:
             return  # 完全无内容且无活跃卡片时不创建卡片
 
         if active is None:
             # 需要创建新卡片
-            await self._create_new_card(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type=cli_type)
+            await self._create_new_card(tracker, blocks, context)
             return
 
         # 有活跃卡片，检查是否需要更新
@@ -276,70 +408,72 @@ class SharedMemoryPoller:
 
         # 超限检查
         if len(blocks_slice) > MAX_CARD_BLOCKS:
-            await self._freeze_and_split(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type=cli_type)
+            await self._freeze_and_split(tracker, blocks, context)
             return
 
         # hash diff
-        new_hash = self._compute_hash(blocks_slice, status_line, bottom_bar, agent_panel, option_block)
+        new_hash = self._compute_hash(blocks_slice, context)
         if new_hash == tracker.content_hash:
             return  # 无变化
 
         # 更新卡片
-        from .card_builder import build_stream_card
-        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+        settings = self._get_settings()
+        card_dict = self._build_card(tracker, blocks_slice, context, settings=settings)
 
         # 大小超限检查（与 blocks 数量超限同一套逻辑）
         card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
         if card_size > CARD_SIZE_LIMIT:
             freeze_count = self._find_freeze_count(blocks_slice, tracker.session_name)
             await self._freeze_and_split(
-                tracker, blocks, status_line, bottom_bar, agent_panel, option_block,
-                cli_type=cli_type, freeze_count=freeze_count,
+                tracker, blocks, context,
+                freeze_count=freeze_count,
             )
             return
 
-        active.sequence += 1
+        proposed_sequence = active.sequence + 1
         success = await self._card_service.update_card(
             card_id=active.card_id,
-            sequence=active.sequence,
+            sequence=proposed_sequence,
             card_content=card_dict,
         )
 
+        update_committed = False
         if getattr(success, 'is_element_limit', False):
             # 元素超限：冻结旧卡 + 推新流式卡
             await self._handle_element_limit(
-                tracker, blocks, status_line, bottom_bar, agent_panel, option_block,
-                cli_type=cli_type,
+                tracker, blocks, context,
             )
             return
         elif not success:
             # 降级：创建新卡片替代
             logger.warning(
-                f"update_card 失败 card_id={active.card_id} seq={active.sequence}，降级为新卡片"
+                f"update_card 失败 card_id={active.card_id} seq={proposed_sequence}，降级为新卡片"
             )
-            _track_stats('card', 'fallback', session_name=tracker.session_name,
-                         chat_id=tracker.chat_id)
             new_card_id = await self._card_service.create_card(card_dict)
             if new_card_id:
                 await self._card_service.send_card(tracker.chat_id, new_card_id)
                 active.card_id = new_card_id
                 active.sequence = 0
+                tracker.content_hash = new_hash
+                _safe_track_stats('card', 'fallback', session_name=tracker.session_name,
+                              chat_id=tracker.chat_id)
+                update_committed = True
         else:
-            _track_stats('card', 'update', session_name=tracker.session_name,
-                         chat_id=tracker.chat_id)
+            active.sequence = proposed_sequence
+            active.last_activity_time = time.time()
+            _safe_track_stats('card', 'update', session_name=tracker.session_name,
+                              chat_id=tracker.chat_id)
+            tracker.content_hash = new_hash
+            update_committed = True
 
-        tracker.content_hash = new_hash
-        logger.debug(
-            f"[UPDATE] session={tracker.session_name} blocks={len(blocks_slice)} "
-            f"seq={active.sequence} hash={new_hash[:8]}"
-        )
+        if update_committed:
+            logger.debug(
+                f"[UPDATE] session={tracker.session_name} blocks={len(blocks_slice)} "
+                f"seq={active.sequence} hash={new_hash[:8]}"
+            )
 
     async def _create_new_card(
-        self, tracker: StreamTracker, blocks: List[dict],
-        status_line: Optional[dict], bottom_bar: Optional[dict],
-        agent_panel: Optional[dict] = None,
-        option_block: Optional[dict] = None,
-        cli_type: str = "claude",
+        self, tracker: StreamTracker, blocks: List[dict], context: CardRenderContext,
     ) -> None:
         """创建新卡片（首次 attach 或冻结后）"""
         if not tracker.cards:
@@ -357,28 +491,31 @@ class SharedMemoryPoller:
                 )
 
         blocks_slice = blocks[start_idx:]
-        if not blocks_slice and not status_line and not bottom_bar and not agent_panel and not option_block:
+        if not blocks_slice and not context.status_line and not context.bottom_bar and not context.agent_panel and not context.option_block:
             return
 
-        from .card_builder import build_stream_card
-        card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
+        blocks_slice, trimmed_count = _trim_card_head_by_size(
+            blocks_slice,
+            tracker.session_name,
+            context.status_line,
+            context.bottom_bar,
+            agent_panel=context.agent_panel,
+            option_block=context.option_block,
+            cli_type=context.cli_type,
+        )
+        start_idx += trimmed_count
 
-        # 新卡大小检查：超限则从头部裁剪
-        card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
-        while card_size > CARD_SIZE_LIMIT and len(blocks_slice) > 1:
-            blocks_slice = blocks_slice[1:]
-            start_idx += 1
-            card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
-            card_size = len(json.dumps(card_dict, ensure_ascii=False).encode('utf-8'))
+        card_dict = self._build_card(tracker, blocks_slice, context)
 
         card_id = await self._card_service.create_card(card_dict)
 
         if card_id:
             await self._card_service.send_card(tracker.chat_id, card_id)
             tracker.cards.append(CardSlice(card_id=card_id, start_idx=start_idx))
-            tracker.content_hash = self._compute_hash(blocks_slice, status_line, bottom_bar, agent_panel, option_block)
-            _track_stats('card', 'create', session_name=tracker.session_name,
-                         chat_id=tracker.chat_id)
+            self._prune_cards(tracker)
+            tracker.content_hash = self._compute_hash(blocks_slice, context)
+            _safe_track_stats('card', 'create', session_name=tracker.session_name,
+                              chat_id=tracker.chat_id)
             logger.info(
                 f"[NEW] session={tracker.session_name} start_idx={start_idx} "
                 f"blocks={len(blocks_slice)} card_id={card_id}"
@@ -387,44 +524,39 @@ class SharedMemoryPoller:
             logger.warning(f"create_card 失败 session={tracker.session_name}")
 
     async def _handle_element_limit(
-        self, tracker: StreamTracker, blocks: List[dict],
-        status_line: Optional[dict], bottom_bar: Optional[dict],
-        agent_panel: Optional[dict] = None,
-        option_block: Optional[dict] = None,
-        cli_type: str = "claude",
+        self, tracker: StreamTracker, blocks: List[dict], context: CardRenderContext,
     ) -> None:
         """元素超限：冻结旧卡片 + 推送新流式卡片"""
         active = tracker.cards[-1]
         logger.warning(f"元素超限，冻结卡片 {active.card_id} 并推新卡")
 
         # 1. 冻结旧卡片（灰色 header，无状态区和按钮）
-        from .card_builder import build_stream_card
         blocks_slice = blocks[active.start_idx:]
-        frozen_card = build_stream_card(blocks_slice, None, None, is_frozen=True)
-        active.sequence += 1
-        await self._card_service.update_card(active.card_id, active.sequence, frozen_card)
+        frozen_card = self._build_card(tracker, blocks_slice, context, is_frozen=True)
+        proposed_sequence = active.sequence + 1
+        update_ok = await self._card_service.update_card(active.card_id, proposed_sequence, frozen_card)
+        if not update_ok:
+            return
+
+        active.sequence = proposed_sequence
         active.frozen = True
-        _track_stats('card', 'freeze', session_name=tracker.session_name,
-                     chat_id=tracker.chat_id)
+        _safe_track_stats('card', 'freeze', session_name=tracker.session_name,
+                          chat_id=tracker.chat_id)
 
         # 2. 创建新流式卡片，从最近 INITIAL_WINDOW 个 blocks 开始（重置窗口）
         new_start = max(0, len(blocks) - INITIAL_WINDOW)
         new_blocks = blocks[new_start:]
-        if not new_blocks and not status_line and not bottom_bar:
+        if not new_blocks and not context.status_line and not context.bottom_bar:
             return
-        new_card_dict = build_stream_card(
-            new_blocks, status_line, bottom_bar,
-            agent_panel=agent_panel, option_block=option_block,
-            session_name=tracker.session_name,
-            cli_type=cli_type,
-        )
+        new_card_dict = self._build_card(tracker, new_blocks, context)
         new_card_id = await self._card_service.create_card(new_card_dict)
         if new_card_id:
             await self._card_service.send_card(tracker.chat_id, new_card_id)
             tracker.cards.append(CardSlice(card_id=new_card_id, start_idx=new_start))
-            tracker.content_hash = self._compute_hash(new_blocks, status_line, bottom_bar, agent_panel, option_block)
-            _track_stats('card', 'create', session_name=tracker.session_name,
-                         chat_id=tracker.chat_id)
+            self._prune_cards(tracker)
+            tracker.content_hash = self._compute_hash(new_blocks, context)
+            _safe_track_stats('card', 'create', session_name=tracker.session_name,
+                              chat_id=tracker.chat_id)
             logger.info(
                 f"[ELEMENT_LIMIT_SPLIT] session={tracker.session_name} "
                 f"new_start={new_start} blocks={len(new_blocks)} card_id={new_card_id}"
@@ -449,11 +581,7 @@ class SharedMemoryPoller:
         return result
 
     async def _freeze_and_split(
-        self, tracker: StreamTracker, blocks: List[dict],
-        status_line: Optional[dict], bottom_bar: Optional[dict],
-        agent_panel: Optional[dict] = None,
-        option_block: Optional[dict] = None,
-        cli_type: str = "claude",
+        self, tracker: StreamTracker, blocks: List[dict], context: CardRenderContext,
         freeze_count: Optional[int] = None,
     ) -> None:
         """冻结当前卡片 + 开新卡"""
@@ -463,13 +591,16 @@ class SharedMemoryPoller:
 
         # 冻结当前卡片（只保留前 count 个 blocks，移除状态区和按钮）
         frozen_blocks = blocks[active.start_idx:active.start_idx + count]
-        from .card_builder import build_stream_card
-        frozen_card = build_stream_card(frozen_blocks, None, None, is_frozen=True)
-        active.sequence += 1
-        await self._card_service.update_card(active.card_id, active.sequence, frozen_card)
+        frozen_card = self._build_card(tracker, frozen_blocks, context, is_frozen=True)
+        proposed_sequence = active.sequence + 1
+        update_ok = await self._card_service.update_card(active.card_id, proposed_sequence, frozen_card)
+        if not update_ok:
+            return
+
+        active.sequence = proposed_sequence
         active.frozen = True
-        _track_stats('card', 'freeze', session_name=tracker.session_name,
-                     chat_id=tracker.chat_id)
+        _safe_track_stats('card', 'freeze', session_name=tracker.session_name,
+                          chat_id=tracker.chat_id)
         logger.info(
             f"[FREEZE] session={tracker.session_name} card_id={active.card_id} "
             f"blocks=[{active.start_idx}:{active.start_idx + count}] reason={reason}"
@@ -481,21 +612,24 @@ class SharedMemoryPoller:
         if not new_blocks:
             return
 
-        new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
-
-        # 新卡大小检查：超限则从头部裁剪
-        new_card_size = len(json.dumps(new_card_dict, ensure_ascii=False).encode('utf-8'))
-        while new_card_size > CARD_SIZE_LIMIT and len(new_blocks) > 1:
-            new_blocks = new_blocks[1:]
-            new_start += 1
-            new_card_dict = build_stream_card(new_blocks, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
-            new_card_size = len(json.dumps(new_card_dict, ensure_ascii=False).encode('utf-8'))
+        new_blocks, trimmed_count = _trim_card_head_by_size(
+            new_blocks,
+            tracker.session_name,
+            context.status_line,
+            context.bottom_bar,
+            agent_panel=context.agent_panel,
+            option_block=context.option_block,
+            cli_type=context.cli_type,
+        )
+        new_start += trimmed_count
+        new_card_dict = self._build_card(tracker, new_blocks, context)
 
         new_card_id = await self._card_service.create_card(new_card_dict)
         if new_card_id:
             await self._card_service.send_card(tracker.chat_id, new_card_id)
             tracker.cards.append(CardSlice(card_id=new_card_id, start_idx=new_start))
-            tracker.content_hash = self._compute_hash(new_blocks, status_line, bottom_bar, agent_panel, option_block)
+            self._prune_cards(tracker)
+            tracker.content_hash = self._compute_hash(new_blocks, context)
             logger.info(
                 f"[NEW after FREEZE] session={tracker.session_name} start_idx={new_start} "
                 f"blocks={len(new_blocks)} card_id={new_card_id}"
@@ -594,19 +728,52 @@ class SharedMemoryPoller:
         _save_bypass_enabled(enabled)
         logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
 
+    def cancel_auto_answer(self, session_name: str) -> None:
+        for tracker in self._trackers.values():
+            if tracker.session_name != session_name:
+                continue
+            pending = tracker.pending_auto_answer
+            if pending:
+                pending.cancel()
+                tracker.pending_auto_answer = None
+
+    def get_tracker(self, chat_id: str) -> Optional[StreamTracker]:
+        return self._trackers.get(chat_id)
+
+    def _build_card(
+        self,
+        tracker: StreamTracker,
+        blocks: List[dict],
+        context: CardRenderContext,
+        *,
+        is_frozen: bool = False,
+        settings: Optional[dict] = None,
+    ):
+        from .card_builder import build_stream_card
+
+        return build_stream_card(
+            blocks,
+            None if is_frozen else context.status_line,
+            None if is_frozen else context.bottom_bar,
+            is_frozen=is_frozen,
+            agent_panel=None if is_frozen else context.agent_panel,
+            option_block=None if is_frozen else context.option_block,
+            session_name=tracker.session_name,
+            cli_type=context.cli_type,
+            settings=settings,
+        )
+
     @staticmethod
     def _compute_hash(
-        blocks: list, status_line: Optional[dict],
-        bottom_bar: Optional[dict], agent_panel: Optional[dict] = None,
-        option_block: Optional[dict] = None,
+        blocks: list, context: CardRenderContext,
     ) -> str:
         """计算内容 hash（用于 diff）"""
         data = {
             "blocks": blocks,
-            "status_line": status_line,
-            "bottom_bar": bottom_bar,
-            "agent_panel": agent_panel,
-            "option_block": option_block,
+            "status_line": context.status_line,
+            "bottom_bar": context.bottom_bar,
+            "agent_panel": context.agent_panel,
+            "option_block": context.option_block,
         }
         return hashlib.md5(
             json.dumps(data, ensure_ascii=False, sort_keys=True).encode()
@@ -627,55 +794,91 @@ _URGENT_ENABLED_FILE = USER_DATA_DIR / "urgent_notify_enabled"
 _BYPASS_ENABLED_FILE = USER_DATA_DIR / "bypass_enabled"
 
 
+def _trim_card_head_by_size(
+    blocks_slice: List[dict],
+    session_name: str,
+    status_line: Optional[dict],
+    bottom_bar: Optional[dict],
+    agent_panel: Optional[dict] = None,
+    option_block: Optional[dict] = None,
+    cli_type: str = "claude",
+) -> tuple[List[dict], int]:
+    """按大小限制裁剪头部，返回裁剪后的 blocks 与裁掉的数量"""
+    if not blocks_slice:
+        return blocks_slice, 0
+
+    from .card_builder import build_stream_card
+
+    lo, hi = 0, len(blocks_slice) - 1
+    trim_count = 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = blocks_slice[mid:]
+        card = build_stream_card(
+            candidate,
+            status_line,
+            bottom_bar,
+            agent_panel=agent_panel,
+            option_block=option_block,
+            session_name=session_name,
+            cli_type=cli_type,
+        )
+        size = len(json.dumps(card, ensure_ascii=False).encode('utf-8'))
+        if size <= CARD_SIZE_LIMIT:
+            trim_count = mid
+            hi = mid - 1
+        else:
+            lo = mid + 1
+
+    trimmed = blocks_slice[trim_count:]
+    return trimmed or blocks_slice[-1:], trim_count
+
+
+def _load_bool_flag(file_path: Path, default: bool) -> bool:
+    """读取布尔开关文件，不存在或解析失败返回默认值"""
+    try:
+        return file_path.read_text().strip() == "1"
+    except Exception:
+        return default
+
+
+def _save_bool_flag(file_path: Path, enabled: bool, label: str) -> None:
+    """持久化布尔开关状态"""
+    try:
+        ensure_user_data_dir()
+        file_path.write_text("1" if enabled else "0")
+    except Exception as e:
+        logger.warning(f"保存{label}开关失败: {e}")
+
+
 def _load_notify_enabled() -> bool:
     """读取就绪通知开关状态，不存在或解析失败返回 True（默认开启）"""
-    try:
-        return _NOTIFY_ENABLED_FILE.read_text().strip() == "1"
-    except Exception:
-        return True
+    return _load_bool_flag(_NOTIFY_ENABLED_FILE, True)
 
 
 def _save_notify_enabled(enabled: bool) -> None:
     """持久化就绪通知开关状态"""
-    try:
-        ensure_user_data_dir()
-        _NOTIFY_ENABLED_FILE.write_text("1" if enabled else "0")
-    except Exception as e:
-        logger.warning(f"_save_notify_enabled 失败: {e}")
+    _save_bool_flag(_NOTIFY_ENABLED_FILE, enabled, "就绪通知")
 
 
 def _load_urgent_enabled() -> bool:
     """读取加急通知开关状态，不存在或解析失败返回 False（默认关闭）"""
-    try:
-        return _URGENT_ENABLED_FILE.read_text().strip() == "1"
-    except Exception:
-        return False
+    return _load_bool_flag(_URGENT_ENABLED_FILE, False)
 
 
 def _save_urgent_enabled(enabled: bool) -> None:
     """持久化加急通知开关状态"""
-    try:
-        ensure_user_data_dir()
-        _URGENT_ENABLED_FILE.write_text("1" if enabled else "0")
-    except Exception as e:
-        logger.warning(f"_save_urgent_enabled 失败: {e}")
+    _save_bool_flag(_URGENT_ENABLED_FILE, enabled, "加急通知")
 
 
 def _load_bypass_enabled() -> bool:
     """读取新会话 bypass 开关状态，不存在或解析失败返回 False（默认关闭）"""
-    try:
-        return _BYPASS_ENABLED_FILE.read_text().strip() == "1"
-    except Exception:
-        return False
+    return _load_bool_flag(_BYPASS_ENABLED_FILE, False)
 
 
 def _save_bypass_enabled(enabled: bool) -> None:
     """持久化新会话 bypass 开关状态"""
-    try:
-        ensure_user_data_dir()
-        _BYPASS_ENABLED_FILE.write_text("1" if enabled else "0")
-    except Exception as e:
-        logger.warning(f"_save_bypass_enabled 失败: {e}")
+    _save_bool_flag(_BYPASS_ENABLED_FILE, enabled, "新会话 bypass")
 
 
 # 模块级开关状态：启动时加载一次
@@ -698,3 +901,49 @@ def _increment_ready_count() -> int:
     except Exception as e:
         logger.warning(f"_increment_ready_count 失败: {e}")
         return 1
+
+
+def _get_vague_keywords() -> set[str]:
+    try:
+        patterns, _ = get_vague_commands_config()
+        return {str(p).strip().lower() for p in patterns if str(p).strip()}
+    except Exception:
+        return {'继续', '好的', '是', '确认', '明白', '可以', '行', '对', 'continue', 'yes', 'ok', 'proceed', 'go ahead', 'sure', 'confirm', 'alright', 'fine'}
+
+
+def analyze_option_block(option_block: Optional[dict]) -> tuple[str, str]:
+    options = (option_block or {}).get('options') or []
+    selected_value = str((option_block or {}).get('selected_value') or '').strip()
+    if selected_value:
+        for option in options:
+            value = str(option.get('value', '')).strip()
+            if value == selected_value:
+                return ('select', value)
+
+    for option in options:
+        label = str(option.get('label', '')).strip()
+        value = str(option.get('value', '')).strip()
+        lowered = label.lower()
+        if 'recommended' in lowered or '推荐' in label:
+            return ('select', value or '1')
+
+    vague_keywords = _get_vague_keywords()
+    for option in options:
+        label = str(option.get('label', '')).strip()
+        normalized = label.lower().strip()
+        if normalized in vague_keywords:
+            return ('input', '继续')
+        if any(keyword in normalized for keyword in vague_keywords if ' ' in keyword or len(keyword) > 2):
+            return ('input', '继续')
+        if label in vague_keywords:
+            return ('input', '继续')
+
+    if options:
+        first = options[0]
+        first_label = str(first.get('label', '')).strip()
+        first_value = str(first.get('value', '')).strip()
+        if any(token in first_label.lower() for token in ('继续', 'yes', 'ok', 'proceed', 'sure', 'confirm')):
+            return ('input', '继续')
+        return ('select', first_value or '1')
+
+    return ('input', '继续')

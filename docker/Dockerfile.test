@@ -1,61 +1,65 @@
 # Docker 测试镜像定义
 # 用于验证 npm 包在不同环境下的完整性和功能可用性
 
-FROM ubuntu:22.04
+# 使用官方 uv 镜像作为基础（包含 Python 和 uv）
+# 基于 Debian slim，使用 glibc 版本
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS base
 
-# 环境变量
+# 设置环境变量和时区（变化较少，放在前面）
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    PATH=/home/testuser/.local/bin:/home/testuser/bin:$PATH
+    SHELL=/bin/bash \
+    PATH=/home/testuser/.local/bin:/home/testuser/bin:$PATH \
+    UV_LINK_MODE=copy \
+    UV_PYTHON=python3.12 \
+    NPM_CONFIG_CACHE=/tmp/npm-cache \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 安装系统依赖（先装 curl/ca-certificates，再通过 NodeSource 安装 Node.js 20）
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    tmux \
-    curl \
-    git \
-    build-essential \
-    libevent-dev \
-    libncurses5-dev \
-    libncursesw5-dev \
-    bison \
-    pkg-config \
+# 安装系统依赖（使用缓存挂载加速）
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
+    curl \
+    gnupg \
+    git \
+    tmux \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
-# 创建非 root 用户
+# 安装 Node.js（使用缓存挂载）
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建非 root 用户和缓存目录
 RUN useradd -m -s /bin/bash testuser && \
     mkdir -p /home/testuser/.local/bin /home/testuser/bin && \
-    chown -R testuser:testuser /home/testuser
+    mkdir -p /tmp/npm-cache /tmp/uv-cache && \
+    chown -R testuser:testuser /home/testuser /tmp/npm-cache /tmp/uv-cache
+
+# 安装 Claude CLI 和 Codex CLI（使用缓存挂载加速）
+# 注意：不进行登录，仅安装二进制
+# 使用 uid/gid 确保缓存目录对 testuser 可写
+RUN --mount=type=cache,target=/tmp/npm-cache,uid=1000,gid=1000 \
+    npm config set registry https://registry.npmmirror.com && \
+    npm install -g @anthropic-ai/claude-code @openai/codex && \
+    npm cache clean --force
 
 # 切换到 testuser
 USER testuser
 WORKDIR /home/testuser
 
-# 安装 uv（优先使用官方脚本）
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh || \
-    pip3 install uv --break-system-packages || true
-
-# 设置 uv 路径
-ENV PATH=/home/testuser/.local/bin:$PATH
-
-# 安装 Claude CLI 和 Codex CLI（通过 npm 全局安装）
-# 注意：不进行登录，仅安装二进制
-USER root
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
-USER testuser
-
 # 创建测试结果目录
-RUN mkdir -p /home/testuser/test-results
+RUN mkdir -p /home/testuser/test-results /home/testuser/test-results/npm-install
 
 # 设置默认命令
 CMD ["/bin/bash"]

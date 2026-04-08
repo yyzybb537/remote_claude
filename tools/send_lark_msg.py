@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 发送飞书文本消息到指定群/用户
-用法: python3 send_lark_msg.py <chat_id> <message>
+用法: uv run python3 tools/send_lark_msg.py <chat_id> <message>
 """
 import sys
 import json
@@ -10,6 +10,23 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv(Path.home() / ".remote-claude" / ".env")
+
+
+def _get_env_value(key: str, default: str = "") -> str:
+    aliases = {
+        "LARK_LOG_LEVEL": ("LOG_LEVEL",),
+        "LARK_NO_PROXY": ("NO_PROXY",),
+        "GROUP_NAME_PREFIX": ("GROUP_PREFIX",),
+        "ALLOWED_USERS": ("USER_WHITELIST",),
+    }
+    value = os.getenv(key)
+    if value not in (None, ""):
+        return value
+    for alias in aliases.get(key, ()):
+        alias_value = os.getenv(alias)
+        if alias_value not in (None, ""):
+            return alias_value
+    return default
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
@@ -27,17 +44,15 @@ def send_text(chat_id: str, text: str) -> bool:
     request = CreateMessageRequest.builder() \
         .receive_id_type("chat_id") \
         .request_body(
-            CreateMessageRequestBody.builder()
-            .receive_id(chat_id)
-            .msg_type("text")
-            .content(json.dumps({"text": text}))
-            .build()
-        ).build()
+        CreateMessageRequestBody.builder()
+        .receive_id(chat_id)
+        .msg_type("text")
+        .content(json.dumps({"text": text}))
+        .build()
+    ).build()
 
-    import asyncio
-    resp = asyncio.get_event_loop().run_until_complete(
-        asyncio.get_event_loop().run_in_executor(None, lambda: client.im.v1.message.create(request))
-    )
+    # lark-oapi SDK 的 message.create 是同步方法，直接调用即可
+    resp = client.im.v1.message.create(request)
     if resp.success():
         print(f"✅ 发送成功")
         return True
@@ -48,7 +63,7 @@ def send_text(chat_id: str, text: str) -> bool:
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("用法: python3 send_lark_msg.py <chat_id> <message>")
+        print("用法: uv run python3 tools/send_lark_msg.py <chat_id> <message>")
         sys.exit(1)
     chat_id = sys.argv[1]
     message = " ".join(sys.argv[2:])

@@ -34,8 +34,11 @@ capture_*.txt
 *.swp
 *.swo
 
+.claude/
+.superset/
+.mcp.json
+
 # npm
 node_modules/
-
-# uv 锁文件（含内网 PyPI 地址，不提交）
-uv.lock
+.worktrees/
+docs/superpowers

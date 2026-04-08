@@ -86,7 +86,7 @@ class _DimAwareScreen(pyte.HistoryScreen):
 
     # dim 状态下使用的灰色（与终端 dim 效果近似）
     _DIM_FG = '808080'
-    _DEFAULT_HISTORY = 5000
+    _DEFAULT_HISTORY = 800
 
     def __init__(self, columns, lines, **kwargs):
         kwargs.setdefault('history', self._DEFAULT_HISTORY)
@@ -123,8 +123,10 @@ class _DimAwareScreen(pyte.HistoryScreen):
 class RichTextRenderer:
     """将 pyte 屏幕内容转换为飞书富文本"""
 
-    def __init__(self, columns: int = 200, lines: int = 500, debug_stream: bool = False):
-        self.screen = _DimAwareScreen(columns, lines)
+    def __init__(self, columns: int = 200, lines: int = 500,
+                 history_limit: int = _DimAwareScreen._DEFAULT_HISTORY,
+                 debug_stream: bool = False):
+        self.screen = _DimAwareScreen(columns, lines, history=history_limit)
         # debug_stream=True 时使用 _DebugStream，记录 pyte 未识别序列
         if debug_stream:
             self.stream = _DebugStream(self.screen)

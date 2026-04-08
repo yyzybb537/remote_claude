@@ -11,8 +11,11 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# 结果目录
+RESULTS_DIR="/home/testuser/test-results"
+
 # 诊断目录
-DIAG_DIR="/home/testuser/test-results/diagnosis"
+DIAG_DIR="$RESULTS_DIR/diagnosis"
 mkdir -p "$DIAG_DIR"
 
 log_info() {
@@ -29,6 +32,38 @@ print_header() {
     echo -e "${BLUE}$1${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+}
+
+# 收集会话与启动诊断信息
+collect_session_diagnostics() {
+    print_header "收集会话与启动诊断"
+
+    local session_log="$DIAG_DIR/session.txt"
+    echo "=== remote-claude list ===" > "$session_log"
+
+    if uv run remote-claude list >> "$session_log" 2>&1; then
+        echo "" >> "$session_log"
+    else
+        echo "remote-claude list 执行失败" >> "$session_log"
+        echo "" >> "$session_log"
+    fi
+
+    echo "=== /tmp/remote-claude ===" >> "$session_log"
+    ls -la /tmp/remote-claude >> "$session_log" 2>&1 || echo "/tmp/remote-claude 不存在" >> "$session_log"
+    echo "" >> "$session_log"
+
+    echo "=== tmux list-sessions ===" >> "$session_log"
+    tmux list-sessions >> "$session_log" 2>&1 || echo "没有活跃的 tmux 会话" >> "$session_log"
+    echo "" >> "$session_log"
+
+    echo "=== startup.log (tail -100) ===" >> "$session_log"
+    if [ -f "$HOME/.remote-claude/startup.log" ]; then
+        tail -100 "$HOME/.remote-claude/startup.log" >> "$session_log" 2>&1
+    else
+        echo "startup.log 不存在" >> "$session_log"
+    fi
+
+    log_success "会话与启动诊断已收集"
 }
 
 # 收集系统信息
@@ -56,7 +91,7 @@ collect_dependency_versions() {
     echo "=== 依赖版本 ===" > "$DIAG_DIR/dependencies.txt"
 
     echo "Python:" >> "$DIAG_DIR/dependencies.txt"
-    python3 --version 2>&1 >> "$DIAG_DIR/dependencies.txt"
+    uv run python3 --version 2>&1 >> "$DIAG_DIR/dependencies.txt"
     echo "" >> "$DIAG_DIR/dependencies.txt"
 
     echo "Node.js:" >> "$DIAG_DIR/dependencies.txt"
@@ -92,9 +127,9 @@ collect_npm_info() {
     npm list -g --depth=0 2>&1 >> "$DIAG_DIR/npm.txt"
     echo "" >> "$DIAG_DIR/npm.txt"
 
-    if [ -d "/home/testuser/test-npm-install" ]; then
+    if [ -d "$RESULTS_DIR/npm-install" ]; then
         echo "=== 本地安装包列表 ===" >> "$DIAG_DIR/npm.txt"
-        cd /home/testuser/test-npm-install
+        cd "$RESULTS_DIR/npm-install"
         npm list --depth=0 2>&1 >> "$DIAG_DIR/npm.txt"
     fi
 
@@ -107,16 +142,10 @@ collect_python_info() {
 
     echo "=== Python 包列表 ===" > "$DIAG_DIR/python.txt"
 
-    # 全局包
-    echo "--- 全局包 ---" >> "$DIAG_DIR/python.txt"
-    pip3 list 2>&1 >> "$DIAG_DIR/python.txt"
+    # 项目虚拟环境包（uv 管理）
+    echo "--- 项目依赖 ---" >> "$DIAG_DIR/python.txt"
+    uv pip list 2>&1 >> "$DIAG_DIR/python.txt"
     echo "" >> "$DIAG_DIR/python.txt"
-
-    # 虚拟环境包
-    if [ -d "/home/testuser/test-npm-install/node_modules/remote-claude/.venv" ]; then
-        echo "--- 虚拟环境包 ---" >> "$DIAG_DIR/python.txt"
-        /home/testuser/test-npm-install/node_modules/remote-claude/.venv/bin/pip list 2>&1 >> "$DIAG_DIR/python.txt"
-    fi
 
     log_success "Python 包信息已收集"
 }
@@ -125,8 +154,8 @@ collect_python_info() {
 collect_file_structure() {
     print_header "收集文件结构"
 
-    if [ -d "/home/testuser/test-npm-install/node_modules/remote-claude" ]; then
-        cd /home/testuser/test-npm-install/node_modules/remote-claude
+    if [ -d "$RESULTS_DIR/npm-install/node_modules/remote-claude" ]; then
+        cd "$RESULTS_DIR/npm-install/node_modules/remote-claude"
 
         echo "=== 目录结构 ===" > "$DIAG_DIR/structure.txt"
         find . -type f -o -type d | sort >> "$DIAG_DIR/structure.txt"
@@ -189,19 +218,40 @@ collect_errors() {
         echo "" >> "$error_log"
     fi
 
+    # 从单元测试日志中提取错误
+    local results_dir="/home/testuser/test-results"
+    if [ -d "$results_dir" ]; then
+        echo "--- 单元测试失败汇总 ---" >> "$error_log"
+        local test_logs=$(find "$results_dir" -maxdepth 1 -name "test_*.log" -o -name "test_*.txt" 2>/dev/null)
+        if [ -n "$test_logs" ]; then
+            for test_log in $test_logs; do
+                local matches
+                matches=$(grep -i "fail\|error\|traceback\|assertion" "$test_log" 2>/dev/null) || true
+                if [ -n "$matches" ]; then
+                    echo ">>> $(basename "$test_log") <<<" >> "$error_log"
+                    echo "$matches" >> "$error_log"
+                    echo "" >> "$error_log"
+                fi
+            done
+        else
+            echo "未找到单元测试日志文件" >> "$error_log"
+        fi
+        echo "" >> "$error_log"
+    fi
+
     # 检查缺失的依赖
     echo "--- 依赖检查 ---" >> "$error_log"
     echo "检查关键依赖..." >> "$error_log"
 
-    if ! python3 -c "import lark_oapi" 2>&1; then
+    if ! uv run python3 -c "import lark_oapi" 2>&1; then
         echo "✗ lark_oapi 未安装" >> "$error_log"
     fi
 
-    if ! python3 -c "import dotenv" 2>&1; then
+    if ! uv run python3 -c "import dotenv" 2>&1; then
         echo "✗ python-dotenv 未安装" >> "$error_log"
     fi
 
-    if ! python3 -c "import pyte" 2>&1; then
+    if ! uv run python3 -c "import pyte" 2>&1; then
         echo "✗ pyte 未安装" >> "$error_log"
     fi
 
@@ -248,6 +298,10 @@ $(cat "$DIAG_DIR/python.txt")
 \`\`\`
 $(cat "$DIAG_DIR/structure.txt")
 \`\`\`
+
+## 会话与启动诊断
+
+```\n$(cat "$DIAG_DIR/session.txt")\n```
 
 ## 错误汇总
 
@@ -305,6 +359,7 @@ main() {
     collect_npm_info
     collect_python_info
     collect_file_structure
+    collect_session_diagnostics
     collect_test_logs
     collect_errors
     generate_diagnosis_report

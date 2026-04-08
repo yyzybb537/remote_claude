@@ -1,21 +1,28 @@
 {
   "name": "remote-claude",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "description": "双端共享 Claude CLI 工具",
   "bin": {
     "remote-claude": "bin/remote-claude",
     "cla": "bin/cla",
-    "cl": "bin/cl"
+    "cl": "bin/cl",
+    "cx": "bin/cx",
+    "cdx": "bin/cdx"
   },
   "scripts": {
-    "preinstall": "bash scripts/preinstall.sh",
-    "postinstall": "bash scripts/postinstall.sh"
+    "preinstall": "sh scripts/preinstall.sh",
+    "postinstall": "sh scripts/install.sh --npm",
+    "preuninstall": "sh scripts/uninstall.sh -y"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "remote-claude"
+    ]
   },
   "files": [
     "bin/",
     "scripts/*.sh",
     "scripts/*.py",
-    "init.sh",
     "remote_claude.py",
     "server/*.py",
     "server/parsers/*.py",
@@ -26,7 +33,13 @@
     "stats/__init__.py",
     "stats/*.py",
     "pyproject.toml",
-    ".env.example"
+    "uv.lock",
+    "tests/",
+    "resources/",
+    "docs/*.md",
+    "docs/*.json",
+    "docker/",
+    ".npmrc"
   ],
   "os": [
     "darwin",
@@ -44,10 +57,15 @@
     "pty",
     "lark"
   ],
+  "bugs": {
+    "url": "https://github.com/yyzybb537/remote_claude/issues"
+  },
+  "homepage": "https://github.com/yyzybb537/remote_claude#readme",
   "engines": {
     "node": ">=16"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
-  }
+  },
+  "dependencies": {}
 }
