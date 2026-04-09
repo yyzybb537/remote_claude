@@ -13,6 +13,7 @@
     同一张卡片就地更新 / 超限时冻结+开新卡
 """
 
+import random
 import asyncio
 import hashlib
 import json
@@ -47,6 +48,7 @@ from utils.runtime_config import (
     get_notify_ready_enabled,
     get_notify_urgent_enabled,
     get_vague_commands_config,
+    get_auto_answer_delay,
     increment_ready_notify_count,
     load_settings,
 )
@@ -111,8 +113,9 @@ class SharedMemoryPoller:
 
     CARD_METADATA_LIMIT = 5
 
-    def __init__(self, card_service: Any):
+    def __init__(self, card_service: Any, auto_answer_callback: Optional[Any] = None):
         self._card_service = card_service
+        self._auto_answer_callback = auto_answer_callback  # 回调签名: async (chat_id: str, action: str, value: str) -> bool
         self._trackers: Dict[str, StreamTracker] = {}  # chat_id → StreamTracker
         self._tasks: Dict[str, asyncio.Task] = {}       # chat_id → Task
         self._kick_events: Dict[str, asyncio.Event] = {}  # chat_id → Event（唤醒轮询）
@@ -278,7 +281,7 @@ class SharedMemoryPoller:
                 logger.error(f"_poll_once 异常: {e}", exc_info=True)
 
     async def _poll_once(self, tracker: StreamTracker) -> None:
-        """单次轮询：读取共享内存 → diff → 创建/更新卡片 → 就绪通知"""
+        """单次轮询：读取共享内存 → diff → 创建/更新卡片 → 就绪通知 → 自动应答"""
         # 步骤 1：延迟初始化 Reader
         if tracker.reader is None:
             try:
@@ -323,6 +326,60 @@ class SharedMemoryPoller:
         # 步骤 4：通知在卡片操作之后发送，确保新卡先出现
         if should_notify:
             await self._send_ready_notification(tracker, cli_type)
+
+        # 步骤 5：自动应答检测与执行
+        if tracker.auto_answer_enabled and option_block and self._auto_answer_callback:
+            await self._try_auto_answer(tracker, option_block)
+
+    async def _try_auto_answer(self, tracker: StreamTracker, option_block: dict) -> None:
+        """检测是否需要自动应答并执行
+
+        自动应答策略（按优先级）：
+        1. 优先选择标记为 (recommended) 或 推荐的选项
+        2. 确认类选项（Yes/OK/继续等）：随机选择一个 vague_pattern，追加 vague_prompt
+        3. 兜底选择第一项
+        """
+        # 已有待处理的自动应答，跳过
+        if tracker.pending_auto_answer:
+            return
+
+        action, value = analyze_option_block(option_block)
+        if not action or not value:
+            return
+
+        # 如果是 input 类型，需要组装完整回复：随机 pattern + prompt
+        if action == 'input':
+            patterns, prompt = get_vague_commands_config()
+            if patterns:
+                value = random.choice(patterns)
+            if prompt:
+                value = f"{value}\n{prompt}"
+
+        logger.info(f"自动应答触发: chat_id={tracker.chat_id[:8]}..., action={action}, value={value[:50]}...")
+
+        # 延迟执行，给用户取消时间（延迟时间可配置）
+        delay_sec = get_auto_answer_delay()
+
+        async def _execute():
+            try:
+                await asyncio.sleep(delay_sec)
+                if not tracker.auto_answer_enabled:
+                    return
+                success = await self._auto_answer_callback(tracker.chat_id, action, value)
+                if success:
+                    _safe_track_stats('lark', 'auto_answer',
+                                     session_name=tracker.session_name,
+                                     chat_id=tracker.chat_id,
+                                     detail=f"{action}:{value[:50]}")
+                    logger.info(f"自动应答已执行: action={action}, value={value[:50]}...")
+            except asyncio.CancelledError:
+                logger.info(f"自动应答已取消: chat_id={tracker.chat_id[:8]}...")
+            except Exception as e:
+                logger.error(f"自动应答执行失败: {e}")
+            finally:
+                tracker.pending_auto_answer = None
+
+        tracker.pending_auto_answer = asyncio.create_task(_execute())
 
     def _check_card_expiry(self, tracker: StreamTracker) -> None:
         """检查并标记过期卡片。"""
@@ -670,7 +727,7 @@ class SharedMemoryPoller:
                 else:
                     # 加急失败（权限未开通等）→ 降级发新消息
                     label = ""
-                    text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪，等待您的输入...（这是第{count}次通知）'
+                    text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪（这是第{count}次通知）'
                     msg_id = await self._card_service.send_text(tracker.chat_id, text)
                     if msg_id:
                         tracker.last_notify_message_id = msg_id
@@ -679,7 +736,7 @@ class SharedMemoryPoller:
         else:
             # 首次通知（或无法加急时）→ 发新消息，记录 message_id
             label = "所有人" if uid == "all" else ""
-            text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪，等待您的输入...（这是第{count}次通知）'
+            text = f'<at user_id="{uid}">{label}</at> {cli_name} 已就绪（这是第{count}次通知）'
             try:
                 msg_id = await self._card_service.send_text(tracker.chat_id, text)
                 if msg_id:
@@ -903,23 +960,37 @@ def _increment_ready_count() -> int:
         return 1
 
 
-def _get_vague_keywords() -> set[str]:
-    try:
-        patterns, _ = get_vague_commands_config()
-        return {str(p).strip().lower() for p in patterns if str(p).strip()}
-    except Exception:
-        return {'继续', '好的', '是', '确认', '明白', '可以', '行', '对', 'continue', 'yes', 'ok', 'proceed', 'go ahead', 'sure', 'confirm', 'alright', 'fine'}
+# 确认类选项的关键词（用于判断选项是否为确认类）
+_CONFIRM_KEYWORDS = {'yes', 'ok', 'sure', 'proceed', 'confirm', 'continue', '继续', '确认', '好的', '是', '可以', '行', '对'}
 
 
 def analyze_option_block(option_block: Optional[dict]) -> tuple[str, str]:
+    """分析选项块，返回自动应答动作
+
+    自动应答策略（按优先级）：
+    1. 优先选择标记为 (recommended) 或 推荐的选项
+    2. 确认类选项（Yes/OK/继续等）：返回 ('input', '继续')
+    3. 兜底选择第一项
+
+    Args:
+        option_block: 选项块字典，包含 options 列表
+
+    Returns:
+        tuple[str, str]: (action, value)
+            - action: 'select'（选择选项）或 'input'（文本输入）
+            - value: 选项值或输入文本
+    """
     options = (option_block or {}).get('options') or []
     selected_value = str((option_block or {}).get('selected_value') or '').strip()
+
+    # 已有选中值，直接选择
     if selected_value:
         for option in options:
             value = str(option.get('value', '')).strip()
             if value == selected_value:
                 return ('select', value)
 
+    # 策略 1：优先选择标记为 recommended/推荐的选项
     for option in options:
         label = str(option.get('label', '')).strip()
         value = str(option.get('value', '')).strip()
@@ -927,23 +998,20 @@ def analyze_option_block(option_block: Optional[dict]) -> tuple[str, str]:
         if 'recommended' in lowered or '推荐' in label:
             return ('select', value or '1')
 
-    vague_keywords = _get_vague_keywords()
-    for option in options:
-        label = str(option.get('label', '')).strip()
-        normalized = label.lower().strip()
-        if normalized in vague_keywords:
-            return ('input', '继续')
-        if any(keyword in normalized for keyword in vague_keywords if ' ' in keyword or len(keyword) > 2):
-            return ('input', '继续')
-        if label in vague_keywords:
-            return ('input', '继续')
-
+    # 策略 2：确认类选项（Yes/OK/继续等）
     if options:
         first = options[0]
         first_label = str(first.get('label', '')).strip()
-        first_value = str(first.get('value', '')).strip()
-        if any(token in first_label.lower() for token in ('继续', 'yes', 'ok', 'proceed', 'sure', 'confirm')):
+        first_lower = first_label.lower()
+        # 检查第一个选项是否为确认类关键词
+        if any(kw in first_lower for kw in _CONFIRM_KEYWORDS):
             return ('input', '继续')
+
+    # 策略 3：兜底选择第一项
+    if options:
+        first = options[0]
+        first_value = str(first.get('value', '')).strip()
         return ('select', first_value or '1')
 
+    # 无选项，返回默认输入
     return ('input', '继续')

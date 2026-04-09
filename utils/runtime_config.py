@@ -27,12 +27,12 @@ from server.biz_enum import CliType
 logger = logging.getLogger('RuntimeConfig')
 
 # 常量
-SETTINGS_CURRENT_VERSION = "1.1"
-STATE_CURRENT_VERSION = "1.1"
+SETTINGS_CURRENT_VERSION = "1.0"
+STATE_CURRENT_VERSION = "1.0"
 MAX_SESSION_MAPPINGS = 500
 MAX_BACKUP_FILES = 2  # 保留最近 2 个备份文件
 OPERATION_PANEL_ALLOWED_KEYS = {"up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"}
-OPERATION_PANEL_DEFAULT_KEYS = ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
+OPERATION_PANEL_DEFAULT_KEYS = ["up", "down", "ctrl_o", "shift_tab", "esc"]
 
 
 class ConfigType:
@@ -399,13 +399,26 @@ class CardSettings:
         )
 
 
+# 默认模糊指令列表
+DEFAULT_VAGUE_PATTERNS = [
+    "继续执行", "继续", "开始执行", "开始", "执行", "continue", "确认", "OK"
+]
+
+# 默认模糊指令提示
+DEFAULT_VAGUE_PROMPT = (
+    "[系统提示] 请使用工具执行下一步操作。"
+    "如果不确定下一步，请明确询问需要做什么。"
+    "不要只返回状态确认。"
+)
+
+
 @dataclass
 class SessionSettings:
     """会话设置"""
     bypass: bool = False
-    auto_answer_delay_sec: int = 10
-    auto_answer_vague_patterns: List[str] = field(default_factory=list)
-    auto_answer_vague_prompt: str = ""
+    auto_answer_delay_sec: int = 5
+    auto_answer_vague_patterns: List[str] = field(default_factory=lambda: DEFAULT_VAGUE_PATTERNS.copy())
+    auto_answer_vague_prompt: str = field(default=DEFAULT_VAGUE_PROMPT)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -417,19 +430,11 @@ class SessionSettings:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSettings":
-        default_patterns = [
-            "继续执行", "继续", "开始执行", "开始", "执行", "continue", "确认", "OK"
-        ]
-        default_prompt = (
-            "[系统提示] 请使用工具执行下一步操作。"
-            "如果不确定下一步，请明确询问需要做什么。"
-            "不要只返回状态确认。"
-        )
         return cls(
             bypass=data.get("bypass", False),
-            auto_answer_delay_sec=data.get("auto_answer_delay_sec", 10),
-            auto_answer_vague_patterns=data.get("auto_answer_vague_patterns", default_patterns),
-            auto_answer_vague_prompt=data.get("auto_answer_vague_prompt", default_prompt),
+            auto_answer_delay_sec=data.get("auto_answer_delay_sec", 5),
+            auto_answer_vague_patterns=data.get("auto_answer_vague_patterns", DEFAULT_VAGUE_PATTERNS.copy()),
+            auto_answer_vague_prompt=data.get("auto_answer_vague_prompt", DEFAULT_VAGUE_PROMPT),
         )
 
 
@@ -926,6 +931,36 @@ def get_card_expiry_seconds() -> int:
     """获取卡片过期时间（秒）"""
     settings = load_settings()
     return settings.card.expiry_sec
+
+
+def get_launcher_command(launcher_name: str) -> Optional[str]:
+    """根据启动器名称获取命令
+
+    从 settings.launchers 中查找匹配名称的启动器，
+    返回其 command 字段。
+
+    Args:
+        launcher_name: 启动器名称
+
+    Returns:
+        命令字符串，未找到则返回 None
+    """
+    settings = load_settings()
+    launcher = settings.get_launcher(launcher_name)
+    return launcher.command if launcher else None
+
+
+def get_launcher_by_name(launcher_name: str) -> Optional[Launcher]:
+    """根据启动器名称获取 Launcher 对象
+
+    Args:
+        launcher_name: 启动器名称
+
+    Returns:
+        Launcher 对象，未找到则返回 None
+    """
+    settings = load_settings()
+    return settings.get_launcher(launcher_name)
 
 
 def remove_session_mapping(truncated_name: str) -> bool:

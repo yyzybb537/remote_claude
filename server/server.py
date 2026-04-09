@@ -921,7 +921,7 @@ class ProxyServer:
 
     def __init__(self, session_name: str, cli_args: list = None,
                  cli_type: CliType = CliType.CLAUDE,
-                 cli_command: Optional[str] = None,
+                 launcher_name: Optional[str] = None,
                  debug_screen: bool = False, debug_verbose: bool = False,
                  enable_remote: bool = False,
                  remote_host: str = "0.0.0.0",
@@ -929,7 +929,7 @@ class ProxyServer:
         self.session_name = session_name
         self.cli_args = cli_args or []
         self.cli_type = cli_type if isinstance(cli_type, CliType) else CliType(cli_type)
-        self.cli_command = cli_command  # 直接指定的 CLI 命令（优先级最高）
+        self.launcher_name = launcher_name  # 启动器名称（用于查找自定义命令）
         self.debug_screen = debug_screen
         self.debug_verbose = debug_verbose
         self.socket_path = get_socket_path(session_name)
@@ -1054,25 +1054,22 @@ class ProxyServer:
         logger.info(f"日志已切换到运行阶段: {error_log_path}")
 
     def _get_effective_cmd(self) -> str:
-        """根据 cli_command / cli_type 返回实际执行的命令
+        """根据 launcher_name 返回实际执行的命令
 
         优先级：
-        1. 直接指定的 cli_command（--cli-command 参数）
-        2. 自定义命令配置（config.json）
-        3. 默认值（claude 或 codex）
+        1. 指定的 launcher_name（从配置文件查找）
+        2. 默认值（claude 或 codex）
         """
-        # 最高优先级：直接指定的 cli_command
-        if self.cli_command:
-            return self.cli_command
-
-        # 次优先级：从自定义命令配置获取
-        try:
-            from utils.runtime_config import get_cli_command
-            custom_cmd = get_cli_command(self.cli_type)
-            if custom_cmd:
-                return custom_cmd
-        except Exception as e:
-            logger.debug(f"读取自定义命令配置失败: {e}")
+        # 从配置文件按 launcher_name 查找命令
+        if self.launcher_name:
+            try:
+                from utils.runtime_config import get_launcher_command
+                cmd = get_launcher_command(self.launcher_name)
+                if cmd:
+                    return cmd
+                logger.warning(f"未找到启动器 '{self.launcher_name}'，使用默认命令")
+            except Exception as e:
+                logger.debug(f"读取启动器配置失败: {e}")
 
         # 回退到默认值
         return str(self.cli_type)
@@ -1397,7 +1394,7 @@ class ProxyServer:
 
 def run_server(session_name: str, cli_args: list = None,
                cli_type: CliType = CliType.CLAUDE,
-               cli_command: Optional[str] = None,
+               launcher_name: Optional[str] = None,
                debug_screen: bool = False, debug_verbose: bool = False,
                enable_remote: bool = False,
                remote_host: str = "0.0.0.0",
@@ -1406,13 +1403,13 @@ def run_server(session_name: str, cli_args: list = None,
     _cli_type = cli_type.value if isinstance(cli_type, CliType) else str(cli_type)
     _cli_args = cli_args or []
     logger.info(
-        "stage=run_server_enter session=%s cli_type=%s enable_remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
-        session_name, _cli_type, enable_remote, remote_host, remote_port, len(_cli_args),
+        "stage=run_server_enter session=%s cli_type=%s launcher=%s enable_remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
+        session_name, _cli_type, launcher_name or "", enable_remote, remote_host, remote_port, len(_cli_args),
     )
 
     server = ProxyServer(session_name, cli_args,
                          cli_type=cli_type,
-                         cli_command=cli_command,
+                         launcher_name=launcher_name,
                          debug_screen=debug_screen, debug_verbose=debug_verbose,
                          enable_remote=enable_remote,
                          remote_host=remote_host,
@@ -1464,8 +1461,8 @@ def main(argv=None):
     parser.add_argument("cli_args", nargs="*", help="传递给 CLI 的参数")
     parser.add_argument("--cli-type", default="claude", choices=["claude", "codex"],
                         help="后端 CLI 类型（默认 claude）")
-    parser.add_argument("--cli-command", default=None,
-                        help="直接指定 CLI 命令（优先级最高，如 'aider --model claude-sonnet-4'）")
+    parser.add_argument("--launcher", "-l", default=None,
+                        help="启动器名称（对应 settings.launchers[].name）")
     parser.add_argument("--debug-screen", action="store_true",
                         help="开启 pyte 屏幕快照调试日志（写入 _screen.log）")
     parser.add_argument("--debug-verbose", action="store_true",
@@ -1481,13 +1478,13 @@ def main(argv=None):
     _ensure_startup_logging()
 
     logger.info(
-        "stage=server_bootstrap session=%s cli_type=%s enable_remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
-        args.session_name, args.cli_type, args.remote, args.remote_host, args.remote_port, len(args.cli_args),
+        "stage=server_bootstrap session=%s cli_type=%s launcher=%s enable_remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
+        args.session_name, args.cli_type, args.launcher or "", args.remote, args.remote_host, args.remote_port, len(args.cli_args),
     )
 
     run_server(args.session_name, args.cli_args,
                cli_type=args.cli_type,
-               cli_command=args.cli_command,
+               launcher_name=args.launcher,
                debug_screen=args.debug_screen, debug_verbose=args.debug_verbose,
                enable_remote=args.remote,
                remote_host=args.remote_host,

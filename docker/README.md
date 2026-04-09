@@ -90,4 +90,3 @@ ls -lh test-results/
 
 - [`../tests/README.md`](../tests/README.md)：测试分层、推荐回归命令与专项回归导航。
 - [`../docs/developer.md`](../docs/developer.md)：开发者总览与其他项目级入口。
-- [`../docs/docker-test.md`](../docs/docker-test.md)：本页的短跳转页，便于从旧链接进入。

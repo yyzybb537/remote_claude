@@ -76,7 +76,7 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - `~/.remote-claude/startup.log` 尾部日志
 - `test-results/` 下的日志与错误摘要
 
-更多 Docker 细节与容器排查正文见 [`../docker/README.md`](../docker/README.md)；[`../docs/docker-test.md`](../docs/docker-test.md) 仅保留跳转入口。
+更多 Docker 细节与容器排查正文见 [`../docker/README.md`](../docker/README.md)。
 
 ---
 

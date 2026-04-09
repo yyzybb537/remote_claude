@@ -101,8 +101,8 @@ class LarkHandler:
         self._bridges: Dict[str, SessionBridge] = {}
         # chat_id → session_name（当前连接状态）
         self._chat_sessions: Dict[str, str] = {}
-        # 共享内存轮询器
-        self._poller = SharedMemoryPoller(card_service)
+        # 共享内存轮询器（传入自动应答回调）
+        self._poller = SharedMemoryPoller(card_service, auto_answer_callback=self._execute_auto_answer)
         # chat_id → session_name 持久化绑定（重启后自动恢复）
         self._chat_bindings: Dict[str, str] = self._load_chat_bindings()
         # 专属群聊 chat_id 集合（仅包含通过 /new-group 创建的群）
@@ -113,6 +113,31 @@ class LarkHandler:
         self._starting_sessions: set = set()
         # 用户配置（用于快捷命令选择器等 UI 设置）
         self._settings = load_settings()
+
+    async def _execute_auto_answer(self, chat_id: str, action: str, value: str) -> bool:
+        """自动应答回调：执行选择或输入操作"""
+        bridge = self._bridges.get(chat_id)
+        if not bridge or not bridge.running:
+            logger.warning(f"自动应答失败: chat_id={chat_id[:8]}... 未连接")
+            return False
+
+        try:
+            if action == 'select':
+                # 发送选项选择
+                success = await bridge.send_input(value)
+            elif action == 'input':
+                # 发送文本输入
+                success = await bridge.send_input(value)
+            else:
+                logger.warning(f"未知自动应答动作: {action}")
+                return False
+
+            if success:
+                self._poller.kick(chat_id)
+            return success
+        except Exception as e:
+            logger.error(f"自动应答执行异常: {e}")
+            return False
 
     # ── 持久化绑定 ──────────────────────────────────────────────────────────
 
@@ -332,7 +357,8 @@ class LarkHandler:
         if card_id:
             await card_service.send_card(chat_id, card_id)
 
-    async def _cmd_start(self, user_id: str, chat_id: str, args: str):
+
+    async def _cmd_start(self, user_id: str, chat_id: str, args: str, launcher_name: str = ""):
         """启动新会话"""
         parts = args.strip().split(maxsplit=1)
         if not parts:
@@ -362,7 +388,9 @@ class LarkHandler:
         if any(s["name"] == session_name for s in sessions):
             snapshot = self._poller.read_snapshot(chat_id)
             active_card_id = getattr(self._poller, "get_active_card_id", lambda _chat_id: None)(chat_id)
-            if active_card_id and snapshot is not None:
+            tracker = self._poller.get_tracker(chat_id)
+            if active_card_id and snapshot is not None and tracker and tracker.cards:
+                current_seq = tracker.cards[-1].sequence if not tracker.cards[-1].frozen else 0
                 card = build_loading_card_from_snapshot(
                     snapshot,
                     session_name,
@@ -370,7 +398,7 @@ class LarkHandler:
                     form_error_message=f"会话 '{session_name}' 已存在",
                     form_error_action={"action": "stream_attach_existing", "session": session_name},
                 )
-                await card_service.update_card(active_card_id, 1, card)
+                await card_service.update_card(active_card_id, current_seq + 1, card)
             else:
                 await card_service.send_text(
                     chat_id,
@@ -383,11 +411,11 @@ class LarkHandler:
             return
         self._starting_sessions.add(session_name)
 
-        logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}")
+        logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}, launcher: {launcher_name}")
         _track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
 
         try:
-            ok = await self._start_server_session(session_name, work_dir, chat_id)
+            ok = await self._start_server_session(session_name, work_dir, chat_id, launcher_name=launcher_name)
             if not ok:
                 return
 
@@ -410,11 +438,17 @@ class LarkHandler:
         finally:
             self._starting_sessions.discard(session_name)
 
-    async def _start_server_session(self, session_name: str, work_dir: Optional[str], chat_id: str) -> bool:
+    async def _start_server_session(self, session_name: str, work_dir: Optional[str], chat_id: str,
+                                     launcher_name: str = "") -> bool:
         """启动 server 并等待 socket 就绪。"""
         script_dir = Path(__file__).parent.parent.absolute()
         server_script = script_dir / "server" / "server.py"
         cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
+
+        # 添加 launcher 参数
+        if launcher_name:
+            cmd += ["--launcher", launcher_name]
+
         if self._poller.get_bypass_enabled():
             cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
 
@@ -576,8 +610,13 @@ class LarkHandler:
 
     async def _update_card_disconnected(self, chat_id: str, session_name: str,
                                         active_slice: 'CardSlice') -> bool:
-        """读取最新 blocks 并就地更新卡片为断开状态（disconnected=True）。Best-effort，不降级发新卡。"""
+        """读取最新快照并就地更新卡片为断开状态（disconnected=True）。Best-effort，不降级发新卡。"""
         blocks = []
+        status_line = None
+        bottom_bar = None
+        agent_panel = None
+        option_block = None
+        reader = None
         try:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
@@ -586,12 +625,29 @@ class LarkHandler:
             if mq_path.exists():
                 reader = SharedStateReader(session_name)
                 state = reader.read()
-                reader.close()
                 blocks = state.get("blocks", [])
+                status_line = state.get("status_line")
+                bottom_bar = state.get("bottom_bar")
+                agent_panel = state.get("agent_panel")
+                option_block = state.get("option_block")
         except Exception:
             pass
+        finally:
+            if reader:
+                try:
+                    reader.close()
+                except Exception:
+                    pass
         blocks_slice = blocks[active_slice.start_idx:]
-        card = build_stream_card(blocks_slice, disconnected=True, session_name=session_name)
+        card = build_stream_card(
+            blocks_slice,
+            status_line=status_line,
+            bottom_bar=bottom_bar,
+            agent_panel=agent_panel,
+            option_block=option_block,
+            disconnected=True,
+            session_name=session_name,
+        )
         try:
             return await card_service.update_card(
                 card_id=active_slice.card_id,
@@ -607,13 +663,16 @@ class LarkHandler:
         """流式卡片中断开连接，就地更新卡片为已断开状态"""
         snapshot = self._poller.read_snapshot(chat_id)
         active_card_id = getattr(self._poller, "get_active_card_id", lambda _chat_id: None)(chat_id)
-        if active_card_id and snapshot is not None:
+        tracker = self._poller.get_tracker(chat_id)
+        if active_card_id and snapshot is not None and tracker and tracker.cards:
+            current_seq = tracker.cards[-1].sequence if not tracker.cards[-1].frozen else 0
             loading_card = build_loading_card_from_snapshot(snapshot, session_name, "正在断开连接...")
-            await card_service.update_card(active_card_id, 1, loading_card)
+            await card_service.update_card(active_card_id, current_seq + 1, loading_card)
 
         active_slice = self._poller.stop_and_get_active_slice(chat_id)
 
         blocks = []
+        reader = None
         try:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
@@ -622,10 +681,15 @@ class LarkHandler:
             if mq_path.exists():
                 reader = SharedStateReader(session_name)
                 state = reader.read()
-                reader.close()
                 blocks = state.get("blocks", [])
         except Exception:
             pass
+        finally:
+            if reader:
+                try:
+                    reader.close()
+                except Exception:
+                    pass
 
         self._remove_binding_by_chat(chat_id)
         await self._detach(chat_id)
@@ -654,11 +718,33 @@ class LarkHandler:
     async def _handle_stream_reconnect(self, user_id: str, chat_id: str,
                                        session_name: str, message_id: Optional[str] = None):
         """流式卡片中重新连接：冻结旧断开卡片 → 重新 attach"""
+        # 获取实际内容用于冻结卡片
+        blocks = []
+        reader = None
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
+            from shared_state import SharedStateReader, get_mq_path
+            mq_path = get_mq_path(session_name)
+            if mq_path.exists():
+                reader = SharedStateReader(session_name)
+                state = reader.read()
+                blocks = state.get("blocks", [])
+        except Exception:
+            pass
+        finally:
+            if reader:
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+
         # 冻结旧断开卡片
         old_slice = self._detached_slices.pop(chat_id, None)
         if old_slice:
             try:
-                frozen_card = build_stream_card([], is_frozen=True, session_name=session_name)
+                blocks_slice = blocks[old_slice.start_idx:] if old_slice.start_idx < len(blocks) else []
+                frozen_card = build_stream_card(blocks_slice, is_frozen=True, session_name=session_name)
                 await card_service.update_card(
                     card_id=old_slice.card_id,
                     sequence=old_slice.sequence + 1,
@@ -668,7 +754,7 @@ class LarkHandler:
                 logger.warning(f"_handle_stream_reconnect 冻结旧卡片失败: {e}")
         elif message_id:
             try:
-                frozen_card = build_stream_card([], is_frozen=True, session_name=session_name)
+                frozen_card = build_stream_card(blocks, is_frozen=True, session_name=session_name)
                 await card_service.update_card_by_message_id(message_id, frozen_card)
             except Exception as e:
                 logger.warning(f"_handle_stream_reconnect 按 message_id 冻结失败: {e}")
@@ -1036,9 +1122,11 @@ class LarkHandler:
 
         snapshot = self._poller.read_snapshot(chat_id)
         active_card_id = getattr(self._poller, "get_active_card_id", lambda _chat_id: None)(chat_id)
-        if active_card_id and snapshot is not None:
+        tracker = self._poller.get_tracker(chat_id)
+        if active_card_id and snapshot is not None and tracker and tracker.cards:
+            current_seq = tracker.cards[-1].sequence if not tracker.cards[-1].frozen else 0
             loading_card = build_loading_card_from_snapshot(snapshot, self._chat_sessions.get(chat_id), "正在选择...")
-            await card_service.update_card(active_card_id, 1, loading_card)
+            await card_service.update_card(active_card_id, current_seq + 1, loading_card)
 
         target = option_value
         max_steps = max(option_total, 10) if option_total > 0 else 10
@@ -1135,9 +1223,11 @@ class LarkHandler:
 
         snapshot = self._poller.read_snapshot(chat_id)
         active_card_id = getattr(self._poller, "get_active_card_id", lambda _chat_id: None)(chat_id)
-        if active_card_id and snapshot is not None:
+        tracker = self._poller.get_tracker(chat_id)
+        if active_card_id and snapshot is not None and tracker and tracker.cards:
+            current_seq = tracker.cards[-1].sequence if not tracker.cards[-1].frozen else 0
             loading_card = build_loading_card_from_snapshot(snapshot, self._chat_sessions.get(chat_id), f"正在执行 {command} ...")
-            await card_service.update_card(active_card_id, 1, loading_card)
+            await card_service.update_card(active_card_id, current_seq + 1, loading_card)
 
         success = await bridge.send_input(command)
         if success:

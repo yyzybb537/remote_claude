@@ -226,6 +226,29 @@ def _get_matching_commands(settings) -> List[Dict[str, str]]:
     ]
 
 
+def _build_launcher_buttons(settings, full_path: str, auto_session: str) -> List[Dict[str, Any]]:
+    """构建目录卡片中的启动器按钮列表
+
+    根据配置中的 launchers 生成按钮，每个按钮回传 launcher_name。
+    最多显示 4 个按钮。
+    """
+    launchers = _get_matching_commands(settings)
+    buttons = []
+    for launcher in launchers[:4]:  # 最多 4 个按钮
+        buttons.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": launcher["name"]},
+            "type": "primary" if not buttons else "default",
+            "behaviors": [{"type": "callback", "value": {
+                "action": "dir_start",
+                "path": full_path,
+                "session_name": auto_session,
+                "launcher_name": launcher["name"]
+            }}]
+        })
+    return buttons
+
+
 def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False,
                            is_loading: bool = False, enter_to_submit: bool = True,
                            form_error_message: Optional[str] = None,
@@ -958,11 +981,11 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
             header_text = "\n".join(lines)
 
             if is_current:
-                btn_label = "断开连接"
+                btn_label = "断开"
                 btn_type = "danger"
                 btn_action = "list_detach"
             else:
-                btn_label = "进入会话"
+                btn_label = "连接"
                 btn_type = "primary"
                 btn_action = "list_attach"
             has_group = bool(session_groups and name in session_groups)
@@ -1071,7 +1094,7 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
     else:
         elements.append({
             "tag": "markdown",
-            "content": "暂无可用会话\n\n请先在终端启动：`python remote_claude.py start <名称>`"
+            "content": "暂无可用会话\n\n请先在终端启动：`remote_claude start <名称>`"
         })
     return elements
 
@@ -1210,19 +1233,7 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
                         "tag": "column",
                         "width": "weighted",
                         "weight": 2,
-                        "elements": [
-                            {
-                                "tag": "button",
-                                "text": {"tag": "plain_text", "content": "Claude"},
-                                "type": "primary",
-                                "behaviors": [{"type": "callback", "value": {
-                                    "action": "dir_start",
-                                    "path": full_path,
-                                    "session_name": auto_session
-                                }}]
-                            },
-                            group_btn
-                        ]
+                        "elements": _build_launcher_buttons(settings, full_path, auto_session) + [group_btn]
                     }
                 ]
             })
@@ -1281,10 +1292,10 @@ def build_help_card() -> Dict[str, Any]:
 • `/menu` - 弹出快捷操作面板（推荐入口）
 
 **会话管理**
-• `/start <会话名> [工作路径]` - 启动新会话并自动连接
+• `/start <会话名> [工作目录]` - 启动新会话并自动连接
 • `/attach <会话名>` - 连接到已有会话
 • `/detach` - 断开当前会话
-• `/list` - 列出所有可用会话（带一键 Attach 按钮）
+• `/list` - 列出所有可用会话（带一键连接按钮）
 • `/kill <会话名>` - 终止会话
 • `/status` - 显示当前连接状态
 

@@ -81,7 +81,7 @@ if [ "$ENV_OK" = false ]; then
     echo "飞书客户端尚未配置，需要填写应用凭证。"
     echo "（在飞书开发者后台创建应用获取: https://open.feishu.cn/app）"
     echo ""
-    printf "\033[33m飞书机器人配置文档参考：docs/feishu-setup.md\033[0m\n"
+    printf "\033[33m飞书机器人配置文档参考：https://github.com/yyzybb537/remote_claude/blob/main/docs/feishu-setup.md\033[0m\n"
     echo ""
     printf "FEISHU_APP_ID: "
     read -r INPUT_APP_ID

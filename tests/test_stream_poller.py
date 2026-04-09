@@ -28,6 +28,7 @@ from lark_client.card_builder import (
     _escape_md,
     _ansi_to_lark_md,
 )
+from lark_client.shared_memory_poller import CardRenderContext
 
 
 class TestSettingsReload(unittest.TestCase):
@@ -1069,7 +1070,7 @@ class TestPollerPollOnce(unittest.TestCase):
         self.card_service.create_card = AsyncMock(return_value="card_002")
         self.card_service.send_card = AsyncMock(return_value="msg_002")
 
-        asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+        asyncio.run(self.poller._handle_element_limit(tracker, blocks, CardRenderContext(None, None)))
 
         self.assertIsNone(tracker.last_notify_message_id)
 
@@ -1085,7 +1086,7 @@ class TestPollerPollOnce(unittest.TestCase):
         self.card_service.send_card = AsyncMock(side_effect=RuntimeError("send failed"))
 
         with self.assertRaises(RuntimeError):
-            asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+            asyncio.run(self.poller._handle_element_limit(tracker, blocks, CardRenderContext(None, None)))
 
         self.assertEqual(tracker.last_notify_message_id, "msg_old")
 
@@ -1100,14 +1101,14 @@ class TestPollerPollOnce(unittest.TestCase):
         self.card_service.send_card = AsyncMock(side_effect=RuntimeError("send failed"))
 
         with self.assertRaises(RuntimeError):
-            asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+            asyncio.run(self.poller._handle_element_limit(tracker, blocks, CardRenderContext(None, None)))
 
         self.assertEqual(len(tracker.cards), 1)
         self.assertTrue(tracker.cards[0].frozen)
         first_create_calls = self.card_service.create_card.call_count
 
         self.card_service.send_card = AsyncMock(return_value="msg_002")
-        asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+        asyncio.run(self.poller._handle_element_limit(tracker, blocks, CardRenderContext(None, None)))
 
         self.assertGreater(self.card_service.create_card.call_count, first_create_calls)
         self.assertEqual(len(tracker.cards), 2)
@@ -1121,7 +1122,7 @@ class TestPollerPollOnce(unittest.TestCase):
         self.card_service.update_card = AsyncMock(return_value=False)
         self.card_service.create_card = AsyncMock(return_value="card_002")
 
-        asyncio.run(self.poller._handle_element_limit(tracker, blocks, None, None))
+        asyncio.run(self.poller._handle_element_limit(tracker, blocks, CardRenderContext(None, None)))
 
         self.card_service.create_card.assert_not_called()
         self.card_service.send_card.assert_not_called()
@@ -1435,45 +1436,45 @@ class TestComputeHash(unittest.TestCase):
 
     def test_same_content_same_hash(self):
         blocks = [{"_type": "OutputBlock", "content": "hello"}]
-        h1 = SharedMemoryPoller._compute_hash(blocks, None, None)
-        h2 = SharedMemoryPoller._compute_hash(blocks, None, None)
+        h1 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None))
+        h2 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None))
         self.assertEqual(h1, h2)
 
     def test_different_content_different_hash(self):
         b1 = [{"_type": "OutputBlock", "content": "hello"}]
         b2 = [{"_type": "OutputBlock", "content": "world"}]
-        h1 = SharedMemoryPoller._compute_hash(b1, None, None)
-        h2 = SharedMemoryPoller._compute_hash(b2, None, None)
+        h1 = SharedMemoryPoller._compute_hash(b1, CardRenderContext(None, None))
+        h2 = SharedMemoryPoller._compute_hash(b2, CardRenderContext(None, None))
         self.assertNotEqual(h1, h2)
 
     def test_status_line_affects_hash(self):
         blocks = [{"_type": "OutputBlock", "content": "hello"}]
-        h1 = SharedMemoryPoller._compute_hash(blocks, None, None)
-        h2 = SharedMemoryPoller._compute_hash(blocks, {"action": "thinking"}, None)
+        h1 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None))
+        h2 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext({"action": "thinking"}, None))
         self.assertNotEqual(h1, h2)
 
     def test_agent_panel_affects_hash(self):
         blocks = [{"_type": "OutputBlock", "content": "hello"}]
-        h1 = SharedMemoryPoller._compute_hash(blocks, None, None)
-        h2 = SharedMemoryPoller._compute_hash(blocks, None, None, {"panel_type": "summary", "agent_count": 3})
+        h1 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None))
+        h2 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None, {"panel_type": "summary", "agent_count": 3}))
         self.assertNotEqual(h1, h2)
 
     def test_agent_panel_different_values_different_hash(self):
         blocks = [{"_type": "OutputBlock", "content": "hello"}]
-        h1 = SharedMemoryPoller._compute_hash(blocks, None, None, {"panel_type": "summary", "agent_count": 3})
-        h2 = SharedMemoryPoller._compute_hash(blocks, None, None, {"panel_type": "summary", "agent_count": 5})
+        h1 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None, {"panel_type": "summary", "agent_count": 3}))
+        h2 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None, {"panel_type": "summary", "agent_count": 5}))
         self.assertNotEqual(h1, h2)
 
     def test_option_block_affects_hash(self):
         blocks = [{"_type": "OutputBlock", "content": "hello"}]
-        h1 = SharedMemoryPoller._compute_hash(blocks, None, None)
-        h2 = SharedMemoryPoller._compute_hash(blocks, None, None, option_block={"sub_type": "option", "question": "Choose"})
+        h1 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None))
+        h2 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None, option_block={"sub_type": "option", "question": "Choose"}))
         self.assertNotEqual(h1, h2)
 
     def test_option_block_different_values_different_hash(self):
         blocks = [{"_type": "OutputBlock", "content": "hello"}]
-        h1 = SharedMemoryPoller._compute_hash(blocks, None, None, option_block={"sub_type": "option", "question": "A"})
-        h2 = SharedMemoryPoller._compute_hash(blocks, None, None, option_block={"sub_type": "permission", "question": "B"})
+        h1 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None, option_block={"sub_type": "option", "question": "A"}))
+        h2 = SharedMemoryPoller._compute_hash(blocks, CardRenderContext(None, None, option_block={"sub_type": "permission", "question": "B"}))
         self.assertNotEqual(h1, h2)
 
 

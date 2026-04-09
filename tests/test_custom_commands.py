@@ -167,23 +167,24 @@ class TestDirStartCallback:
 class TestDirStartCallback:
     """测试 dir_start 回调处理"""
 
-    def test_dir_start_callback_with_cli_command(self):
+    def test_dir_start_callback_with_launcher(self):
         value = {
             "action": "dir_start",
             "path": "/path/to/project",
             "session_name": "myproject",
-            "cli_command": "aider --model claude-sonnet-4",
+            "launcher_name": "Codex",
         }
-        assert value.get("cli_command") == "aider --model claude-sonnet-4"
+        assert value.get("action") == "dir_start"
+        assert value.get("session_name") == "myproject"
+        assert value.get("launcher_name") == "Codex"
 
-    def test_dir_start_callback_without_cli_command(self):
+    def test_dir_start_callback_without_launcher(self):
         value = {
-            "action"      : "dir_start",
-            "path"        : "/path/to/project",
+            "action": "dir_start",
+            "path": "/path/to/project",
             "session_name": "myproject",
         }
-        cli_command = value.get("cli_command", "claude")
-        assert cli_command == "claude"
+        assert value.get("launcher_name", "") == ""
 
 
 def test_package_json_includes_public_docs_but_not_superpowers_docs():

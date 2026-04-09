@@ -183,7 +183,7 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             else:
                 # 空输入 → 发送原始 Enter 键（用于确认默认选项等场景）
                 asyncio.create_task(handler.send_raw_key(user_id, chat_id, "enter"))
-            return None
+            return P2CardActionTriggerResponse()
 
         action_type = action_value.get("action", "") if isinstance(action_value, dict) else ""
 
@@ -195,7 +195,7 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
                     "up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"
                 }
                 if key_name not in allowed:
-                    return None
+                    return P2CardActionTriggerResponse()
 
                 print(f"[Lark] 操作下拉快捷键: key={key_name}")
 
@@ -208,20 +208,20 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
                         await handler.send_raw_key(user_id, chat_id, key_name)
 
                 asyncio.create_task(_multi_send())
-                return None
+                return P2CardActionTriggerResponse()
 
             if action_value.startswith("cmd:"):
                 command = action_value.split(":", 1)[1]
                 print(f"[Lark] 操作下拉自定义命令: command={command}")
                 asyncio.create_task(handler.handle_quick_command(user_id, chat_id, command))
-                return None
+                return P2CardActionTriggerResponse()
 
             if action_value.startswith("/"):
                 print(f"[Lark] 快捷命令选择: command={action_value}")
                 asyncio.create_task(handler.handle_quick_command(user_id, chat_id, action_value))
-                return None
+                return P2CardActionTriggerResponse()
 
-            return None
+            return P2CardActionTriggerResponse()
 
         # 处理选项选择动作
         if action_type == "select_option":
@@ -230,55 +230,55 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             needs_input = action_value.get("needs_input", False)
             print(f"[Lark] 用户选择了选项: {option_value} (total={option_total}, needs_input={needs_input})")
             asyncio.create_task(handler.handle_option_select(user_id, chat_id, option_value, option_total, needs_input=needs_input))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：进入会话
         if action_type == "list_attach":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_attach: session={session_name}")
             asyncio.create_task(handler._cmd_attach(user_id, chat_id, session_name, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：断开连接
         if action_type == "list_detach":
             print(f"[Lark] list_detach: chat={chat_id[:8]}...")
             asyncio.create_task(handler._handle_list_detach(user_id, chat_id, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：创建群聊
         if action_type == "list_new_group":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_new_group: session={session_name}")
             asyncio.create_task(handler._cmd_new_group(user_id, chat_id, session_name, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：解散群聊
         if action_type == "list_disband_group":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_disband_group: session={session_name}")
             asyncio.create_task(handler._cmd_disband_group(user_id, chat_id, session_name, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：关闭会话
         if action_type == "list_kill":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_kill: session={session_name}")
             asyncio.create_task(handler._cmd_kill(user_id, chat_id, session_name, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 目录卡片：进入子目录（继续浏览，就地更新原卡片）
         if action_type == "dir_browse":
             path = action_value.get("path", "")
             print(f"[Lark] dir_browse: path={path}")
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, path, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 菜单卡片：会话列表翻页
         if action_type == "menu_page":
             page = int(action_value.get("page", 0))
             print(f"[Lark] menu_page: page={page}")
             asyncio.create_task(handler._cmd_menu(user_id, chat_id, message_id=message_id, page=page))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 目录卡片：翻页
         if action_type == "dir_page":
@@ -286,15 +286,15 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             page = int(action_value.get("page", 0))
             print(f"[Lark] dir_page: path={path}, page={page}")
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, path, message_id=message_id, page=page))
-            return None
+            return P2CardActionTriggerResponse()
 
-        # 目录卡片：在该目录创建新 Claude 会话
+        # 目录卡片：在该目录创建新会话
         if action_type == "dir_start":
             path = action_value.get("path", "")
             session_name = action_value.get("session_name", "")
-            cli_command = action_value.get("cli_command", "claude")
-            print(f"[Lark] dir_start: path={path}, session={session_name}, cli_command={cli_command}")
-            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}", cli_command=cli_command))
+            launcher_name = action_value.get("launcher_name", "")
+            print(f"[Lark] dir_start: path={path}, session={session_name}, launcher={launcher_name}")
+            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}", launcher_name=launcher_name))
             return None
 
         # 目录卡片：在该目录启动会话并创建专属群聊

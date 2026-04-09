@@ -59,11 +59,6 @@ tmp/
 temp/
 *.tmp
 
-# 飞书配置（敏感信息）
-.env
-.env.local
-lark_chat_bindings.json
-
 # Docker 相关（自身不需要）
 docker/
 .dockerignore

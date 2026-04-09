@@ -112,8 +112,14 @@ class CardService:
         _track_stats('error', 'card_api', detail='create_card')
         return None
 
-    async def send_card(self, chat_id: str, card_id: str) -> Optional[str]:
-        """发送卡片消息，返回 message_id"""
+    async def send_card(self, chat_id: str, card_id: str, update_index: bool = True) -> Optional[str]:
+        """发送卡片消息，返回 message_id。
+
+        Args:
+            chat_id: 目标聊天 ID
+            card_id: 卡片 ID
+            update_index: 是否更新活跃卡片索引（默认 True）
+        """
         if not self.client:
             return None
 
@@ -142,6 +148,12 @@ class CardService:
 
             if response.success():
                 message_id = getattr(getattr(response, "data", None), "message_id", None)
+                # 更新活跃卡片索引（仅在 update_index=True 时）
+                if update_index and message_id:
+                    state = CardState(card_id=card_id, message_id=message_id)
+                    self._cards_by_message_id[message_id] = state
+                    self._active_cards[chat_id] = state
+                    logger.info(f"已记录卡片: chat={chat_id}, msg={message_id}, card={card_id}")
                 return message_id
             else:
                 logger.warning(f"发送卡片失败: code={response.code} msg={response.msg}")
