@@ -4,9 +4,9 @@
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'lark_client'))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from terminal_renderer import TerminalRenderer
+from lark_client.terminal_renderer import TerminalRenderer
 
 
 def test_with_real_captured_output():

@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "launchers": [
+    {"name": "Claude", "cli_type": "claude", "command": "claude", "desc": "Claude Code CLI"},
+    {"name": "Codex", "cli_type": "codex", "command": "codex", "desc": "OpenAI Codex CLI"}
+  ],
+  "card": {
+    "quick_commands": [
+      {"label": "清空对话", "value": "/clear", "icon": "🗑️"},
+      {"label": "压缩上下文", "value": "/consume", "icon": "📦"},
+      {"label": "退出会话", "value": "/exit", "icon": "🚪"},
+      {"label": "帮助", "value": "/help", "icon": "❓"}
+    ],
+    "expiry_sec": 3600
+  },
+  "session": {
+    "bypass": false,
+    "auto_answer_delay_sec": 5,
+    "auto_answer_vague_patterns": ["继续执行", "继续", "开始执行", "开始", "执行", "continue", "确认", "OK"],
+    "auto_answer_vague_prompt": "[系统提示] 请使用工具执行下一步操作。如果不确定下一步，请明确询问需要做什么。不要只返回状态确认。"
+  },
+  "notify": {
+    "ready": true,
+    "urgent": false
+  },
+  "ui": {
+    "show_builtin_keys": true,
+    "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
+  }
+}

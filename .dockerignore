@@ -1,0 +1,69 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn
+
+# 测试和结果
+test-results/*
+tests/__pycache__/
+tests/**/*.pyc
+tests/lark_client/__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志
+*.log
+logs/
+
+# 文档（不需要在构建中使用）
+docs/
+*.md
+!CLAUDE.md
+!README.md
+
+# 备份和归档
+backup/
+*.tar.gz
+*.zip
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# Docker 相关（自身不需要）
+docker/
+.dockerignore
+
+# 其他
+*.pid
+*.sock
+.mq

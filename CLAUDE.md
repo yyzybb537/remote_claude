@@ -16,25 +16,31 @@ Claude/Codex CLI (PTY)
       │
   server.py         ← PTY 代理，管理进程/控制权/历史缓存
       │
-  Unix Socket (/tmp/remote-claude/<name>.sock)
+  Unix Socket (/tmp/remote-claude/<name>.sock) 或 WebSocket (远程模式)
       │
   ┌───┴────┐
   │        │
-client.py  SessionBridge (lark_client/)
-(终端)     (飞书机器人)
+base_client  SessionBridge (lark_client/)
+(终端)      (飞书机器人)
 ```
 
 **核心模块：**
-- `remote_claude.py` — CLI 入口，子命令：start / attach / list / kill / lark
+- `remote_claude.py` — CLI 入口，子命令：start / attach / list / kill / lark / connect / token / regenerate-token
 - `server/server.py` — PTY 代理服务器，`pty.fork()` 启动 Claude/Codex，asyncio Unix Socket 广播输出
 - `server/parsers/claude_parser.py` — Claude CLI 终端输出解析（区域切分、Block 分类、执行状态判断）
 - `server/parsers/codex_parser.py` — Codex CLI 终端输出解析（无分割线、`›` 提示符、背景色区域检测）
 - `server/component_parser.py` — 向后兼容 shim（实际实现在 `server/parsers/`）
 - `server/shared_state.py` — 共享内存写入（`.mq` 文件）
-- `client/client.py` — 终端客户端，raw mode 输入转发
+- `server/ws_handler.py` — WebSocket 连接处理器，负责远程连接的认证、消息转发、广播
+- `server/token_manager.py` — 会话 Token 管理（生成、持久化、验证、防篡改）
+- `client/base_client.py` — 终端客户端抽象基类，封装公共逻辑
+- `client/local_client.py` — 本地 Unix Socket 客户端实现
+- `client/remote_client.py` — 远程 WebSocket 客户端实现
+- `client/connection_config.py` — 连接配置管理
 - `utils/protocol.py` — 消息协议（JSON + `\n` 分隔，二进制数据 base64 编码）。7 种消息类型：INPUT / OUTPUT / CONTROL / STATUS / HISTORY / ERROR / RESIZE
 - `utils/session.py` — socket 路径管理、会话生命周期
 - `utils/components.py` — 控制权状态机，SHARED（默认，所有人可输入）和 EXCLUSIVE（独占）两种模式
+- `utils/runtime_config.py` — 统一运行时配置存储，支持会话映射、飞书群组映射、UI 设置
 
 **飞书客户端 (`lark_client/`)：**
 - `main.py` — WebSocket 入口，事件分发
@@ -589,6 +595,8 @@ remote_claude/
 ├── server/                     # PTY 代理服务器
 │   ├── server.py               # 主服务，管理 PTY 进程/控制权/广播
 │   ├── component_parser.py     # 向后兼容 shim
+│   ├── ws_handler.py           # WebSocket 连接处理器（远程连接）
+│   ├── token_manager.py        # 会话 Token 管理
 │   ├── parsers/
 │   │   ├── base_parser.py      # 解析器基类
 │   │   ├── claude_parser.py    # Claude CLI 解析器
@@ -597,11 +605,15 @@ remote_claude/
 │   └── rich_text_renderer.py   # 历史文件（暂保留）
 │
 ├── client/                     # 终端客户端
-│   └── client.py               # raw mode 输入转发
+│   ├── base_client.py          # 客户端抽象基类
+│   ├── local_client.py         # 本地 Unix Socket 客户端
+│   ├── remote_client.py        # 远程 WebSocket 客户端
+│   └── connection_config.py    # 连接配置管理
 │
 ├── utils/                      # 公共工具
 │   ├── protocol.py             # 消息协议（JSON + \n，7 种消息类型）
 │   ├── session.py              # socket 路径管理、会话生命周期
+│   ├── runtime_config.py       # 统一运行时配置存储
 │   └── components.py           # 控制权状态机等组件
 │
 ├── lark_client/                # 飞书客户端
@@ -617,41 +629,31 @@ remote_claude/
 │   ├── terminal_buffer.py      # 历史文件（暂保留）
 │   └── terminal_renderer.py    # 历史文件（暂保留）
 │
-├── tests/                      # 测试文件
-│   ├── test_format_unit.py     # 格式化单元测试
-│   ├── test_component_parser.py
-│   ├── test_stream_poller.py   # 流式卡片模型单元测试（card_builder + poller）
-│   ├── test_integration.py     # 集成测试
-│   ├── test_attach_dedup.py
-│   ├── test_message_queue.py
-│   ├── test_option_block.py
-│   ├── test_e2e.py
-│   ├── test_mock_conversation.py
-│   ├── test_output_clean.py
-│   ├── test_real.py
-│   ├── test_renderer.py
-│   ├── test_session.py
+├── tests/                      # 测试文件（详见 tests/README.md）
+│   ├── test_*.py               # 各类单元测试
 │   └── lark_client/            # lark_client 内部测试
-│       ├── test_mock_output.py
-│       ├── test_cjk_width.py
-│       └── test_full_simulation.py
 │
-├── 文档
-│   ├── CLAUDE.md
-│   ├── TEST_PLAN.md
-│   ├── CHANGELOG.md
-│   ├── CONTRIBUTING.md
-│   ├── DEPLOYMENT_CHECKLIST.md
-│   ├── LARK_CLIENT_GUIDE.md
-│   └── QUICKSTART.md
+├── scripts/                    # 安装与管理脚本
+│   ├── setup.sh                # 安装脚本
+│   ├── uninstall.sh            # 卸载脚本
+│   └── _common.sh              # 公共脚本函数
+│
+├── docs/                       # 文档
+│   ├── configuration.md        # 配置说明
+│   ├── developer.md            # 开发者指南
+│   ├── cli-reference.md        # CLI 参考
+│   ├── remote-connection.md    # 远程连接说明
+│   └── docker-test.md          # Docker 测试说明
+│
+├── docker/                     # Docker 相关
+│   └── README.md
 │
 ├── 配置
 │   ├── .env / .env.example
 │   ├── pyproject.toml
 │   └── requirements.txt
 │
-├── send_lark_msg.py            # 飞书消息调试脚本
-└── backup/                     # 归档（与项目无关的工具脚本）
+└── send_lark_msg.py            # 飞书消息调试脚本
 ```
 
 ## 常用命令
@@ -684,48 +686,39 @@ uv run python3 remote_claude.py lark status    # 查看状态和日志
 
 ## 测试
 
-> **详细测试计划见 [`TEST_PLAN.md`](./TEST_PLAN.md)**，包含测试分层、执行流程、特殊场景说明和回归防护清单。
+> **测试入口见 [`tests/README.md`](./tests/README.md)**，包含测试入口、回归入口与测试说明。
 
 测试分为三层：
-1. **单元测试**（`test_format_unit.py`）— 纯本地，覆盖格式化逻辑，无需网络和服务
-2. **集成测试**（`test_integration.py`）— 直连 socket，发送真实消息验证输出
-3. **飞书视觉测试** — 验证实际渲染效果，偶尔进行
+1. **层 1：本地自动化回归** — 核心配置与命令行、shell/安装链路、飞书渲染与交互
+2. **层 2：补充自动化测试** — 按改动范围选跑
+3. **层 3：手工验证** — 仅在需要真实环境时
 
-**可独立运行的单元测试：**
+**层 1 快速回归：**
 ```bash
-uv run python3 tests/test_format_unit.py                  # 格式化逻辑单元测试（见 TEST_PLAN.md 层1）
-uv run python3 tests/test_stream_poller.py                # 流式卡片模型测试（card_builder + poller）
-uv run python3 tests/test_renderer.py                     # 终端渲染器测试
-uv run python3 tests/test_output_clean.py                 # 输出清理器测试
-uv run python3 lark_client/output_cleaner.py              # output_cleaner 自带测试
-uv run python3 tests/lark_client/test_mock_output.py      # lark_client 输出模拟测试
-uv run python3 tests/lark_client/test_cjk_width.py        # CJK 字符宽度测试
-uv run python3 tests/lark_client/test_full_simulation.py  # 完整模拟测试
-```
+# 核心配置与命令行
+uv run python3 -m pytest tests/test_session_truncate.py tests/test_runtime_config.py tests/test_custom_commands.py tests/test_cli_help_and_remote.py tests/test_startup_trace_logging.py -q
 
-**需要活跃会话的集成测试：**
-```bash
-# 先启动会话：uv run python3 remote_claude.py start test
-uv run python3 tests/test_integration.py       # 集成测试（见 TEST_PLAN.md 层2）
-uv run python3 tests/test_session.py           # 会话连接测试
-uv run python3 tests/test_real.py              # 实时数据渲染测试
-uv run python3 tests/test_e2e.py               # 端到端流程测试
-uv run python3 tests/test_mock_conversation.py # 模拟多轮对话
+# shell / 安装链路
+uv run python3 -m pytest tests/test_entry_lazy_init.py -q
+
+# 飞书渲染与交互
+uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_component_parser.py -q
 ```
 
 **调试工具：**
 ```bash
 uv run python3 lark_client/capture_output.py <会话名> [秒数]  # 捕获原始输出
+cat /tmp/remote-claude/<name>_messages.log | jq .            # 查看 ClaudeWindow 快照
+uv run remote-claude start test --debug-screen               # 启用屏幕调试
+cat /tmp/remote-claude/test_screen.log                       # 查看屏幕快照
 ```
-
-无 pytest 配置，测试文件均为独立脚本，通过 `uv run python3` 运行。
 
 
 ## 变更同步规则
 
 **每当做事规则或需求发生变更时，必须同步更新以下文件：**
 - `CLAUDE.md` — 更新对应的架构说明、开发须知或规则描述
-- `TEST_PLAN.md` — 更新对应的测试场景或注意事项
+- `tests/README.md` — 更新对应的测试场景或注意事项
 
 变更范围包括但不限于：命令行为调整、卡片交互设计变更、新增功能需求、废弃旧需求、约束条件修改。
 

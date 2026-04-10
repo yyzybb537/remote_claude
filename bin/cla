@@ -1,20 +1,21 @@
-#!/bin/bash
+#!/bin/sh
+# cla - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Claude
+
 # 解析符号链接，兼容 macOS（不支持 readlink -f）
 SOURCE="$0"
 while [ -L "$SOURCE" ]; do
-    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
     SOURCE="$(readlink "$SOURCE")"
-    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+    case "$SOURCE" in /*) ;; *) SOURCE="$SELF_DIR/$SOURCE" ;; esac
 done
-SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
-
-# uv 路径兜底
-if ! command -v uv &>/dev/null; then
-    [ -f "$HOME/.local/bin/uv" ] && export PATH="$HOME/.local/bin:$PATH"
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+STARTUP_DIR="${STARTUP_DIR:-$(pwd)}"
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    export LAZY_INIT_DISABLE_AUTO_RUN=1
 fi
+. "$PROJECT_DIR/scripts/_common.sh"
+_init_startup_dir
+_require_startup_dir || exit 1
 
-# 检查飞书配置
-source "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
-
-uv run --project "$SCRIPT_DIR" python3 "$SCRIPT_DIR/remote_claude.py" lark start
-uv run --project "$SCRIPT_DIR" python3 "$SCRIPT_DIR/remote_claude.py" start "${PWD}_$(date +%m%d_%H%M%S)" -- "$@"
+_remote_claude_shortcut_help_or_main "Claude" "" "$@"

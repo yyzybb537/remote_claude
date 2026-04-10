@@ -135,20 +135,42 @@ class SessionBridge:
             return False
 
     async def send_key(self, key: str) -> bool:
-        """发送单个按键到 Claude（用于交互式选项）"""
+        """发送单个按键到 Claude（用于交互式选项）
+
+        注意：此方法会自动追加 Enter 以确认选项。对于不需要 Enter 的按键（如 ESC)，
+        请使用 send_raw 方法发送原始字节。
+        """
         if not self.writer or not self.running:
             return False
         try:
             logger.info(f"发送按键: {repr(key)}")
-            msg = InputMessage(key.encode('utf-8'), self.client_id)
+            # 将按键名转换为实际的按键序列
+            KEY_MAP = {
+                "up": b"\x1b[A",         # ↑ 上箭头
+                "down": b"\x1b[B",       # ↓ 下箭头
+                "ctrl_o": b"\x0f",       # Ctrl+O
+                "shift_tab": b"\x1b[Z",  # Shift+Tab
+                "esc": b"\x1b",        # ESC (单独发送，不追加 Enter)
+                "enter": b"\r",       # Enter
+            }
+            key_bytes = KEY_MAP.get(key, key.encode('utf-8'))
+            if not key_bytes:
+                logger.warning(f"未知按键: {key}")
+                return False
+
+            # 发送按键序列
+            msg = InputMessage(key_bytes, self.client_id)
             self.writer.write(encode_message(msg))
             await self.writer.drain()
-
+            # ESC 键不需要追加 Enter
+            if key == "esc":
+                logger.debug(f"ESC 按键不追加 Enter")
+                return True
+            # 其他按键追加 Enter 以确认选项
             await asyncio.sleep(0.05)
             msg = InputMessage(b"\r", self.client_id)
             self.writer.write(encode_message(msg))
             await self.writer.drain()
-
             return True
         except Exception as e:
             logger.error(f"发送按键失败: {e}")
@@ -214,7 +236,10 @@ class SessionBridge:
         for byte in data:
             if byte in (0x0d, 0x0a):  # CR or LF → 完整一行
                 if self._input_bytes:
-                    text = self._input_bytes.decode('utf-8', errors='replace').strip()
+                    try:
+                        text = self._input_bytes.decode('utf-8').strip()
+                    except UnicodeDecodeError:
+                        text = self._input_bytes.decode('utf-8', errors='ignore').strip()
                     if text and self.on_input:
                         self.on_input(text)
                     self._input_bytes.clear()

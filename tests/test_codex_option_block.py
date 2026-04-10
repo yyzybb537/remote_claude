@@ -10,6 +10,7 @@ CLAUDE.md 示例布局：
   ❯ 2. No, stay in Plan mode   Continue planning...
 """
 
+import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -99,8 +100,6 @@ def test_has_numbered_options_only_one_option():
 
 
 # ─── _find_contiguous_options 测试 ────────────────────────────────────────────
-
-import re
 
 _NAV_RE = re.compile(r'(Enter to select|↑/↓|Esc to cancel|to navigate)')
 

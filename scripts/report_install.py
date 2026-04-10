@@ -35,9 +35,13 @@ def _get_machine_id() -> str:
     return mid
 
 
+def _resolve_project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
 def _get_version() -> str:
     try:
-        pkg = Path(__file__).parent.parent / 'package.json'
+        pkg = _resolve_project_root() / 'package.json'
         return json.loads(pkg.read_text()).get('version', 'unknown')
     except Exception:
         return 'unknown'

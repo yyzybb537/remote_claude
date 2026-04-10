@@ -1,0 +1,1344 @@
+#!/bin/sh
+# _common.sh - 共享的脚本初始化逻辑
+# 用法: . "$PROJECT_DIR/scripts/_common.sh"
+
+# 解析符号链接，兼容 macOS（不支持 readlink -f）
+# 入口脚本可设置 PROJECT_DIR（推荐）或 SCRIPT_DIR，_common.sh 会统一补全两者
+#
+# 示例:
+#   SOURCE="$0"
+#   while [ -L "$SOURCE" ]; do
+#       DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+#       SOURCE="$(readlink "$SOURCE")"
+#       case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+#   done
+#   PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
+#   . "$PROJECT_DIR/scripts/_common.sh"
+
+# 颜色定义（供 sourced 脚本使用）
+if [ -z "$RED" ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m'
+fi
+
+# 打印函数
+print_info() {
+    printf "${GREEN}ℹ${NC} %s\n" "$1"
+}
+
+print_success() {
+    printf "${GREEN}✓${NC} %s\n" "$1"
+}
+
+print_warning() {
+    printf "${YELLOW}⚠${NC} %s\n" "$1"
+}
+
+print_error() {
+    printf "${RED}✗${NC} %s\n" "$1"
+}
+
+# 颜色常量（BLUE 仅用于 print_detail）
+BLUE='\033[0;34m'
+
+print_detail() {
+    printf "${BLUE}  %s${NC}\n" "$1"
+}
+
+_init_startup_dir() {
+    STARTUP_DIR="${STARTUP_DIR:-$(pwd)}"
+    export STARTUP_DIR
+}
+
+_require_startup_dir() {
+    if [ -z "${STARTUP_DIR:-}" ]; then
+        print_error "启动目录无效，无法继续"
+        return 1
+    fi
+    if [ ! -d "$STARTUP_DIR" ]; then
+        print_error "启动目录不存在: $STARTUP_DIR"
+        return 1
+    fi
+    return 0
+}
+
+INSTALL_LOG_FILE="/tmp/remote-claude-install.log"
+
+_init_install_log() {
+    : > "$INSTALL_LOG_FILE"
+    printf '[install] script=%s cwd=%s shell=%s\n' "${0##*/}" "$(pwd)" "${SHELL:-unknown}" >> "$INSTALL_LOG_FILE"
+}
+
+_install_log() {
+    printf '[install] %s\n' "$1" >> "$INSTALL_LOG_FILE"
+}
+
+_install_stage() {
+    INSTALL_STAGE="$1"
+    export INSTALL_STAGE
+    _install_log "stage=$INSTALL_STAGE"
+}
+
+_install_fail_hint() {
+    print_error "安装失败，请查看日志: $INSTALL_LOG_FILE"
+    _install_log "failed stage=${INSTALL_STAGE:-unknown} rc=${1:-1}"
+}
+
+# 统一 PROJECT_DIR / SCRIPT_DIR（兼容历史入口）
+# 约定：PROJECT_DIR 为项目根目录；SCRIPT_DIR 为 $PROJECT_DIR/scripts
+_normalize_project_and_script_dir() {
+    if [ -n "${PROJECT_DIR:-}" ] && [ -d "$PROJECT_DIR" ]; then
+        case "$PROJECT_DIR" in
+            */scripts)
+                SCRIPT_DIR="$PROJECT_DIR"
+                PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
+                ;;
+            *)
+                SCRIPT_DIR="$PROJECT_DIR/scripts"
+                ;;
+        esac
+        export PROJECT_DIR SCRIPT_DIR
+        return 0
+    fi
+
+    if [ -n "${SCRIPT_DIR:-}" ] && [ -d "$SCRIPT_DIR" ]; then
+        case "$SCRIPT_DIR" in
+            */scripts)
+                PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
+                ;;
+            *)
+                PROJECT_DIR="$SCRIPT_DIR"
+                SCRIPT_DIR="$PROJECT_DIR/scripts"
+                ;;
+        esac
+        export PROJECT_DIR SCRIPT_DIR
+        return 0
+    fi
+
+    return 1
+}
+
+# fail-fast：校验统一入口布局，确保路径真相源存在
+_require_common_layout() {
+    if [ -z "${PROJECT_DIR:-}" ] || [ ! -d "$PROJECT_DIR" ]; then
+        print_error "PROJECT_DIR 无效，无法继续"
+        return 1
+    fi
+    SCRIPT_DIR="$PROJECT_DIR/scripts"
+    if [ ! -d "$SCRIPT_DIR" ]; then
+        print_error "scripts 目录不存在: $SCRIPT_DIR"
+        return 1
+    fi
+    export PROJECT_DIR SCRIPT_DIR
+    return 0
+}
+
+_normalize_project_and_script_dir || :
+_require_common_layout || return 1
+
+rc_init_paths() {
+    REMOTE_CLAUDE_HOME_DIR="$HOME/.remote-claude"
+    REMOTE_CLAUDE_SOCKET_DIR="/tmp/remote-claude"
+    REMOTE_CLAUDE_ENV_FILE="$REMOTE_CLAUDE_HOME_DIR/.env"
+    REMOTE_CLAUDE_SETTINGS_FILE="$REMOTE_CLAUDE_HOME_DIR/settings.json"
+    REMOTE_CLAUDE_STATE_FILE="$REMOTE_CLAUDE_HOME_DIR/state.json"
+    REMOTE_CLAUDE_ENV_TEMPLATE="$PROJECT_DIR/resources/defaults/env.example"
+    REMOTE_CLAUDE_SETTINGS_TEMPLATE="$PROJECT_DIR/resources/defaults/settings.json.example"
+    REMOTE_CLAUDE_STATE_TEMPLATE="$PROJECT_DIR/resources/defaults/state.json.example"
+    REMOTE_CLAUDE_LARK_PID_FILE="$REMOTE_CLAUDE_SOCKET_DIR/lark.pid"
+    REMOTE_CLAUDE_LARK_STATUS_FILE="$REMOTE_CLAUDE_SOCKET_DIR/lark.status"
+    REMOTE_CLAUDE_LARK_LOG_FILE="$REMOTE_CLAUDE_HOME_DIR/lark_client.log"
+
+    export REMOTE_CLAUDE_HOME_DIR REMOTE_CLAUDE_SOCKET_DIR
+    export REMOTE_CLAUDE_ENV_FILE REMOTE_CLAUDE_SETTINGS_FILE REMOTE_CLAUDE_STATE_FILE
+    export REMOTE_CLAUDE_ENV_TEMPLATE REMOTE_CLAUDE_SETTINGS_TEMPLATE REMOTE_CLAUDE_STATE_TEMPLATE
+    export REMOTE_CLAUDE_LARK_PID_FILE REMOTE_CLAUDE_LARK_STATUS_FILE REMOTE_CLAUDE_LARK_LOG_FILE
+}
+
+rc_ensure_home_dir() {
+    mkdir -p "$REMOTE_CLAUDE_HOME_DIR"
+}
+
+rc_ensure_socket_dir() {
+    mkdir -p "$REMOTE_CLAUDE_SOCKET_DIR"
+}
+
+rc_require_file() {
+    if [ ! -f "$1" ]; then
+        print_error "缺少$2: $1"
+        return 1
+    fi
+    return 0
+}
+
+rc_copy_if_missing() {
+    src="$1"
+    dst="$2"
+    label="$3"
+
+    if [ -f "$dst" ]; then
+        return 0
+    fi
+
+    cp "$src" "$dst"
+    print_success "创建${label}: $dst"
+}
+
+rc_init_paths
+
+# 将目录加入 PATH（若目录存在且未包含）
+_prepend_path_if_dir() {
+    local DIR
+    DIR="$1"
+    [ -n "$DIR" ] || return 1
+    [ -d "$DIR" ] || return 1
+
+    case ":$PATH:" in
+        *":$DIR:"*) ;;
+        *) export PATH="$DIR:$PATH" ;;
+    esac
+
+    return 0
+}
+
+# 获取 Python user site-packages 路径
+_get_python_user_site_packages() {
+    local USER_SITE
+    USER_SITE=""
+
+    if command -v python3 >/dev/null 2>&1; then
+        USER_SITE=$(python3 -m site --user-site 2>/dev/null)
+    elif command -v python >/dev/null 2>&1; then
+        USER_SITE=$(python -m site --user-site 2>/dev/null)
+    fi
+
+    if [ -n "$USER_SITE" ]; then
+        printf '%s\n' "$USER_SITE"
+    fi
+}
+
+# 获取 Python user base 的 bin 路径
+_get_python_user_base_bin() {
+    local USER_BASE
+    USER_BASE=""
+
+    if command -v python3 >/dev/null 2>&1; then
+        USER_BASE=$(python3 -m site --user-base 2>/dev/null)
+    elif command -v python >/dev/null 2>&1; then
+        USER_BASE=$(python -m site --user-base 2>/dev/null)
+    fi
+
+    if [ -n "$USER_BASE" ]; then
+        printf '%s/bin\n' "$USER_BASE"
+    fi
+}
+
+# 枚举常见的 Python user script 目录，供 uv 安装后重新探测
+_list_candidate_user_bin_dirs() {
+    local USER_BASE_BIN DIR
+
+    printf '%s\n' "$HOME/.local/bin"
+
+    USER_BASE_BIN="$(_get_python_user_base_bin)"
+    if [ -n "$USER_BASE_BIN" ]; then
+        printf '%s\n' "$USER_BASE_BIN"
+    fi
+
+    if [ -d "$HOME/Library/Python" ]; then
+        for DIR in "$HOME"/Library/Python/*/bin; do
+            [ -d "$DIR" ] || continue
+            printf '%s\n' "$DIR"
+        done
+    fi
+}
+
+# 确保 uv 可执行在 PATH 中，并可被 command -v 发现
+_resolve_uv_path() {
+    local USER_BIN_DIR
+
+    if command -v uv >/dev/null 2>&1; then
+        return 0
+    fi
+
+    while IFS= read -r USER_BIN_DIR; do
+        [ -n "$USER_BIN_DIR" ] || continue
+        _prepend_path_if_dir "$USER_BIN_DIR"
+        if command -v uv >/dev/null 2>&1; then
+            return 0
+        fi
+    done <<EOF
+$(_list_candidate_user_bin_dirs)
+EOF
+
+    return 1
+}
+
+# uv 路径兜底
+if ! _resolve_uv_path; then
+    :
+fi
+
+# 自动懒初始化仅对入口脚本生效，避免 source 共享脚本时意外触发安装/同步
+_should_auto_run_lazy_init() {
+    case "${0##*/}" in
+        sh|bash|dash|zsh|ksh|ash)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# 从 state.json 读取 uv 路径
+_read_uv_path_from_runtime() {
+    local STATE_FILE
+    STATE_FILE="$REMOTE_CLAUDE_STATE_FILE"
+    if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
+        jq -r '.uv_path // empty' "$STATE_FILE" 2>/dev/null
+    fi
+}
+
+# 保存 uv 路径到 state.json
+_save_uv_path_to_runtime() {
+    local UV_PATH STATE_FILE TMP_FILE
+    UV_PATH="$1"
+    STATE_FILE="$REMOTE_CLAUDE_STATE_FILE"
+
+    if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
+        TMP_FILE=$(mktemp)
+        jq --arg path "$UV_PATH" '.uv_path = $path' "$STATE_FILE" > "$TMP_FILE" && \
+            mv "$TMP_FILE" "$STATE_FILE"
+    fi
+}
+
+# 校验 uv 路径是否真实可用（不仅是文件可执行，还要能成功执行 --version）
+_is_working_uv_path() {
+    uv_candidate="$1"
+    [ -n "$uv_candidate" ] || return 1
+    [ -f "$uv_candidate" ] || return 1
+    [ -x "$uv_candidate" ] || return 1
+    "$uv_candidate" --version >/dev/null 2>&1
+}
+
+_uv_module_version() {
+    local USER_SITE
+
+    if command -v python3 >/dev/null 2>&1; then
+        USER_SITE="$(_get_python_user_site_packages)"
+        if [ -n "$USER_SITE" ] && [ -d "$USER_SITE/uv" ]; then
+            if python3 -m uv --version >/dev/null 2>&1; then
+                python3 -m uv --version 2>/dev/null
+                return 0
+            fi
+        fi
+    fi
+    if command -v python >/dev/null 2>&1; then
+        USER_SITE=$(python -m site --user-site 2>/dev/null)
+        if [ -n "$USER_SITE" ] && [ -d "$USER_SITE/uv" ]; then
+            if python -m uv --version >/dev/null 2>&1; then
+                python -m uv --version 2>/dev/null
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+_can_run_uv_command() {
+    if command -v uv >/dev/null 2>&1 && uv --version >/dev/null 2>&1; then
+        return 0
+    fi
+    _uv_module_version >/dev/null 2>&1
+}
+
+# 从 state.json 清除失效的 uv 路径
+_clear_uv_path_from_runtime() {
+    local STATE_FILE TMP_FILE
+    STATE_FILE="$REMOTE_CLAUDE_STATE_FILE"
+
+    if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
+        TMP_FILE=$(mktemp)
+        jq '.uv_path = null' "$STATE_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$STATE_FILE"
+    fi
+}
+
+# 检测可用的 pip 命令
+_detect_pip_cmd() {
+    if command -v pip3 >/dev/null 2>&1; then
+        echo "pip3"
+    elif command -v pip >/dev/null 2>&1; then
+        echo "pip"
+    fi
+}
+
+# 固定 PyPI 镜像源（label|index-url|trusted-host）
+_install_pypi_sources() {
+    cat <<'EOF'
+pypi|https://pypi.org/simple|pypi.org
+aliyun|https://mirrors.aliyun.com/pypi/simple/|mirrors.aliyun.com
+tuna|https://pypi.tuna.tsinghua.edu.cn/simple/|pypi.tuna.tsinghua.edu.cn
+EOF
+}
+
+# 安装失败摘要日志
+_log_install_fail() {
+    # $1: stage, $2: source, $3: cmd_summary, $4: exit_code
+    local STAGE SOURCE CMD_SUMMARY EXIT_CODE
+    STAGE="$1"
+    SOURCE="$2"
+    CMD_SUMMARY="$3"
+    EXIT_CODE="$4"
+
+    printf '[install-fail][%s] source=%s cmd="%s" exit_code=%s\n' \
+        "$STAGE" "${SOURCE:-na}" "$CMD_SUMMARY" "$EXIT_CODE" >> "$INSTALL_LOG_FILE"
+}
+
+# 脚本失败摘要日志
+_log_script_fail() {
+    # $1: stage, $2: cmd_summary, $3: exit_code
+    local STAGE CMD_SUMMARY EXIT_CODE
+    STAGE="$1"
+    CMD_SUMMARY="$2"
+    EXIT_CODE="$3"
+
+    printf '[script-fail][%s] source=%s cmd="%s" exit_code=%s\n' \
+        "$STAGE" "na" "$CMD_SUMMARY" "$EXIT_CODE" >> "$INSTALL_LOG_FILE"
+}
+
+# 检测 pip 错误输出是否为版本过低场景
+_is_pip_too_old_error() {
+    case "$1" in
+        *"No matching distribution found for uv"*|*"Could not find a version that satisfies the requirement uv"*|*"unsupported wheel on this platform"*|*"Metadata-generation failed"*|*"pyproject.toml"*|*"No module named pip"*|*"no such option: --break-system-packages"*|*"unrecognized arguments: --break-system-packages"*|*"unknown option --break-system-packages"*|*"invalid command 'bdist_wheel'"*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# 通用 pip 多源执行器（自动附加 -i + --trusted-host）
+_run_pip_install_with_mirrors() {
+    # $1: stage, $2: pip_cmd, $3...: pip 基础参数
+    local STAGE PIP_CMD LABEL INDEX_URL HOST RC CMD_SUMMARY PIP_ERR_FILE PIP_ERR_CONTENT
+    STAGE="$1"
+    PIP_CMD="$2"
+    shift 2
+
+    CMD_SUMMARY="$PIP_CMD $* -i <index> --trusted-host <host>"
+    PIP_ERR_FILE=$(mktemp)
+
+    while IFS='|' read -r LABEL INDEX_URL HOST; do
+        [ -n "$LABEL" ] || continue
+
+        "$PIP_CMD" "$@" -i "$INDEX_URL" --trusted-host "$HOST" 2>"$PIP_ERR_FILE"
+        RC=$?
+        if [ "$RC" -eq 0 ]; then
+            rm -f "$PIP_ERR_FILE"
+            _install_log "stage=$STAGE source=$LABEL success"
+            return 0
+        fi
+
+        PIP_ERR_CONTENT=$(cat "$PIP_ERR_FILE" 2>/dev/null || true)
+        if [ "$STAGE" = "uv-install" ] && _is_pip_too_old_error "$PIP_ERR_CONTENT"; then
+            print_error "当前 pip 版本过低，无法安装 uv；请先手动升级 pip 后重试"
+            rm -f "$PIP_ERR_FILE"
+            _log_install_fail "$STAGE" "$LABEL" "$CMD_SUMMARY" "$RC"
+            return "$RC"
+        fi
+
+        _log_install_fail "$STAGE" "$LABEL" "$CMD_SUMMARY" "$RC"
+    done <<EOF
+$(_install_pypi_sources)
+EOF
+
+    rm -f "$PIP_ERR_FILE"
+    return 1
+}
+
+# 通用 uv 多源执行器（自动附加 --index-url + --allow-insecure-host）
+_run_uv_with_pypi_sources() {
+    # $1: stage, $2...: uv 基础参数
+    local STAGE LABEL INDEX_URL HOST RC CMD_SUMMARY
+    STAGE="$1"
+    shift
+
+    CMD_SUMMARY="uv $* --index-url <index> --allow-insecure-host <host>"
+
+    while IFS='|' read -r LABEL INDEX_URL HOST; do
+        [ -n "$LABEL" ] || continue
+
+        uv "$@" --index-url "$INDEX_URL" --allow-insecure-host "$HOST" 2>/dev/null
+        RC=$?
+        if [ "$RC" -eq 0 ]; then
+            _install_log "stage=$STAGE source=$LABEL success"
+            return 0
+        fi
+
+        _log_install_fail "$STAGE" "$LABEL" "$CMD_SUMMARY" "$RC"
+    done <<EOF
+$(_install_pypi_sources)
+EOF
+
+    return 1
+}
+
+# 多来源安装 uv
+# 返回: 0 成功, 1 失败
+install_uv_multi_source() {
+    local PIP_CMD RC UV_BEFORE UV_AFTER USER_BASE_BIN USER_BASE_UV
+    PIP_CMD="$(_detect_pip_cmd)"
+    UV_BEFORE="$(command -v uv 2>/dev/null || true)"
+
+    # uv 已可用时直接返回
+    if _can_run_uv_command; then
+        _resolve_uv_path
+        return 0
+    fi
+
+    # 方式一：官方安装脚本（推荐，无需 Python）
+    print_warning "尝试官方脚本安装"
+    if curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh 2>/dev/null | sh; then
+        if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
+            return 0
+        fi
+        _log_script_fail "uv-install-script" "curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh" 127
+    else
+        RC=$?
+        _log_script_fail "uv-install-script" "curl -LsSf --connect-timeout 10 https://astral.sh/uv/install.sh | sh" "$RC"
+    fi
+
+    # 方式二：conda/mamba
+    if ! command -v uv >/dev/null 2>&1; then
+        if command -v mamba >/dev/null 2>&1; then
+            print_warning "尝试 mamba 安装 uv..."
+            if mamba install -c conda-forge uv -y --quiet 2>/dev/null; then
+                if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
+                    return 0
+                fi
+                _log_script_fail "uv-install-mamba" "mamba install -c conda-forge uv -y --quiet" 127
+            else
+                RC=$?
+                _log_script_fail "uv-install-mamba" "mamba install -c conda-forge uv -y --quiet" "$RC"
+            fi
+        elif command -v conda >/dev/null 2>&1; then
+            print_warning "尝试 conda 安装 uv..."
+            if conda install -c conda-forge uv -y --quiet 2>/dev/null; then
+                if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
+                    return 0
+                fi
+                _log_script_fail "uv-install-conda" "conda install -c conda-forge uv -y --quiet" 127
+            else
+                RC=$?
+                _log_script_fail "uv-install-conda" "conda install -c conda-forge uv -y --quiet" "$RC"
+            fi
+        fi
+    fi
+
+    # 方式三：brew（macOS）
+    if ! command -v uv >/dev/null 2>&1 && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+        print_warning "尝试 brew install uv..."
+        if brew install uv 2>/dev/null; then
+            if _resolve_uv_path && command -v uv >/dev/null 2>&1; then
+                return 0
+            fi
+            _log_script_fail "uv-install-brew" "brew install uv" 127
+        else
+            RC=$?
+            _log_script_fail "uv-install-brew" "brew install uv" "$RC"
+        fi
+    fi
+
+    # 方式四：pip --user + 固定镜像回退
+    if ! _can_run_uv_command && [ -n "$PIP_CMD" ]; then
+        print_warning "尝试 pip 安装 uv（固定镜像回退，--user）..."
+        if _run_pip_install_with_mirrors "uv-install" "$PIP_CMD" install uv --quiet --user --break-system-packages; then
+            USER_BASE_BIN="$(_get_python_user_base_bin)"
+            USER_BASE_UV="${USER_BASE_BIN%/}/uv"
+            if [ -n "$USER_BASE_BIN" ] && [ -x "$USER_BASE_UV" ] && [ "$USER_BASE_UV" != "$UV_BEFORE" ]; then
+                _prepend_path_if_dir "$USER_BASE_BIN"
+            fi
+            if _resolve_uv_path && _can_run_uv_command; then
+                return 0
+            fi
+            _log_script_fail "uv-install-user-bin" "installed uv but command -v uv still missing" 127
+        fi
+    fi
+
+    return 1
+}
+
+# 检查并安装 uv（完整流程）
+# 返回: 0 成功, 1 失败
+check_and_install_uv() {
+    local UV_PATH RESOLVED_UV_PATH
+
+    _set_lazy_init_result_if_unset "pending"
+
+    if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
+        _set_lazy_init_result "skipped-cache"
+        return 0
+    fi
+
+    # 1. 优先使用 runtime 中记录的 uv_path，但必须是健康可执行路径
+    UV_PATH=$(_read_uv_path_from_runtime)
+    if [ -n "$UV_PATH" ]; then
+        if _is_working_uv_path "$UV_PATH"; then
+            _prepend_path_if_dir "$(dirname "$UV_PATH")"
+            _save_uv_path_to_runtime "$UV_PATH"
+            _set_lazy_init_result "ready"
+            return 0
+        fi
+
+        print_warning "配置的 uv 路径失效，尝试系统 uv..."
+        _clear_uv_path_from_runtime
+    fi
+
+    # 2. 检测系统 uv / 常见候选路径
+    if _resolve_uv_path; then
+        RESOLVED_UV_PATH="$(command -v uv 2>/dev/null || true)"
+        if _is_working_uv_path "$RESOLVED_UV_PATH" || _uv_module_version >/dev/null 2>&1; then
+            _save_uv_path_to_runtime "$RESOLVED_UV_PATH"
+            _set_lazy_init_result "ready"
+            return 0
+        fi
+    fi
+
+    # 3. 多来源安装
+    if install_uv_multi_source; then
+        RESOLVED_UV_PATH="$(command -v uv 2>/dev/null || true)"
+        if _is_working_uv_path "$RESOLVED_UV_PATH" || _uv_module_version >/dev/null 2>&1; then
+            print_success "uv 安装成功"
+            _save_uv_path_to_runtime "$RESOLVED_UV_PATH"
+            _set_lazy_init_result "installed"
+            return 0
+        fi
+    fi
+
+    _set_lazy_init_result "uv-install-failed"
+    return 1
+}
+
+# 检查字符串是否为纯数字
+_is_numeric() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# remote-claude 初始化块标记
+REMOTE_CLAUDE_INIT_BEGIN='# >>> remote-claude init >>>'
+REMOTE_CLAUDE_INIT_END='# <<< remote-claude init <<<'
+
+# 获取 shell rc 候选文件（按扫描顺序）
+_get_shell_rc_candidates() {
+    printf '%s\n' "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"
+}
+
+# 获取 shell 配置文件路径（POSIX 兼容）
+# 基于 SHELL 与文件存在性选择写入目标，未知 shell 回退到 ~/.profile
+get_shell_rc() {
+    case "${SHELL:-}" in
+        */zsh)
+            [ -f "$HOME/.zshrc" ] && { echo "$HOME/.zshrc"; return 0; }
+            echo "$HOME/.profile"
+            return 0
+            ;;
+        */bash)
+            [ -f "$HOME/.bashrc" ] && { echo "$HOME/.bashrc"; return 0; }
+            [ -f "$HOME/.bash_profile" ] && { echo "$HOME/.bash_profile"; return 0; }
+            echo "$HOME/.profile"
+            return 0
+            ;;
+        *)
+            echo "$HOME/.profile"
+            return 0
+            ;;
+    esac
+}
+
+# 在候选 rc 中查找完整标记块（begin/end 成对）
+_find_valid_remote_claude_init_rc() {
+    local rc begin_count end_count
+    for rc in $(_get_shell_rc_candidates); do
+        [ -f "$rc" ] || continue
+        begin_count=$(grep -cF "$REMOTE_CLAUDE_INIT_BEGIN" "$rc" 2>/dev/null || echo 0)
+        end_count=$(grep -cF "$REMOTE_CLAUDE_INIT_END" "$rc" 2>/dev/null || echo 0)
+        if [ "$begin_count" -gt 0 ] && [ "$begin_count" = "$end_count" ]; then
+            echo "$rc"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 检查候选 rc 中是否已存在 remote-claude 初始化块（仅计完整块）
+has_remote_claude_init_in_any_rc() {
+    _find_valid_remote_claude_init_rc >/dev/null 2>&1
+}
+
+# 在 rc 中写入/更新 remote-claude 初始化块（全局查重 + 单文件 upsert）
+upsert_remote_claude_init_block() {
+    local body target rc tmp_file
+    body="$1"
+
+    rc=$(_find_valid_remote_claude_init_rc 2>/dev/null || true)
+    if [ -n "$rc" ]; then
+        tmp_file=$(mktemp)
+        awk -v begin="$REMOTE_CLAUDE_INIT_BEGIN" -v end="$REMOTE_CLAUDE_INIT_END" -v body="$body" '
+            $0==begin {print begin; print body; in_block=1; next}
+            $0==end {print end; in_block=0; next}
+            !in_block {print}
+        ' "$rc" > "$tmp_file" && mv "$tmp_file" "$rc"
+        return $?
+    fi
+
+    target=$(get_shell_rc)
+    [ -f "$target" ] || : > "$target"
+    {
+        printf '\n%s\n' "$REMOTE_CLAUDE_INIT_BEGIN"
+        printf '%s\n' "$body"
+        printf '%s\n' "$REMOTE_CLAUDE_INIT_END"
+    } >> "$target"
+}
+
+# 检查 PATH 是否包含指定目录
+_path_contains() {
+    case ":$PATH:" in
+        *":$1:"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 打印带颜色的标题头
+REMOTE_CLAUDE_SHORTCUT_COMMANDS="cla cl cx cdx remote-claude"
+export REMOTE_CLAUDE_SHORTCUT_COMMANDS
+
+rc_foreach_shortcut_command() {
+    for shortcut_cmd in $REMOTE_CLAUDE_SHORTCUT_COMMANDS; do
+        "$@" "$shortcut_cmd" || return $?
+    done
+}
+
+rc_link_shortcuts_into_dir() {
+    target_dir="$1"
+    [ -n "$target_dir" ] || return 1
+
+    rc_foreach_shortcut_command _rc_link_shortcut_into_dir "$target_dir"
+}
+
+_rc_link_shortcut_into_dir() {
+    target_dir="$1"
+    shortcut_cmd="$2"
+    ln -sf "$PROJECT_DIR/bin/$shortcut_cmd" "$target_dir/$shortcut_cmd" 2>/dev/null || true
+}
+
+rc_remove_shortcuts_from_dir() {
+    target_dir="$1"
+    [ -d "$target_dir" ] || return 1
+
+    rc_foreach_shortcut_command _rc_remove_shortcut_from_dir "$target_dir"
+}
+
+_rc_remove_shortcut_from_dir() {
+    target_dir="$1"
+    shortcut_cmd="$2"
+    link_path="$target_dir/$shortcut_cmd"
+    if [ -L "$link_path" ]; then
+        target=$(readlink "$link_path" 2>/dev/null || true)
+        case "$target" in
+            *"remote_claude"*|*"remote-claude"*)
+                rm -f "$link_path"
+                print_detail "已删除: $link_path"
+                RC_REMOVED_SHORTCUT_COUNT=$((RC_REMOVED_SHORTCUT_COUNT + 1))
+                export RC_REMOVED_SHORTCUT_COUNT
+                ;;
+        esac
+    fi
+}
+
+print_post_action_hint() {
+    title="$1"
+    shift
+
+    printf '\n%b%s%b\n' "${YELLOW}" "$title" "${NC}"
+    for hint in "$@"; do
+        print_detail "$hint"
+    done
+}
+
+print_shell_reload_hint() {
+    shell_rc="$1"
+    printf '%b\n' "${YELLOW}提示:${NC} 重新打开终端或运行 ${GREEN}. $shell_rc${NC} 生效"
+}
+
+print_header() {
+    printf '\n'
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '%b\n' "${GREEN}$1${NC}"
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '\n'
+}
+
+print_banner() {
+    title="$1"
+    subtitle="$2"
+    printf '\n'
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '%b\n' "${GREEN}   ${title}${NC}"
+    printf '%b\n' "${GREEN}   ${subtitle}${NC}"
+    printf '%b\n' "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf '\n'
+}
+
+print_uv_manual_install_hint() {
+    print_info "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+    print_info "  或访问 https://docs.astral.sh/uv/getting-started/installation/"
+}
+
+require_supported_os() {
+    OS=$(uname -s)
+    if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
+        print_error "不支持的操作系统: $OS"
+        print_error "Remote Claude 仅支持 macOS 和 Linux"
+        return 1
+    fi
+    print_success "操作系统: $OS"
+}
+
+ensure_uv_or_hint() {
+    header_text="$1"
+    [ -z "$header_text" ] && header_text="检查 uv"
+
+    print_header "$header_text"
+
+    if check_and_install_uv; then
+        UV_VERSION=""
+        if command -v uv >/dev/null 2>&1 && UV_VERSION=$(uv --version 2>/dev/null); then
+            :
+        else
+            UV_VERSION=$(_uv_module_version)
+        fi
+        print_success "$UV_VERSION 已安装"
+        return 0
+    fi
+
+    print_error "uv 安装失败，请手动安装："
+    print_uv_manual_install_hint
+    return 1
+}
+
+# 检测是否在包管理器缓存目录中
+# 缓存目录中的安装不应该执行初始化
+_is_in_package_manager_cache() {
+    # pnpm 缓存路径、npm 缓存路径、yarn 缓存路径、通用 node_modules 缓存标识
+    case "$SCRIPT_DIR" in
+        */.pnpm/*/node_modules/*|*/.pnpm-store/*|*/.store/*/node_modules/*|*/node_modules/.pnpm/*|\
+        */.pnpm-global/*|\
+        */_cacache/*|*/.npm/*|*/.npm-cache/*|\
+        */.yarn/cache/*|*/.yarn/cache|\
+        */node_modules/.cache/*|*/.cache/node_modules/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# 记录惰性初始化结果，供入口脚本和测试读取
+_set_lazy_init_result() {
+    LAZY_INIT_RESULT="$1"
+    export LAZY_INIT_RESULT
+}
+
+# 仅在结果尚未设置时写入默认惰性初始化结果
+_set_lazy_init_result_if_unset() {
+    if [ -z "${LAZY_INIT_RESULT:-}" ]; then
+        _set_lazy_init_result "$1"
+    fi
+}
+
+# 检测是否为 pnpm 全局安装
+# pnpm 全局安装需要正常初始化（不同于缓存）
+# 返回: 0 是 pnpm 全局安装, 1 不是
+_is_pnpm_global_install() {
+    case "$SCRIPT_DIR" in
+        */Library/pnpm/global/*/node_modules/*|*/.local/share/pnpm/global/*/node_modules/*|*/AppData/Local/pnpm/global/*/node_modules/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# 检测是否为全局安装
+# 全局安装时 .venv 应该在安装目录中创建，且不应重复初始化
+_is_global_install() {
+    # npm 全局安装路径、pnpm 全局安装路径、Windows npm 全局路径、nvm 路径
+    case "$SCRIPT_DIR" in
+        /usr/local/lib/node_modules/*|/usr/lib/node_modules/*|"$HOME"/.local/lib/node_modules/*|/opt/homebrew/lib/node_modules/*|/usr/local/Cellar/node/*/lib/node_modules/*|\
+        "$HOME"/Library/pnpm/global/*|"$HOME"/.local/share/pnpm/global/*|"$HOME"/AppData/Local/pnpm/global/*|\
+        "$PROGRAMFILES"/nodejs/node_modules/*|"$APPDATA"/npm/node_modules/*|\
+        "$HOME"/.nvm/*/lib/node_modules/*|"$HOME"/.config/nvm/*/lib/node_modules/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# 计算文件 SHA-256 摘要
+_hash_file_sha256() {
+    local target_file output digest rc
+    target_file="$1"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        if output=$(sha256sum "$target_file" 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            printf '%s\n' "$1"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        if output=$(shasum -a 256 "$target_file" 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            printf '%s\n' "$1"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v openssl >/dev/null 2>&1; then
+        if output=$(openssl dgst -sha256 "$target_file" 2>/dev/null); then
+            digest=${output##* }
+            [ -n "$digest" ] || return 1
+            printf '%s\n' "$digest"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v cksum >/dev/null 2>&1; then
+        if output=$(cksum "$target_file" 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            [ -n "$2" ] || return 1
+            printf 'cksum:%s:%s\n' "$1" "$2"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    return 1
+}
+
+# 计算标准输入 SHA-256 摘要
+_hash_stdin_sha256() {
+    local output digest rc
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        if output=$(sha256sum 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            printf '%s\n' "$1"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        if output=$(shasum -a 256 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            printf '%s\n' "$1"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v openssl >/dev/null 2>&1; then
+        if output=$(openssl dgst -sha256 2>/dev/null); then
+            digest=${output##* }
+            [ -n "$digest" ] || return 1
+            printf '%s\n' "$digest"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    if command -v cksum >/dev/null 2>&1; then
+        if output=$(cksum 2>/dev/null); then
+            set -- $output
+            [ -n "$1" ] || return 1
+            [ -n "$2" ] || return 1
+            printf 'cksum:%s:%s\n' "$1" "$2"
+            return 0
+        else
+            rc=$?
+            [ "$rc" -eq 127 ] || return 1
+        fi
+    fi
+
+    return 1
+}
+
+# 获取依赖指纹文件路径
+_get_dependency_fingerprint_path() {
+    local project_dir
+    project_dir="$1"
+    printf '%s/.venv/.deps-fingerprint\n' "$project_dir"
+}
+
+# 计算依赖指纹（基于 pyproject.toml 与 uv.lock 内容）
+_compute_dependency_fingerprint() {
+    local project_dir pyproject_file lock_file pyproject_hash lock_hash manifest
+    project_dir="$1"
+    pyproject_file="$project_dir/pyproject.toml"
+    lock_file="$project_dir/uv.lock"
+
+    pyproject_hash="missing"
+    lock_hash="missing"
+
+    if [ -f "$pyproject_file" ]; then
+        pyproject_hash=$(_hash_file_sha256 "$pyproject_file") || return 1
+    fi
+
+    if [ -f "$lock_file" ]; then
+        lock_hash=$(_hash_file_sha256 "$lock_file") || return 1
+    fi
+
+    manifest=$(printf 'pyproject.toml=%s\nuv.lock=%s\n' "$pyproject_hash" "$lock_hash")
+    printf '%s' "$manifest" | _hash_stdin_sha256
+}
+
+# 比较依赖指纹是否一致
+_dependency_fingerprint_matches() {
+    local project_dir fingerprint_file current_fingerprint stored_fingerprint
+    project_dir="$1"
+    fingerprint_file=$(_get_dependency_fingerprint_path "$project_dir")
+
+    [ -f "$fingerprint_file" ] || return 1
+
+    current_fingerprint=$(_compute_dependency_fingerprint "$project_dir") || return 1
+    stored_fingerprint=$(tr -d '\r\n' < "$fingerprint_file" 2>/dev/null)
+
+    [ -n "$stored_fingerprint" ] || return 1
+    [ "$stored_fingerprint" = "$current_fingerprint" ]
+}
+
+# 写回依赖指纹
+_write_dependency_fingerprint() {
+    local project_dir venv_dir fingerprint_file current_fingerprint tmp_file
+    project_dir="$1"
+    venv_dir="$project_dir/.venv"
+    fingerprint_file=$(_get_dependency_fingerprint_path "$project_dir")
+
+    [ -d "$venv_dir" ] || return 1
+
+    current_fingerprint=$(_compute_dependency_fingerprint "$project_dir") || return 1
+
+    tmp_file=$(mktemp "$venv_dir/.deps-fingerprint.tmp.XXXXXX" 2>/dev/null || mktemp) || return 1
+    if ! printf '%s\n' "$current_fingerprint" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    if ! mv "$tmp_file" "$fingerprint_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    return 0
+}
+
+# 检查是否需要重新同步依赖
+# 条件：.venv 不存在，或依赖指纹变化
+# 返回: 0 需要同步, 1 不需要
+_needs_sync() {
+    local venv_dir project_dir
+
+    if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
+        return 1
+    fi
+
+    # 使用 PROJECT_DIR（如果已设置）或从 SCRIPT_DIR 推导
+    project_dir="${PROJECT_DIR:-$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)}"
+    [ -z "$project_dir" ] && return 1
+
+    venv_dir="$project_dir/.venv"
+
+    # .venv 不存在，需要同步
+    [ ! -d "$venv_dir" ] && return 0
+
+    # 指纹一致，不需要同步
+    if _dependency_fingerprint_matches "$project_dir"; then
+        return 1
+    fi
+
+    # 指纹不存在或变化，需要同步
+    return 0
+}
+
+# 延迟初始化失败时输出统一恢复命令并保持非 0 退出
+handle_lazy_init_failure() {
+    local exit_code project_dir setup_script
+    exit_code=${1:-$?}
+    [ -z "$exit_code" ] && exit_code=1
+    [ "$exit_code" -eq 0 ] && exit_code=1
+    case "$exit_code" in
+        126|127)
+            exit_code=127
+            ;;
+    esac
+
+    project_dir="${PROJECT_DIR:-}"
+    if [ -z "$project_dir" ]; then
+        case "$SCRIPT_DIR" in
+            */scripts)
+                project_dir=$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)
+                ;;
+            *)
+                project_dir="$SCRIPT_DIR"
+                ;;
+        esac
+    fi
+
+    setup_script="$project_dir/scripts/setup.sh"
+
+    print_error "Python 环境初始化失败，请执行以下命令恢复："
+    printf 'sh %s --npm --lazy\n' "$setup_script" >&2
+    if [ -n "${INSTALL_LOG_FILE:-}" ]; then
+        printf '安装日志: %s\n' "$INSTALL_LOG_FILE" >&2
+    fi
+    exit "$exit_code"
+}
+
+_remote_claude_python() {
+    local project_dir uv_project_dir force_uv_run command_name
+    project_dir="${PROJECT_DIR:-}"
+    if [ -z "$project_dir" ]; then
+        case "$SCRIPT_DIR" in
+            */scripts)
+                project_dir=$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)
+                ;;
+            *)
+                project_dir="$SCRIPT_DIR"
+                ;;
+        esac
+    fi
+
+    if [ -z "$project_dir" ]; then
+        print_error "无法确定项目目录，不能执行 Python 入口"
+        return 1
+    fi
+
+    uv_project_dir="${REMOTE_CLAUDE_UV_PROJECT_DIR:-$project_dir}"
+    force_uv_run="${REMOTE_CLAUDE_FORCE_UV_RUN:-0}"
+    command_name="${1:-}"
+    if [ ! -f "$uv_project_dir/pyproject.toml" ]; then
+        print_error "uv 项目目录无效: $uv_project_dir"
+        return 1
+    fi
+
+    if [ -x "$project_dir/.venv/bin/python3" ] && [ "$uv_project_dir" = "$project_dir" ] && [ "$force_uv_run" != "1" ]; then
+        "$project_dir/.venv/bin/python3" "$project_dir/remote_claude.py" "$@"
+        return $?
+    fi
+
+    case "$command_name" in
+        start|attach|resume)
+            ;;
+        *)
+            if [ -x "$project_dir/.venv/bin/python3" ]; then
+                "$project_dir/.venv/bin/python3" "$project_dir/remote_claude.py" "$@"
+                return $?
+            fi
+            ;;
+    esac
+
+    if ! check_and_install_uv; then
+        print_error "未找到 uv，不能执行 Python 入口"
+        return 1
+    fi
+
+    uv run --project "$uv_project_dir" python3 "$project_dir/remote_claude.py" "$@"
+}
+
+_run_project_python() {
+    local project_dir
+    project_dir="${PROJECT_DIR:-}"
+    if [ -z "$project_dir" ]; then
+        case "$SCRIPT_DIR" in
+            */scripts)
+                project_dir=$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)
+                ;;
+            *)
+                project_dir="$SCRIPT_DIR"
+                ;;
+        esac
+    fi
+
+    if [ -z "$project_dir" ]; then
+        print_error "无法确定项目目录，不能执行 Python 脚本"
+        return 1
+    fi
+
+    if [ ! -x "$project_dir/.venv/bin/python3" ]; then
+        print_error "项目虚拟环境未就绪: $project_dir/.venv/bin/python3"
+        return 1
+    fi
+
+    "$project_dir/.venv/bin/python3" "$@"
+}
+
+_assert_not_nested_uv_run() {
+    if [ "${REMOTE_CLAUDE_TOPLEVEL_UV_RUN:-0}" = "1" ] && [ "${REMOTE_CLAUDE_ALLOW_NESTED_UV_RUN:-0}" != "1" ]; then
+        print_error "检测到内层再次触发 uv 入口，已阻止以避免递归调用"
+        print_info "请改为调用脚本内的 Python 入口或 _remote_claude_python/_run_project_python"
+        return 1
+    fi
+    return 0
+}
+
+_remote_claude_shortcut_help_or_main() {
+    launcher="$1"
+    permission_args="$2"
+    shift 2
+
+    REMOTE_CLAUDE_SHORTCUT_LAUNCHER="$launcher"
+    REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS="$permission_args"
+    export REMOTE_CLAUDE_SHORTCUT_LAUNCHER REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS
+
+    case "${1:-}" in
+        -h|--help)
+            . "$PROJECT_DIR/scripts/_help.sh"
+            _print_quick_help
+            exit 0
+            ;;
+    esac
+
+    _remote_claude_shortcut_main "$@"
+}
+
+# 延迟初始化：检测是否需要运行 setup.sh
+# 条件：.venv 不存在 或依赖指纹变化 且不在缓存目录中
+_remote_claude_shortcut_main() {
+    # help 参数应显示快捷命令概览
+    case "${1:-}" in
+        -h|--help)
+            . "$PROJECT_DIR/scripts/_help.sh"
+            _print_quick_help
+            exit 0
+            ;;
+    esac
+
+    # 飞书未配置时允许继续启动本地会话
+    REMOTE_CLAUDE_REQUIRE_FEISHU=0
+    export REMOTE_CLAUDE_REQUIRE_FEISHU
+    sh "$PROJECT_DIR/scripts/check-env.sh"
+
+    # 在启动目录执行入口点，保持 session 名与 cwd 一致
+    cd "$STARTUP_DIR" || exit 1
+    if [ -f "$HOME/.remote-claude/.env" ]; then
+        _remote_claude_python lark start
+    fi
+
+    session_name="${STARTUP_DIR}_$(date +%m%d_%H%M%S)"
+    set -- start "$session_name" --launcher "$REMOTE_CLAUDE_SHORTCUT_LAUNCHER" ${REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS:-} -- "$@"
+    _remote_claude_python "$@"
+}
+
+_lazy_init() {
+    _set_lazy_init_result_if_unset "pending"
+
+    # 防止重入：如果已经在 setup.sh 流程中，跳过
+    case "${_LAZY_INIT_RUNNING:-}" in
+        1)
+            _set_lazy_init_result "skipped-reentrant"
+            return 0
+            ;;
+    esac
+
+    # 如果在包管理器缓存中，跳过初始化（但 pnpm 全局安装需要初始化）
+    if _is_in_package_manager_cache && ! _is_pnpm_global_install; then
+        _set_lazy_init_result "skipped-cache"
+        return 0
+    fi
+
+    # 首先确保 uv 可用（设计文档要求：uv 不可用但可恢复 → 先安装/定位 uv）
+    if ! command -v uv >/dev/null 2>&1; then
+        print_warning "未找到 uv，正在安装..."
+        if ! check_and_install_uv; then
+            print_error "uv 安装失败，请手动安装后重试"
+            print_uv_manual_install_hint
+            return 1
+        fi
+        print_success "uv 安装成功"
+    fi
+
+    # 如果需要同步（venv 不存在或依赖变更），执行初始化
+    if _needs_sync; then
+        local project_dir
+        project_dir="${PROJECT_DIR:-$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)}"
+        [ -z "$project_dir" ] && return 1
+
+        echo "检测到依赖变更，正在更新 Python 环境..."
+        cd "$project_dir"
+        local setup_rc shell_cmd
+        shell_cmd=$(command -v sh 2>/dev/null || true)
+        [ -n "$shell_cmd" ] || shell_cmd="/bin/sh"
+        # 设置标记防止重入
+        _LAZY_INIT_RUNNING=1
+        export _LAZY_INIT_RUNNING
+        _set_lazy_init_result "sync-triggered"
+        if [ -x "$SCRIPT_DIR/setup.sh" ] || [ -f "$SCRIPT_DIR/setup.sh" ]; then
+            "$shell_cmd" "$SCRIPT_DIR/setup.sh" --npm --lazy
+            setup_rc=$?
+        else
+            setup_rc=127
+        fi
+        _LAZY_INIT_RUNNING=0
+        export _LAZY_INIT_RUNNING
+        if [ "$setup_rc" -ne 0 ]; then
+            _set_lazy_init_result "sync-failed"
+            case "$setup_rc" in
+                126|127)
+                    return 1
+                    ;;
+            esac
+            return "$setup_rc"
+        fi
+        _set_lazy_init_result "sync-completed"
+        if ! _write_dependency_fingerprint "$project_dir"; then
+            print_warning "依赖指纹写入失败，后续启动可能触发重复同步"
+            _install_log "stage=lazy-init fingerprint-write-failed project=$project_dir"
+        fi
+        return 0
+    fi
+
+    _set_lazy_init_result "no-sync-needed"
+    return 0
+}
+
+if [ "${LAZY_INIT_DISABLE_AUTO_RUN:-0}" != "1" ] && _should_auto_run_lazy_init; then
+    _lazy_init
+    lazy_init_rc=$?
+    if [ "$lazy_init_rc" -ne 0 ]; then
+        handle_lazy_init_failure "$lazy_init_rc"
+    fi
+fi

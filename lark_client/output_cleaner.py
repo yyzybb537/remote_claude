@@ -63,8 +63,8 @@ class OutputCleaner:
         """移除所有 ANSI 转义序列"""
         # CSI 序列: ESC [ ... 字母
         text = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', text)
-        # OSC 序列: ESC ] ... BEL
-        text = re.sub(r'\x1b\][^\x07]*\x07', '', text)
+        # OSC 序列: ESC ] ... BEL 或 ST (ESC \)
+        text = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', text)
         # 其他转义序列
         text = re.sub(r'\x1b[^[\]a-zA-Z]*[a-zA-Z]', '', text)
         return text

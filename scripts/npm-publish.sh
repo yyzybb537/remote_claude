@@ -1,40 +1,74 @@
-#!/bin/bash
+#!/bin/sh
 # 发布 remote-claude 到 npm
-# 用法：bash scripts/publish.sh [patch|minor|major] [--token <npm-token>]
+# 用法：sh scripts/npm-publish.sh [patch|minor|major] [--token <npm-token>]
 #       默认 patch（0.0.x）
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$ROOT_DIR"
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+    BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in /*) ;; *) SOURCE="$BASE_DIR/$SOURCE" ;; esac
+done
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+
+LAZY_INIT_DISABLE_AUTO_RUN=1
+export LAZY_INIT_DISABLE_AUTO_RUN
+. "$PROJECT_DIR/scripts/_common.sh"
+unset LAZY_INIT_DISABLE_AUTO_RUN
+
+cd "$PROJECT_DIR"
 
 # 解析参数
 BUMP="patch"
 TOKEN=""
-while [[ $# -gt 0 ]]; do
+while [ "$#" -gt 0 ]; do
     case "$1" in
-        --token) TOKEN="$2"; shift 2 ;;
-        patch|minor|major) BUMP="$1"; shift ;;
-        *) echo "未知参数: $1"; exit 1 ;;
+        --token)
+            TOKEN="$2"
+            shift 2
+            ;;
+        patch|minor|major)
+            BUMP="$1"
+            shift
+            ;;
+        *)
+            echo "未知参数: $1"
+            exit 1
+            ;;
     esac
 done
 
 # 写入 token（如果提供）
+NPM_CONFIG_TEMP=
+cleanup_npm_config() {
+    if [ -n "$NPM_CONFIG_TEMP" ] && [ -f "$NPM_CONFIG_TEMP" ]; then
+        rm -f "$NPM_CONFIG_TEMP"
+    fi
+}
+trap 'cleanup_npm_config' EXIT
+
 if [ -n "$TOKEN" ]; then
+    NPM_CONFIG_TEMP=$(mktemp)
+    export NPM_CONFIG_USERCONFIG="$NPM_CONFIG_TEMP"
     npm config set //registry.npmjs.org/:_authToken "$TOKEN"
-    echo "🔑 npm token 已写入 ~/.npmrc"
+    echo "🔑 npm token 已写入临时 npm 配置"
 fi
 
 # 检查 npm 登录状态
-if ! npm whoami --registry=https://registry.npmjs.org/ &>/dev/null; then
+if ! npm whoami --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
     echo "❌ 未登录 npm，请通过 --token 传入 token："
-    echo "   bash scripts/publish.sh --token <npm-token>"
+    echo "   sh scripts/npm-publish.sh --token <npm-token>"
     exit 1
 fi
 
-# 检查 git 工作区干净（package.json 之外）
-DIRTY=$(git status --porcelain | grep -v "^.M package.json" || true)
+# 检查 git 工作区干净（只允许 package.json 变更）
+DIRTY=$( {
+    git diff --name-only --cached
+    git diff --name-only
+} | sort -u | grep -v "^package.json$" || true )
 if [ -n "$DIRTY" ]; then
     echo "❌ 工作区有未提交的改动，请先 commit："
     echo "$DIRTY"

@@ -112,8 +112,14 @@ class CardService:
         _track_stats('error', 'card_api', detail='create_card')
         return None
 
-    async def send_card(self, chat_id: str, card_id: str) -> Optional[str]:
-        """发送卡片消息，返回 message_id"""
+    async def send_card(self, chat_id: str, card_id: str, update_index: bool = True) -> Optional[str]:
+        """发送卡片消息，返回 message_id。
+
+        Args:
+            chat_id: 目标聊天 ID
+            card_id: 卡片 ID
+            update_index: 是否更新活跃卡片索引（默认 True）
+        """
         if not self.client:
             return None
 
@@ -142,6 +148,12 @@ class CardService:
 
             if response.success():
                 message_id = getattr(getattr(response, "data", None), "message_id", None)
+                # 更新活跃卡片索引（仅在 update_index=True 时）
+                if update_index and message_id:
+                    state = CardState(card_id=card_id, message_id=message_id)
+                    self._cards_by_message_id[message_id] = state
+                    self._active_cards[chat_id] = state
+                    logger.info(f"已记录卡片: chat={chat_id}, msg={message_id}, card={card_id}")
                 return message_id
             else:
                 logger.warning(f"发送卡片失败: code={response.code} msg={response.msg}")
@@ -161,7 +173,8 @@ class CardService:
         if message_id:
             state = CardState(card_id=card_id, message_id=message_id)
             self._cards_by_message_id[message_id] = state
-            logger.info(f"已记录卡片: msg={message_id}, card={card_id}")
+            self._active_cards[chat_id] = state
+            logger.info(f"已记录卡片: chat={chat_id}, msg={message_id}, card={card_id}")
         return message_id
 
     async def update_card_by_message_id(
@@ -172,8 +185,12 @@ class CardService:
         if not state:
             logger.warning(f"未找到 message_id 对应的卡片状态: {message_id}")
             return False
-        state.sequence += 1
-        return await self.update_card(state.card_id, state.sequence, card_content)
+        next_sequence = state.sequence + 1
+        success = await self.update_card(state.card_id, next_sequence, card_content)
+        if success:
+            state.sequence = next_sequence
+            state.last_update = time.time()
+        return success
 
     async def update_card(self, card_id: str, sequence: int, card_content: Dict[str, Any]) -> bool:
         """更新卡片内容（失败自动重试 1 次）"""
@@ -325,8 +342,9 @@ class CardService:
 
     def clear_active_card(self, chat_id: str):
         """清除聊天的活跃卡片"""
-        if chat_id in self._active_cards:
-            del self._active_cards[chat_id]
+        state = self._active_cards.pop(chat_id, None)
+        if state and state.message_id:
+            self._cards_by_message_id.pop(state.message_id, None)
 
 
 # 全局实例

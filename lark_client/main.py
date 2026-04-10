@@ -166,20 +166,56 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             response.toast = toast
             return response
 
-        # 检测 form 提交（输入框 Enter ↵ 按钮）
+        # 检测 form 提交（输入框提交按钮）
         form_value = getattr(action, 'form_value', None)
         if form_value is not None:
             command_text = (form_value.get("command") or "").strip()
-            print(f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}")
+            submit_source = action_value.get("submit_source", "")
+            print(f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}, source={submit_source!r}")
             if command_text:
-                # 有输入内容 → 直通 Claude
                 asyncio.create_task(handler.forward_to_claude(user_id, chat_id, command_text))
             else:
                 # 空输入 → 发送原始 Enter 键（用于确认默认选项等场景）
                 asyncio.create_task(handler.send_raw_key(user_id, chat_id, "enter"))
-            return None
+            return P2CardActionTriggerResponse()
 
-        action_type = action_value.get("action", "")
+        action_type = action_value.get("action", "") if isinstance(action_value, dict) else ""
+
+        # 处理快捷命令选择器回调（select_static 返回的 value 是命令字符串，如 "/clear"）
+        if isinstance(action_value, str):
+            if action_value.startswith("key:"):
+                key_name = action_value.split(":", 1)[1]
+                allowed = set(handler._settings.ui.enabled_keys) if handler._settings else {
+                    "up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"
+                }
+                if key_name not in allowed:
+                    return P2CardActionTriggerResponse()
+
+                print(f"[Lark] 操作下拉快捷键: key={key_name}")
+
+                async def _multi_send():
+                    if key_name == "shift_tab_x3":
+                        for _ in range(3):
+                            await handler.send_raw_key(user_id, chat_id, "shift_tab")
+                            await asyncio.sleep(0.15)
+                    else:
+                        await handler.send_raw_key(user_id, chat_id, key_name)
+
+                asyncio.create_task(_multi_send())
+                return P2CardActionTriggerResponse()
+
+            if action_value.startswith("cmd:"):
+                command = action_value.split(":", 1)[1]
+                print(f"[Lark] 操作下拉自定义命令: command={command}")
+                asyncio.create_task(handler.handle_quick_command(user_id, chat_id, command))
+                return P2CardActionTriggerResponse()
+
+            if action_value.startswith("/"):
+                print(f"[Lark] 快捷命令选择: command={action_value}")
+                asyncio.create_task(handler.handle_quick_command(user_id, chat_id, action_value))
+                return P2CardActionTriggerResponse()
+
+            return P2CardActionTriggerResponse()
 
         # 处理选项选择动作
         if action_type == "select_option":
@@ -188,55 +224,55 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             needs_input = action_value.get("needs_input", False)
             print(f"[Lark] 用户选择了选项: {option_value} (total={option_total}, needs_input={needs_input})")
             asyncio.create_task(handler.handle_option_select(user_id, chat_id, option_value, option_total, needs_input=needs_input))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：进入会话
         if action_type == "list_attach":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_attach: session={session_name}")
             asyncio.create_task(handler._cmd_attach(user_id, chat_id, session_name, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：断开连接
         if action_type == "list_detach":
             print(f"[Lark] list_detach: chat={chat_id[:8]}...")
             asyncio.create_task(handler._handle_list_detach(user_id, chat_id, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：创建群聊
         if action_type == "list_new_group":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_new_group: session={session_name}")
             asyncio.create_task(handler._cmd_new_group(user_id, chat_id, session_name, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：解散群聊
         if action_type == "list_disband_group":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_disband_group: session={session_name}")
             asyncio.create_task(handler._cmd_disband_group(user_id, chat_id, session_name, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 列表卡片：关闭会话
         if action_type == "list_kill":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_kill: session={session_name}")
             asyncio.create_task(handler._cmd_kill(user_id, chat_id, session_name, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 目录卡片：进入子目录（继续浏览，就地更新原卡片）
         if action_type == "dir_browse":
             path = action_value.get("path", "")
             print(f"[Lark] dir_browse: path={path}")
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, path, message_id=message_id))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 菜单卡片：会话列表翻页
         if action_type == "menu_page":
             page = int(action_value.get("page", 0))
             print(f"[Lark] menu_page: page={page}")
             asyncio.create_task(handler._cmd_menu(user_id, chat_id, message_id=message_id, page=page))
-            return None
+            return P2CardActionTriggerResponse()
 
         # 目录卡片：翻页
         if action_type == "dir_page":
@@ -244,14 +280,15 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             page = int(action_value.get("page", 0))
             print(f"[Lark] dir_page: path={path}, page={page}")
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, path, message_id=message_id, page=page))
-            return None
+            return P2CardActionTriggerResponse()
 
-        # 目录卡片：在该目录创建新 Claude 会话
+        # 目录卡片：在该目录创建新会话
         if action_type == "dir_start":
             path = action_value.get("path", "")
             session_name = action_value.get("session_name", "")
-            print(f"[Lark] dir_start: path={path}, session={session_name}")
-            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}"))
+            launcher_name = action_value.get("launcher_name", "")
+            print(f"[Lark] dir_start: path={path}, session={session_name}, launcher={launcher_name}")
+            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}", launcher_name=launcher_name))
             return None
 
         # 目录卡片：在该目录启动会话并创建专属群聊
@@ -281,6 +318,13 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
 
         if action_type == "menu_tree":
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, "", tree=True, message_id=message_id))
+            return None
+
+        # 流式卡片：连接到已存在会话
+        if action_type == "stream_attach_existing":
+            session_name = action_value.get("session", "")
+            print(f"[Lark] stream_attach_existing: session={session_name}")
+            asyncio.create_task(handler._cmd_attach(user_id, chat_id, session_name, message_id=message_id))
             return None
 
         # 流式卡片：断开连接
@@ -321,6 +365,14 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             asyncio.create_task(handler._cmd_toggle_bypass(user_id, chat_id, message_id=message_id))
             return None
 
+        if action_type == "menu_toggle_auto_answer":
+            asyncio.create_task(handler._cmd_toggle_auto_answer(user_id, chat_id, message_id=message_id))
+            return None
+
+        if action_type == "stream_toggle_auto_answer":
+            asyncio.create_task(handler._cmd_toggle_auto_answer(user_id, chat_id, message_id=message_id, refresh_stream=True))
+            return None
+
         # 各卡片底部菜单按钮：辅助卡片就地→菜单，流式卡片降级新卡
         if action_type == "menu_open":
             asyncio.create_task(handler._cmd_menu(user_id, chat_id, message_id=message_id))
@@ -334,6 +386,13 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         import traceback
         traceback.print_exc()
         return P2CardActionTriggerResponse()
+
+
+def _mark_lark_ready() -> None:
+    from utils.session import ensure_socket_dir, get_lark_ready_file
+
+    ensure_socket_dir()
+    get_lark_ready_file().write_text("ready", encoding="utf-8")
 
 
 class LarkBot:
@@ -394,6 +453,7 @@ class LarkBot:
                 print("  如连接失败，可在 .env 中设置 LARK_NO_PROXY=1 绕过代理")
 
         self.running = True
+        _mark_lark_ready()
         print("\n机器人已启动，等待消息...")
         print("在飞书中发送 /help 查看使用说明\n")
 

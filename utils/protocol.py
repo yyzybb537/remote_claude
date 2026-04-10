@@ -19,6 +19,8 @@ class MessageType(str, Enum):
     HISTORY = "history"      # 历史输出（重连时）
     ERROR = "error"          # 错误消息
     RESIZE = "resize"        # 终端大小变化
+    CONTROL = "control"      # 控制命令（shutdown/restart/update）
+    CONTROL_RESPONSE = "control_response"  # 控制命令响应
 
 
 @dataclass
@@ -44,6 +46,10 @@ class Message:
             return ErrorMessage.from_dict(obj)
         elif msg_type == MessageType.RESIZE:
             return ResizeMessage.from_dict(obj)
+        elif msg_type == MessageType.CONTROL:
+            return ControlMessage.from_dict(obj)
+        elif msg_type == MessageType.CONTROL_RESPONSE:
+            return ControlResponseMessage.from_dict(obj)
         else:
             raise ValueError(f"Unknown message type: {msg_type}")
 
@@ -151,6 +157,46 @@ class ResizeMessage(Message):
         msg.rows = obj["rows"]
         msg.cols = obj["cols"]
         msg.client_id = obj["client_id"]
+        return msg
+
+
+@dataclass
+class ControlMessage(Message):
+    """控制命令消息"""
+    action: str  # shutdown / restart / update
+    client_id: str
+
+    def __init__(self, action: str, client_id: str):
+        super().__init__(type=MessageType.CONTROL)
+        self.action = action
+        self.client_id = client_id
+
+    @classmethod
+    def from_dict(cls, obj: dict) -> "ControlMessage":
+        msg = object.__new__(cls)
+        msg.type = obj["type"]
+        msg.action = obj["action"]
+        msg.client_id = obj["client_id"]
+        return msg
+
+
+@dataclass
+class ControlResponseMessage(Message):
+    """控制命令响应"""
+    success: bool
+    message: str
+
+    def __init__(self, success: bool, message: str):
+        super().__init__(type=MessageType.CONTROL_RESPONSE)
+        self.success = success
+        self.message = message
+
+    @classmethod
+    def from_dict(cls, obj: dict) -> "ControlResponseMessage":
+        msg = object.__new__(cls)
+        msg.type = obj["type"]
+        msg.success = obj["success"]
+        msg.message = obj["message"]
         return msg
 
 

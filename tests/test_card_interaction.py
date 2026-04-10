@@ -1,0 +1,664 @@
+"""
+测试卡片交互优化（T061）
+
+测试场景：
+1. 就地更新卡片 - update_card 被正确调用
+2. Loading 状态显示 - 按钮禁用、状态文本正确
+3. 快捷命令 loading 状态
+4. 选项按钮 loading 状态
+5. 断开/重连 loading 状态
+"""
+
+import unittest
+import asyncio
+import sys
+from unittest.mock import MagicMock, patch, AsyncMock
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+class TestCardInteraction(unittest.TestCase):
+    """卡片交互测试"""
+
+    def test_build_stream_card_loading_state(self):
+        """测试 loading 状态的卡片构建"""
+        from lark_client.card_builder import build_stream_card
+
+        # 正常状态
+        normal_card = build_stream_card(
+            blocks=[{"_type": "OutputBlock", "content": "test"}],
+            session_name="test-session",
+        )
+        # 检查 card 结构
+        self.assertIn("header", normal_card)
+        self.assertIn("body", normal_card)
+        self.assertIn("elements", normal_card["body"])
+
+        # loading 状态
+        loading_card = build_stream_card(
+            blocks=[{"_type": "OutputBlock", "content": "test"}],
+            session_name="test-session",
+            is_loading=True,
+            loading_text="处理中...",
+        )
+        # loading 状态 header 应该是 orange 且显示 loading 文本
+        self.assertEqual(loading_card["header"]["title"]["content"], "⏳ 处理中...")
+        self.assertEqual(loading_card["header"]["template"], "orange")
+
+    def test_loading_state_disables_buttons(self):
+        """测试 loading 状态禁用按钮"""
+        from lark_client.card_builder import build_stream_card
+
+        # 带选项的卡片
+        option_block = {
+            "sub_type": "option",
+            "question": "选择一个选项",
+            "options" : [
+                {"label": "选项 1", "value": "1"},
+                {"label": "选项 2", "value": "2"},
+            ]
+        }
+
+        # 正常状态
+        normal_card = build_stream_card(
+            blocks=[],
+            option_block=option_block,
+            session_name="test-session",
+        )
+        # 检查按钮未被禁用
+        elements = normal_card["body"]["elements"]
+        for elem in elements:
+            if elem.get("tag") == "action":
+                for action in elem.get("actions", []):
+                    if action.get("tag") == "button":
+                        self.assertNotIn("disabled", action)
+
+        # loading 状态
+        loading_card = build_stream_card(
+            blocks=[],
+            option_block=option_block,
+            session_name="test-session",
+            is_loading=True,
+            loading_text="处理中...",
+        )
+        # 检查按钮被禁用
+        elements = loading_card["body"]["elements"]
+        for elem in elements:
+            if elem.get("tag") == "action":
+                for action in elem.get("actions", []):
+                    if action.get("tag") == "button":
+                        self.assertTrue(action.get("disabled", False), "按钮应该被禁用")
+
+    def test_menu_button_row_loading(self):
+        """测试菜单按钮行 loading 状态"""
+        from lark_client.card_builder import _build_menu_button_row
+
+        # 正常状态
+        normal_buttons = _build_menu_button_row(
+            session_name="test-session",
+            disconnected=False,
+        )
+        # 应该有输入框
+        self.assertTrue(len(normal_buttons) > 0)
+
+        # loading 状态
+        loading_buttons = _build_menu_button_row(
+            session_name="test-session",
+            disconnected=False,
+            is_loading=True,
+        )
+        # 所有按钮应该被禁用
+        for elem in loading_buttons:
+            if elem.get("tag") == "form":
+                for action in elem.get("elements", []):
+                    if action.get("tag") == "column_set":
+                        for col in action.get("columns", []):
+                            for btn in col.get("elements", []):
+                                if btn.get("tag") in {"button", "select_static"}:
+                                    self.assertTrue(btn.get("disabled", False))
+
+
+class TestQuickCommandLoading(unittest.TestCase):
+    """快捷命令 loading 状态测试"""
+
+    def test_start_server_session_waits_for_successful_bridge_connect(self):
+        """测试启动会话时需要等到 bridge 真正可连接"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+
+        socket_state = {"exists": False}
+        poll_state = {"count": 0}
+
+        class FakeSocketPath:
+            def exists(self):
+                return socket_state["exists"]
+
+        class FakeProc:
+            def poll(self):
+                return None
+
+        async def fake_sleep(_):
+            poll_state["count"] += 1
+            if poll_state["count"] >= 3:
+                socket_state["exists"] = True
+
+        real_open = open
+
+        def fake_open(file, mode='r', *args, **kwargs):
+            if str(file).endswith("startup.log"):
+                return unittest.mock.mock_open()(file, mode, *args, **kwargs)
+            return real_open(file, mode, *args, **kwargs)
+
+        with patch("lark_client.lark_handler.get_socket_path", return_value=FakeSocketPath()), \
+                patch("lark_client.lark_handler.subprocess.Popen", return_value=FakeProc()), \
+                patch("lark_client.lark_handler.asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)), \
+                patch("lark_client.lark_handler.card_service") as mock_card_service, \
+                patch("lark_client.lark_handler.open", side_effect=fake_open), \
+                patch("lark_client.lark_handler.Path") as mock_path:
+            mock_path.return_value.parent.parent.absolute.return_value = Path("/tmp/project")
+            mock_path.return_value.parent.parent.__truediv__.return_value = Path("/tmp/project/server/server.py")
+            mock_card_service.send_text = AsyncMock()
+
+            result = asyncio.run(handler._start_server_session("demo", None, "chat_1"))
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(poll_state["count"], 3)
+
+    def test_cmd_start_retries_attach_until_bridge_ready(self):
+        """测试启动成功后 attach 失败时会在短暂窗口内重试直到 bridge 就绪"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        attach_results = [False, False, True]
+
+        async def fake_attach(chat_id, session_name, user_id=None):
+            return attach_results.pop(0)
+
+        handler._attach = AsyncMock(side_effect=fake_attach)
+        handler._start_server_session = AsyncMock(return_value=True)
+        handler._save_chat_bindings = MagicMock()
+
+        with patch('lark_client.lark_handler.list_active_sessions', return_value=[]), \
+                patch('lark_client.lark_handler.card_service') as mock_card_service, \
+                patch('lark_client.lark_handler.asyncio.sleep', new=AsyncMock()) as mock_sleep:
+            mock_card_service.send_text = AsyncMock()
+
+            asyncio.run(handler._cmd_start("user_1", "chat_1", "demo"))
+
+        self.assertEqual(handler._attach.await_count, 3)
+        self.assertEqual(handler._chat_bindings.get("chat_1"), "demo")
+        handler._save_chat_bindings.assert_called_once()
+        mock_card_service.send_text.assert_not_called()
+        self.assertEqual(mock_sleep.await_count, 2)
+
+    def test_handle_quick_command_shows_loading(self):
+        """测试快捷命令发送时显示 loading 状态"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        handler._bridges = {"test_chat": MagicMock(running=True)}
+        handler._chat_sessions = {"test_chat": "test-session"}
+        handler._runtime_config = None
+        handler._poller = MagicMock()
+        handler._poller.get_active_card_id = MagicMock(return_value="card_123")
+        handler._poller.read_snapshot = MagicMock(return_value={
+            "blocks"  : [{"_type": "OutputBlock", "content": "test"}],
+            "cli_type": "claude",
+        })
+        handler._poller.kick = MagicMock()
+
+        mock_bridge = handler._bridges["test_chat"]
+        mock_bridge.send_input = AsyncMock(return_value=True)
+
+        with patch('lark_client.lark_handler.build_loading_card_from_snapshot') as mock_build_loading_card, \
+                patch('lark_client.lark_handler.card_service') as mock_card_service:
+            mock_build_loading_card.return_value = {"header": {}, "body": {"elements": []}}
+            mock_card_service.update_card = AsyncMock(return_value=True)
+
+            # 运行测试
+            asyncio.run(handler.handle_quick_command("user_123", "test_chat", "/clear"))
+
+            # 验证 build_loading_card_from_snapshot 被调用
+            mock_build_loading_card.assert_called_once()
+            # loading_text 是第三个位置参数
+            call_args = mock_build_loading_card.call_args.args
+            # loading_text 应包含命令
+            self.assertIn("/clear", call_args[2])
+
+            # 验证 update_card 被调用
+            mock_card_service.update_card.assert_called()
+
+            # 验证命令被发送
+            mock_bridge.send_input.assert_called_once_with("/clear")
+
+            # 验证 kick 被调用
+            handler._poller.kick.assert_called_once_with("test_chat")
+
+
+
+
+def test_update_card_by_message_id_uses_existing_mapping():
+    from lark_client.card_service import CardService, CardState
+
+    service = CardService()
+    state = CardState(card_id="card_123", message_id="msg_123", sequence=0)
+    service._cards_by_message_id["msg_123"] = state
+
+    async def fake_update_card(card_id, sequence, card_content):
+        assert card_id == "card_123"
+        assert sequence == 1
+        assert card_content == {"header": {}, "body": {"elements": []}}
+        return True
+
+    service.update_card = fake_update_card
+
+    result = asyncio.run(
+        service.update_card_by_message_id("msg_123", {"header": {}, "body": {"elements": []}})
+    )
+
+    assert result is True
+    assert state.sequence == 1
+
+
+def test_clear_active_card_removes_message_reverse_index():
+    from lark_client.card_service import CardService, CardState
+
+    service = CardService()
+    state = CardState(card_id="card_123", message_id="msg_123", sequence=0)
+    service._active_cards["chat_123"] = state
+    service._cards_by_message_id["msg_123"] = state
+
+    service.clear_active_card("chat_123")
+
+    assert "chat_123" not in service._active_cards
+    assert "msg_123" not in service._cards_by_message_id
+
+
+class TestExistingSessionCardError(unittest.TestCase):
+    """已存在会话时的卡片错误提示测试"""
+
+    def test_cmd_start_updates_current_card_when_session_exists(self):
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        handler._settings = None
+        handler._poller = MagicMock()
+        handler._poller.get_active_card_id = MagicMock(return_value="card_123")
+        handler._poller.read_snapshot = MagicMock(return_value={
+            "blocks": [],
+            "status_line": None,
+            "bottom_bar": None,
+            "agent_panel": None,
+            "option_block": None,
+            "cli_type": "claude",
+        })
+
+        with patch("lark_client.lark_handler.list_active_sessions", return_value=[{"name": "sdk-provider"}]), \
+                patch("lark_client.lark_handler.card_service") as mock_card_service:
+            mock_card_service.update_card = AsyncMock(return_value=True)
+            mock_card_service.send_text = AsyncMock()
+
+            asyncio.run(handler._cmd_start("u1", "c1", "sdk-provider"))
+
+        mock_card_service.update_card.assert_called_once()
+        mock_card_service.send_text.assert_not_called()
+
+    def test_handle_option_select_shows_loading(self):
+        """测试选项选择时显示 loading 状态"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        handler._bridges = {"test_chat": MagicMock(running=True)}
+        handler._chat_sessions = {"test_chat": "test-session"}
+        handler._runtime_config = None
+        handler._user_config = None
+
+        mock_tracker = MagicMock()
+        mock_card_slice = MagicMock()
+        mock_card_slice.expired = False
+        mock_tracker.cards = [mock_card_slice]
+
+        handler._poller = MagicMock()
+        handler._poller.get_tracker = MagicMock(return_value=mock_tracker)
+        handler._poller.get_active_card_id = MagicMock(return_value="card_123")
+        handler._poller.read_snapshot = MagicMock(return_value={
+            "blocks": [],
+            "option_block": {
+                "sub_type": "option",
+                "block_id": "Q:test",
+                "selected_value": "1",
+                "question": "选择一个选项",
+                "options": [
+                    {"label": "选项 1", "value": "1"},
+                    {"label": "选项 2", "value": "2"},
+                ]
+            },
+            "cli_type": "claude",
+        })
+        handler._poller.kick = MagicMock()
+        handler._poller.cancel_auto_answer = MagicMock()
+
+        mock_bridge = handler._bridges["test_chat"]
+        mock_bridge.send_raw = AsyncMock(return_value=True)
+
+        with patch('lark_client.lark_handler.build_loading_card_from_snapshot') as mock_build_card, \
+                patch('lark_client.lark_handler.card_service') as mock_card_service:
+            mock_build_card.return_value = {"header": {}, "body": {"elements": []}}
+            mock_card_service.update_card = AsyncMock(return_value=True)
+            mock_card_service.send_text = AsyncMock()
+
+            asyncio.run(handler.handle_option_select("user_123", "test_chat", "2", option_total=2))
+
+            mock_build_card.assert_called()
+            call_args = mock_build_card.call_args.args
+            self.assertEqual(call_args[2], "正在选择...")
+
+
+class TestStreamDetachLoading(unittest.TestCase):
+    """断开连接 loading 状态测试"""
+
+    def test_handle_stream_detach_shows_loading(self):
+        """测试断开连接时显示 loading 状态"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        handler._chat_sessions = {"test_chat": "test-session"}
+        handler._runtime_config = None
+        handler._user_config = None
+        handler._poller = MagicMock()
+        handler._poller.get_active_card_id = MagicMock(return_value="card_123")
+        handler._poller.read_snapshot = MagicMock(return_value={
+            "blocks"  : [],
+            "cli_type": "claude",
+        })
+        handler._poller.stop_and_get_active_slice = MagicMock(return_value=MagicMock(
+            card_id="card_123",
+            start_idx=0,
+            frozen=False,
+        ))
+
+        handler._bridges = {}
+        handler._detached_slices = {}
+
+        # Mock _remove_binding_by_chat 和 _detach
+        handler._remove_binding_by_chat = MagicMock()
+        handler._detach = AsyncMock()
+
+        with patch('lark_client.lark_handler.build_loading_card_from_snapshot') as mock_build_loading_card, \
+                patch('lark_client.lark_handler.card_service') as mock_card_service:
+            mock_build_loading_card.return_value = {"header": {}, "body": {"elements": []}}
+            mock_card_service.update_card = AsyncMock(return_value=True)
+
+            # 运行测试
+            asyncio.run(handler._handle_stream_detach("user_123", "test_chat", "test-session"))
+
+            # 验证 build_loading_card_from_snapshot 被调用
+            # loading_text 是第三个位置参数
+            loading_calls = [c for c in mock_build_loading_card.call_args_list
+                             if len(c.args) > 2 and "断开" in c.args[2]]
+            self.assertTrue(len(loading_calls) > 0, "应该有断开连接的 loading 状态卡片构建")
+
+
+
+
+def test_stream_card_has_text_input_and_action_selector():
+    from lark_client.card_builder import build_stream_card
+    from utils.runtime_config import Settings
+
+    settings = Settings()
+    card = build_stream_card(blocks=[], session_name="s1", settings=settings)
+    body_text = str(card["body"]["elements"])
+
+    assert '"tag": "input"' in body_text or "'tag': 'input'" in body_text
+    assert "操作" in body_text
+    assert "key:up" in body_text
+
+
+def test_stream_card_renders_form_error_before_input():
+    from lark_client.card_builder import build_stream_card
+
+    card = build_stream_card(
+        blocks=[],
+        session_name="sdk-provider",
+        form_error_message="会话 'sdk-provider' 已存在",
+        form_error_action={"action": "stream_attach_existing", "session": "sdk-provider"},
+    )
+    form = next(elem for elem in card["body"]["elements"] if elem.get("tag") == "form")
+    elements = form["elements"]
+
+    action_row = elements[1]
+    assert action_row["tag"] == "column_set"
+    error_text = str(action_row)
+    assert "会话 'sdk-provider' 已存在" in error_text
+    assert "连接到现有会话" in error_text
+    assert "stream_attach_existing" in error_text
+    assert elements[3]["tag"] == "input"
+
+
+def test_menu_card_not_contains_auto_answer_button():
+    from lark_client.card_builder import build_menu_card
+
+    card = build_menu_card([], None, {}, 0, True, False, False, None)
+    assert "menu_toggle_auto_answer" not in str(card)
+
+
+def test_stream_card_contains_stream_toggle_auto_answer_button():
+    from lark_client.card_builder import build_stream_card
+
+    card = build_stream_card(blocks=[], session_name="s1")
+    assert "stream_toggle_auto_answer" in str(card)
+
+
+def test_expired_card_wraps_refresh_button_in_column_set():
+    from lark_client.card_builder import build_expired_card
+
+    card = build_expired_card("s1")
+    elements = card["body"]["elements"]
+
+    assert elements[2]["tag"] == "column_set"
+    button = elements[2]["columns"][0]["elements"][0]
+    assert button["tag"] == "button"
+    assert button["behaviors"][0]["value"]["action"] == "menu_open"
+
+
+def test_menu_card_wraps_bypass_button_in_column_set():
+    from lark_client.card_builder import build_menu_card
+
+    card = build_menu_card([], None, {}, 0, True, False, False, None)
+    body = card["body"]["elements"]
+    target = next(
+        elem for elem in body
+        if elem.get("tag") == "column_set" and "menu_toggle_bypass" in str(elem)
+    )
+    button = target["columns"][0]["elements"][0]
+    assert button["tag"] == "button"
+    assert button["behaviors"][0]["value"]["action"] == "menu_toggle_bypass"
+
+
+
+def test_stream_card_uses_card_quick_commands_instead_of_launchers():
+    from lark_client.card_builder import build_stream_card
+    from utils.runtime_config import Settings, CardSettings, UiSettings, QuickCommand, Launcher
+
+    settings = Settings(
+        card=CardSettings(
+            quick_commands=[
+                QuickCommand(label="清屏", value="/clear", icon="🧹"),
+                QuickCommand(label="继续", value="/resume"),
+            ]
+        ),
+        ui=UiSettings(show_builtin_keys=False),
+        launchers=[
+            Launcher(name="Claude", cli_type="claude", command="claude", desc="Claude CLI"),
+        ],
+    )
+
+    card = build_stream_card(blocks=[], session_name="s1", settings=settings)
+    body_text = str(card["body"]["elements"])
+
+    assert "清屏" in body_text
+    assert "cmd:/clear" in body_text
+    assert "继续" in body_text
+    assert "cmd:/resume" in body_text
+    assert "Claude: claude" not in body_text
+
+
+def test_stream_card_submit_button_keeps_form_submit_action():
+    from lark_client.card_builder import build_stream_card
+
+    card = build_stream_card(blocks=[], session_name="s1")
+    form = next(elem for elem in card["body"]["elements"] if elem.get("tag") == "form")
+    menu_row = form["elements"][0]
+    submit_btn = menu_row["columns"][-1]["elements"][0]
+
+    assert submit_btn["tag"] == "button"
+    assert submit_btn["action_type"] == "form_submit"
+    assert submit_btn["name"] == "enter_submit"
+
+
+def test_stream_card_submit_button_marks_click_submit_source():
+    from lark_client.card_builder import build_stream_card
+
+    card = build_stream_card(blocks=[], session_name="s1")
+    form = next(elem for elem in card["body"]["elements"] if elem.get("tag") == "form")
+    menu_row = form["elements"][0]
+    submit_btn = menu_row["columns"][-1]["elements"][0]
+
+    assert submit_btn["tag"] == "button"
+    assert submit_btn["action_type"] == "form_submit"
+    assert submit_btn["name"] == "enter_submit"
+    assert submit_btn["value"] == {"submit_source": "button_click"}
+
+
+def test_menu_card_kill_button_keeps_confirm_config():
+    from lark_client.card_builder import build_menu_card
+
+    sessions = [{"name": "demo", "cwd": "/tmp/demo", "start_time": "2026-04-07 10:00", "cli_type": "claude"}]
+    card = build_menu_card(sessions, None, {}, 0, True, False, False, None)
+    body = card["body"]["elements"]
+    target = next(elem for elem in body if elem.get("tag") == "column_set" and "list_kill" in str(elem))
+    kill_button = next(
+        el
+        for col in target["columns"]
+        for el in col.get("elements", [])
+        if el.get("tag") == "button" and el.get("behaviors", [{}])[0].get("value", {}).get("action") == "list_kill"
+    )
+
+    assert kill_button["confirm"]["title"]["content"] == "确认关闭会话"
+    assert "不可撤销" in kill_button["confirm"]["text"]["content"]
+
+
+def test_dir_card_keeps_interactive_container_for_directory_browse():
+    from lark_client.card_builder import build_dir_card
+
+    entries = [{"name": "src", "full_path": "/tmp/project/src", "is_dir": True, "depth": 0}]
+    card = build_dir_card("/tmp/project", entries, [], tree=False, session_groups={}, page=0, settings=None)
+    body = card["body"]["elements"]
+    target = next(
+        elem for elem in body
+        if elem.get("tag") == "column_set"
+        and any(
+            el.get("tag") == "interactive_container"
+            for col in elem.get("columns", [])
+            for el in col.get("elements", [])
+        )
+    )
+    left_column = target["columns"][0]
+    container = left_column["elements"][0]
+
+    assert container["tag"] == "interactive_container"
+    assert container["behaviors"][0]["value"]["action"] == "dir_browse"
+    assert container["behaviors"][0]["value"]["path"] == "/tmp/project/src"
+
+
+def test_stream_card_form_error_row_has_single_attach_button():
+    from lark_client.card_builder import build_stream_card
+
+    card = build_stream_card(
+        blocks=[],
+        session_name="sdk-provider",
+        form_error_message="会话 'sdk-provider' 已存在",
+        form_error_action={"action": "stream_attach_existing", "session": "sdk-provider"},
+    )
+    form = next(elem for elem in card["body"]["elements"] if elem.get("tag") == "form")
+    error_row = form["elements"][1]
+    buttons = [
+        el
+        for col in error_row["columns"]
+        for nested in col.get("elements", [])
+        for el in ([nested] if nested.get("tag") == "button" else [
+            inner
+            for inner_col in nested.get("columns", [])
+            for inner in inner_col.get("elements", [])
+        ])
+        if el.get("tag") == "button"
+    ]
+
+    assert len(buttons) == 1
+    assert buttons[0]["behaviors"][0]["value"]["action"] == "stream_attach_existing"
+
+
+    from lark_client.card_builder import build_menu_card
+
+    sessions = [{"name": "demo", "cwd": "/tmp/demo", "start_time": "2026-04-07 10:00", "cli_type": "claude"}]
+    session_groups = {"demo": "oc_test_group"}
+    card = build_menu_card(sessions, None, session_groups, 0, True, False, False, None)
+    body = card["body"]["elements"]
+    target = next(elem for elem in body if elem.get("tag") == "column_set" and "oc_test_group" in str(elem))
+    group_button = next(
+        el
+        for col in target["columns"]
+        for el in col.get("elements", [])
+        if el.get("tag") == "button" and el.get("text", {}).get("content") == "进入群聊"
+    )
+
+    behavior = group_button["behaviors"][0]
+    assert behavior["type"] == "open_url"
+    assert behavior["default_url"].endswith("openChatId=oc_test_group")
+    assert behavior["android_url"] == behavior["default_url"]
+    assert behavior["ios_url"] == behavior["default_url"]
+    assert behavior["pc_url"] == behavior["default_url"]
+
+
+def test_dir_card_group_button_keeps_open_url_config():
+    from lark_client.card_builder import build_dir_card
+
+    entries = [{"name": "src", "full_path": "/tmp/project/src", "is_dir": True, "depth": 0}]
+    session_groups = {"src": "oc_dir_group"}
+    card = build_dir_card("/tmp/project", entries, [], tree=False, session_groups=session_groups, page=0, settings=None)
+    body = card["body"]["elements"]
+    target = next(elem for elem in body if elem.get("tag") == "column_set" and "oc_dir_group" in str(elem))
+    right_column = target["columns"][1]
+    group_button = next(
+        el for el in right_column.get("elements", [])
+        if el.get("tag") == "button" and el.get("text", {}).get("content") == "进入群聊"
+    )
+
+    behavior = group_button["behaviors"][0]
+    assert behavior["type"] == "open_url"
+    assert behavior["default_url"].endswith("openChatId=oc_dir_group")
+    assert behavior["android_url"] == behavior["default_url"]
+    assert behavior["ios_url"] == behavior["default_url"]
+    assert behavior["pc_url"] == behavior["default_url"]
+
+
+@patch("lark_client.main.asyncio.create_task")
+def test_main_routes_stream_attach_existing(mock_create_task):
+    from lark_client import main
+
+    mock_create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+
+    event = MagicMock()
+    event.event.action.form_value = None
+    event.event.action.value = {"action": "stream_attach_existing", "session": "sdk-provider"}
+    event.event.operator.open_id = "u1"
+    event.event.context.open_chat_id = "c1"
+    event.event.context.open_message_id = "m1"
+
+    main.handle_card_action(event)
+
+    assert mock_create_task.called
+
+

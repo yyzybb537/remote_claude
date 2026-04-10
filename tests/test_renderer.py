@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""测试终端渲染器"""
+"""测试终端渲染与清理逻辑"""
 
 import sys
 from pathlib import Path
@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 from rich_text_renderer import RichTextRenderer
+
 
 def test_basic():
     """测试基本渲染"""
@@ -43,6 +44,7 @@ def test_basic():
     print(f"Plain: {repr(renderer.get_plain_display())}")
     print(f"Rich: {repr(renderer.get_rich_text())}")
     print()
+
 
 def test_real_data():
     """测试真实数据格式"""
@@ -86,6 +88,7 @@ def test_real_data():
     print(f"内容: {plain3}")
     print()
 
+
 def test_ansi_clear():
     """测试 ANSI 清屏命令"""
     renderer = RichTextRenderer(80, 24)
@@ -101,6 +104,54 @@ def test_ansi_clear():
     # 写入新内容
     renderer.feed(b'New Content')
     print(f"新内容: {repr(renderer.get_plain_display())}")
+
+
+def test_clean_terminal_output_strips_osc_title_sequences():
+    """测试 clean_terminal_output 会移除 OSC 标题序列且保留实际回复"""
+    from lark_client.terminal_buffer import clean_terminal_output
+
+    raw = (
+        b'\x1b]0;\xe2\x9c\xbb Greeting\x07'
+        b'\x1b[2J\x1b[H'
+        b'\xe2\x9d\xaf hello\r\n'
+        b'\x1b[36m\xe2\x8f\xba\x1b[0m reply here\r\n'
+    )
+
+    result = clean_terminal_output(raw, user_input='hello')
+
+    assert 'Greeting' not in result
+    assert 'reply here' in result
+
+
+def test_clean_terminal_output_filters_prompt_echo_after_osc_title():
+    """测试 clean_terminal_output 在 OSC 标题后仍能过滤用户输入回显"""
+    from lark_client.terminal_buffer import clean_terminal_output
+
+    raw = (
+        b'\x1b]0;\xe2\x9c\xbb Greeting\x07'
+        b'\x1b[2J\x1b[H'
+        b'\xe2\x9d\xaf hello\r\n'
+        b'\x1b[36m\xe2\x8f\xba\x1b[0m reply here\r\n'
+    )
+
+    result = clean_terminal_output(raw, user_input='hello')
+
+    assert '❯ hello' not in result
+    assert 'reply here' in result
+
+
+def test_output_cleaner_strips_st_terminated_osc_sequences():
+    """测试 OutputCleaner 会移除以 ST 结尾的 OSC 标题序列"""
+    from lark_client.output_cleaner import OutputCleaner
+
+    cleaner = OutputCleaner()
+    cleaner.feed(b'\x1b]0;title\x1b\\\xe2\x8f\xba reply here\r\n')
+
+    result = cleaner.get_response()
+
+    assert 'title' not in result
+    assert 'reply here' == result
+
 
 if __name__ == '__main__':
     print("=" * 60)
