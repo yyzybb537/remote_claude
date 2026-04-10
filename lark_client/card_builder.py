@@ -250,16 +250,16 @@ def _build_launcher_buttons(settings, full_path: str, auto_session: str) -> List
 
 
 def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False,
-                           is_loading: bool = False, enter_to_submit: bool = True,
+                           is_loading: bool = False,
                            form_error_message: Optional[str] = None,
                            form_error_action: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """底部快捷菜单按钮行，用于流式卡片
 
     - 连接状态（session_name 有值, disconnected=False）:
-      返回 [form, collapsible]，form 包含：⚡菜单 + 🔌断开 + spacer + Enter↵，下方输入框；collapsible 包含快捷键
+      返回 [form, collapsible]，form 包含：⚡菜单 + 🔌断开 + spacer + 发送按钮，下方输入框；collapsible 包含快捷键
     - 断开状态（disconnected=True）:
-      返回 [column_set: ⚡菜单 + 🔗重新连接]，无输入框/Enter/快捷键
-    - 无 session_name：保持原逻辑（只有 ⚡菜单 + spacer + Enter↵）
+      返回 [column_set: ⚡菜单 + 🔗重新连接]，无输入框/发送/快捷键
+    - 无 session_name：保持原逻辑（只有 ⚡菜单 + spacer + 发送按钮）
     """
     if disconnected:
         cols = [
@@ -329,7 +329,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "elements": [{
                     "tag": "button",
                     "name": "enter_submit",
-                    "text": {"tag": "plain_text", "content": "发送" if enter_to_submit else "点击发送"},
+                    "text": {"tag": "plain_text", "content": "发送"},
                     "type": "primary",
                     "action_type": "form_submit",
                     "value": {"submit_source": "button_click"},
@@ -362,7 +362,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "elements": [{
                     "tag": "button",
                     "name": "enter_submit",
-                    "text": {"tag": "plain_text", "content": "发送" if enter_to_submit else "点击发送"},
+                    "text": {"tag": "plain_text", "content": "发送"},
                     "type": "primary",
                     "action_type": "form_submit",
                     "value": {"submit_source": "button_click"},
@@ -376,7 +376,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
     input_box = {
         "tag": "input",
         "name": "command",
-        "placeholder": {"tag": "plain_text", "content": "输入消息后按回车发送" if enter_to_submit else "输入消息后点击发送"},
+        "placeholder": {"tag": "plain_text", "content": "输入消息后点击发送"},
         "width": "fill",
         "disabled": is_loading,
     }
@@ -451,11 +451,6 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
         })
         form_elements.append({"tag": "hr"})
     form_elements.append(input_box)
-    if session_name:
-        form_elements.append({
-            "tag": "markdown",
-            "content": "当前高亮选项可直接回车确认" if enter_to_submit else "请选择后点击确认",
-        })
 
     form = {
         "tag": "form",
@@ -735,6 +730,7 @@ def build_stream_card(
     loading_text: Optional[str] = None,
     form_error_message: Optional[str] = None,
     form_error_action: Optional[Dict[str, Any]] = None,
+    auto_answer_enabled: bool = False,
 ) -> Dict[str, Any]:
     """从共享内存 blocks 流构建飞书卡片
 
@@ -752,8 +748,6 @@ def build_stream_card(
     if is_loading:
         title = f"⏳ {loading_text or '处理中...'}"
         template = "orange"
-
-    enter_submit = True if settings is None else bool(getattr(getattr(settings, 'card', None), 'enter_to_submit', True))
 
     # === 第一层：内容区 ===
     elements = []
@@ -874,6 +868,9 @@ def build_stream_card(
         else:
             elements.append({"tag": "markdown", "content": "**操作**"})
 
+        # 自动应答按钮：根据状态动态显示文案
+        button_text = "✅ 自动应答已开启" if auto_answer_enabled else "开启自动应答"
+        button_type = "default" if auto_answer_enabled else "primary"
         elements.append({
             "tag": "column_set",
             "flex_mode": "none",
@@ -882,8 +879,8 @@ def build_stream_card(
                 "width": "auto",
                 "elements": [{
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "自动应答"},
-                    "type": "default",
+                    "text": {"tag": "plain_text", "content": button_text},
+                    "type": button_type,
                     "disabled": is_loading,
                     "behaviors": [{"type": "callback", "value": {"action": "stream_toggle_auto_answer", "session": session_name}}]
                 }]
@@ -894,7 +891,6 @@ def build_stream_card(
         session_name=session_name,
         disconnected=disconnected,
         is_loading=is_loading,
-        enter_to_submit=enter_submit,
         form_error_message=form_error_message,
         form_error_action=form_error_action,
     ))

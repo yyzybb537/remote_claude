@@ -374,13 +374,11 @@ class CardSettings:
     """卡片设置"""
     quick_commands: List[QuickCommand] = field(default_factory=list)
     expiry_sec: int = 3600
-    enter_to_submit: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "quick_commands": [cmd.to_dict() for cmd in self.quick_commands],
             "expiry_sec": self.expiry_sec,
-            "enter_to_submit": self.enter_to_submit,
         }
 
     @classmethod
@@ -395,7 +393,6 @@ class CardSettings:
         return cls(
             quick_commands=commands,
             expiry_sec=data.get("expiry_sec", 3600),
-            enter_to_submit=data.get("enter_to_submit", True),
         )
 
 
@@ -774,12 +771,6 @@ def save_state(state: State) -> None:
 
 
 # ============== 向后兼容辅助函数 ==============
-
-
-def get_lark_enter_submit_enabled(settings: Optional[Settings] = None) -> bool:
-    """读取飞书卡片回车即确认全局开关，默认开启。"""
-    cfg = settings or load_settings()
-    return bool(getattr(cfg.card, "enter_to_submit", True))
 
 
 def get_notify_ready_enabled() -> bool:

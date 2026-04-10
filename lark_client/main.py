@@ -17,7 +17,6 @@ from pathlib import Path
 
 # 设置 sys.path 以导入 utils 模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils.runtime_config import get_lark_enter_submit_enabled
 from utils.session import USER_DATA_DIR
 
 
@@ -167,19 +166,14 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             response.toast = toast
             return response
 
-        # 检测 form 提交（输入框 Enter ↵ 按钮）
+        # 检测 form 提交（输入框提交按钮）
         form_value = getattr(action, 'form_value', None)
         if form_value is not None:
             command_text = (form_value.get("command") or "").strip()
             submit_source = action_value.get("submit_source", "")
             print(f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}, source={submit_source!r}")
             if command_text:
-                enter_enabled = get_lark_enter_submit_enabled()
-                attached_session = handler._chat_sessions.get(chat_id)
-                if not enter_enabled and submit_source != "button_click" and attached_session:
-                    asyncio.create_task(handler.handle_disabled_enter_submit(user_id, chat_id, command_text))
-                else:
-                    asyncio.create_task(handler.forward_to_claude(user_id, chat_id, command_text))
+                asyncio.create_task(handler.forward_to_claude(user_id, chat_id, command_text))
             else:
                 # 空输入 → 发送原始 Enter 键（用于确认默认选项等场景）
                 asyncio.create_task(handler.send_raw_key(user_id, chat_id, "enter"))

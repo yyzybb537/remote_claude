@@ -56,7 +56,8 @@ def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
 def build_loading_card_from_snapshot(snapshot: Optional[Dict[str, Any]], session_name: Optional[str], loading_text: str,
                                      *, disconnected: bool = False,
                                      form_error_message: Optional[str] = None,
-                                     form_error_action: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                                     form_error_action: Optional[Dict[str, Any]] = None,
+                                     auto_answer_enabled: bool = False) -> Dict[str, Any]:
     """基于当前快照构建 loading 卡片。"""
     snapshot = snapshot or {}
     return build_stream_card(
@@ -73,6 +74,7 @@ def build_loading_card_from_snapshot(snapshot: Optional[Dict[str, Any]], session
         loading_text=loading_text,
         form_error_message=form_error_message,
         form_error_action=form_error_action,
+        auto_answer_enabled=auto_answer_enabled,
     )
 
 try:
@@ -234,11 +236,15 @@ class LarkHandler:
         active_slice = self._poller.stop_and_get_active_slice(chat_id)
         self._bridges.pop(chat_id, None)
         self._chat_sessions.pop(chat_id, None)
-        self._detached_slices.pop(chat_id, None)
+        # 注意：不要在 _on_disconnect 中清除 _detached_slices，因为后续重连需要复用
         self._remove_binding_by_chat(chat_id)
 
         if active_slice:
-            await self._update_card_disconnected(chat_id, session_name, active_slice)
+            success = await self._update_card_disconnected(chat_id, session_name, active_slice)
+            if success:
+                # 成功更新卡片后保存 slice，供后续重连时冻结旧卡片
+                active_slice.sequence += 1
+                self._detached_slices[chat_id] = active_slice
 
         # 会话退出时自动解散绑定到该会话的所有专属群聊
         await self._disband_groups_for_session(session_name, source="disconnect")
@@ -336,9 +342,15 @@ class LarkHandler:
         if chat_id not in self._bridges and chat_id not in self._chat_sessions:
             await card_service.send_text(chat_id, "当前未连接到任何会话")
             return
+        session_name = self._chat_sessions.get(chat_id, "")
+        # 更新流式卡片为已断开状态
+        active_slice = self._poller.stop_and_get_active_slice(chat_id)
+        if active_slice and session_name:
+            await self._update_card_disconnected(chat_id, session_name, active_slice)
+
         self._remove_binding_by_chat(chat_id)
         await self._detach(chat_id)
-        await self._cmd_menu(user_id, chat_id, message_id=message_id)
+        # 断开后保持卡片不变（已断开状态），不再发送菜单
 
     async def _cmd_list(self, user_id: str, chat_id: str,
                          message_id: Optional[str] = None):
@@ -630,6 +642,9 @@ class LarkHandler:
                 bottom_bar = state.get("bottom_bar")
                 agent_panel = state.get("agent_panel")
                 option_block = state.get("option_block")
+                # 获取自动应答状态
+                from utils.runtime_config import get_session_auto_answer_enabled
+                auto_answer_enabled = get_session_auto_answer_enabled(session_name)
         except Exception:
             pass
         finally:
@@ -647,6 +662,7 @@ class LarkHandler:
             option_block=option_block,
             disconnected=True,
             session_name=session_name,
+            auto_answer_enabled=auto_answer_enabled,
         )
         try:
             return await card_service.update_card(
@@ -1057,14 +1073,10 @@ class LarkHandler:
                 )
             await self._cmd_list(user_id, chat_id, message_id=message_id)
         except Exception as e:
-            logger.error(f"解散群失败: {e}")
-            await card_service.send_text(chat_id, f"解散群失败：{e}")
+            logger.error(f”解散群失败: {e}”)
+            await card_service.send_text(chat_id, f”解散群失败：{e}”)
 
     # ── 消息转发 ─────────────────────────────────────────────────────────────
-
-    async def handle_disabled_enter_submit(self, user_id: str, chat_id: str, text: str):
-        """Enter 提交被禁用时的提示处理。"""
-        await card_service.send_text(chat_id, "已关闭回车直接发送，请点击“点击发送”按钮提交")
 
     async def _forward_to_claude(self, user_id: str, chat_id: str, text: str):
         """转发消息给 Claude（输出由 SharedMemoryPoller 自动推卡片）"""

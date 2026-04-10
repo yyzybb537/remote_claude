@@ -505,56 +505,6 @@ def test_stream_card_uses_card_quick_commands_instead_of_launchers():
     assert "Claude: claude" not in body_text
 
 
-def test_stream_card_enter_submit_hints_follow_global_setting():
-    from lark_client.card_builder import build_stream_card
-    from utils.runtime_config import Settings, CardSettings, QuickCommand
-
-    enabled_settings = Settings(
-        card=CardSettings(
-            quick_commands=[QuickCommand(label="清屏", value="/clear")],
-            enter_to_submit=True,
-        )
-    )
-    disabled_settings = Settings(
-        card=CardSettings(
-            quick_commands=[QuickCommand(label="清屏", value="/clear")],
-            enter_to_submit=False,
-        )
-    )
-    option_block = {
-        "sub_type": "option",
-        "question": "选择一个选项",
-        "selected_value": "1",
-        "options": [
-            {"label": "选项 1", "value": "1"},
-            {"label": "选项 2", "value": "2"},
-        ],
-    }
-
-    enabled_card = build_stream_card(blocks=[], session_name="s1", settings=enabled_settings, option_block=option_block)
-    disabled_card = build_stream_card(blocks=[], session_name="s1", settings=disabled_settings, option_block=option_block)
-
-    enabled_text = str(enabled_card["body"]["elements"])
-    disabled_text = str(disabled_card["body"]["elements"])
-
-    assert "输入消息后按回车发送" in enabled_text
-    assert "当前高亮选项可直接回车确认" in enabled_text
-    assert "清屏" in enabled_text
-    assert "cmd:/clear" in enabled_text
-    assert "输入消息后点击发送" in disabled_text
-    assert "请选择后点击确认" in disabled_text
-    assert "清屏" in disabled_text
-    assert "cmd:/clear" in disabled_text
-
-    enabled_form = next(elem for elem in enabled_card["body"]["elements"] if elem.get("tag") == "form")
-    disabled_form = next(elem for elem in disabled_card["body"]["elements"] if elem.get("tag") == "form")
-    enabled_submit_btn = enabled_form["elements"][0]["columns"][-1]["elements"][0]
-    disabled_submit_btn = disabled_form["elements"][0]["columns"][-1]["elements"][0]
-
-    assert enabled_submit_btn["text"]["content"] == "发送"
-    assert disabled_submit_btn["text"]["content"] == "点击发送"
-
-
 def test_stream_card_submit_button_keeps_form_submit_action():
     from lark_client.card_builder import build_stream_card
 
@@ -580,21 +530,6 @@ def test_stream_card_submit_button_marks_click_submit_source():
     assert submit_btn["action_type"] == "form_submit"
     assert submit_btn["name"] == "enter_submit"
     assert submit_btn["value"] == {"submit_source": "button_click"}
-
-
-def test_stream_card_submit_button_uses_send_label_when_enter_enabled():
-    from lark_client.card_builder import build_stream_card
-    from utils.runtime_config import Settings, CardSettings
-
-    card = build_stream_card(
-        blocks=[],
-        session_name="s1",
-        settings=Settings(card=CardSettings(enter_to_submit=True)),
-    )
-    form = next(elem for elem in card["body"]["elements"] if elem.get("tag") == "form")
-    submit_btn = form["elements"][0]["columns"][-1]["elements"][0]
-
-    assert submit_btn["text"]["content"] == "发送"
 
 
 def test_menu_card_kill_button_keeps_confirm_config():
@@ -707,52 +642,6 @@ def test_dir_card_group_button_keeps_open_url_config():
     assert behavior["android_url"] == behavior["default_url"]
     assert behavior["ios_url"] == behavior["default_url"]
     assert behavior["pc_url"] == behavior["default_url"]
-
-
-@patch("lark_client.main.get_lark_enter_submit_enabled", return_value=False)
-@patch("lark_client.main.asyncio.create_task")
-def test_main_blocks_enter_form_submit_when_disabled(mock_create_task, _mock_enter_submit):
-    from lark_client import main
-
-    async def fake_handle_disabled_enter_submit(_user_id, _chat_id, _text):
-        return None
-
-    main.handler.handle_disabled_enter_submit = fake_handle_disabled_enter_submit
-    mock_create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
-    main.handler._chat_sessions["c1"] = "demo"
-
-    event = MagicMock()
-    event.event.action.form_value = {"command": "continue"}
-    event.event.action.value = {}
-    event.event.operator.open_id = "u1"
-    event.event.context.open_chat_id = "c1"
-    event.event.context.open_message_id = "m1"
-
-    main.handle_card_action(event)
-
-    scheduled = [call.args[0].cr_code.co_name for call in mock_create_task.call_args_list]
-    assert "forward_to_claude" not in scheduled
-    assert "fake_handle_disabled_enter_submit" in scheduled
-
-
-@patch("lark_client.main.get_lark_enter_submit_enabled", return_value=False)
-@patch("lark_client.main.asyncio.create_task")
-def test_main_allows_button_submit_when_enter_submit_disabled(mock_create_task, _mock_enter_submit):
-    from lark_client import main
-
-    mock_create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
-
-    event = MagicMock()
-    event.event.action.form_value = {"command": "continue"}
-    event.event.action.value = {"submit_source": "button_click"}
-    event.event.operator.open_id = "u1"
-    event.event.context.open_chat_id = "c1"
-    event.event.context.open_message_id = "m1"
-
-    main.handle_card_action(event)
-
-    scheduled = [call.args[0].cr_code.co_name for call in mock_create_task.call_args_list]
-    assert "forward_to_claude" in scheduled
 
 
 @patch("lark_client.main.asyncio.create_task")

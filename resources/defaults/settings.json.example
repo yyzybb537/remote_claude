@@ -11,8 +11,7 @@
       {"label": "退出会话", "value": "/exit", "icon": "🚪"},
       {"label": "帮助", "value": "/help", "icon": "❓"}
     ],
-    "expiry_sec": 3600,
-    "enter_to_submit": true
+    "expiry_sec": 3600
   },
   "session": {
     "bypass": false,
