@@ -9,6 +9,7 @@ Proxy Server
 """
 
 import asyncio
+import atexit
 import logging
 import os
 import pty
@@ -35,8 +36,8 @@ from utils.protocol import (
     encode_message, decode_message
 )
 from utils.session import (
-    get_socket_path, get_pid_file, ensure_socket_dir,
-    generate_client_id, cleanup_session, _safe_filename, get_env_file,
+    get_socket_path, get_pid_file, get_name_file, ensure_socket_dir,
+    generate_client_id, cleanup_session, _safe_filename, _log_filename, get_env_file,
     SOCKET_DIR
 )
 
@@ -184,12 +185,12 @@ class OutputWatcher:
         self._on_snapshot = on_snapshot  # 回调：写共享内存
         self._debug_screen = debug_screen  # --debug-screen 开启后才写 _screen.log
         self._debug_verbose = debug_verbose  # --debug-verbose 开启后输出 indicator/repr 等诊断信息
-        safe_name = _safe_filename(session_name)
-        self._debug_file = f"/tmp/remote-claude/{safe_name}_messages.log"
+        log_name = _log_filename(session_name)
+        self._debug_file = f"/tmp/remote-claude/{log_name}_messages.log"
         # PTY 原始字节流日志（仅 --debug-screen 开启时使用）
         self._raw_log_fd = None
         if debug_screen:
-            raw_log_path = f"/tmp/remote-claude/{safe_name}_pty_raw.log"
+            raw_log_path = f"/tmp/remote-claude/{log_name}_pty_raw.log"
             try:
                 self._raw_log_fd = open(raw_log_path, "a", encoding="ascii", buffering=1)
             except Exception:
@@ -663,7 +664,7 @@ class OutputWatcher:
         每个字符的 fg/bg 颜色通过 ANSI SGR 序列直接嵌入，
         cat _screen.log 即可在终端看到与 pyte 渲染一致的着色效果。
         """
-        base = f"/tmp/remote-claude/{_safe_filename(self._session_name)}"
+        base = f"/tmp/remote-claude/{_log_filename(self._session_name)}"
         try:
             # pyte 屏幕快照（覆盖写，只保留最新一帧）
             screen_path = base + "_screen.log"
@@ -803,12 +804,13 @@ class ProxyServer:
     """Proxy Server"""
 
     def __init__(self, session_name: str, claude_args: list = None,
-                 claude_cmd: str = "claude",
+                 claude_cmd: str = "claude", codex_cmd: str = "codex",
                  cli_type: str = "claude",
                  debug_screen: bool = False, debug_verbose: bool = False):
         self.session_name = session_name
         self.claude_args = claude_args or []
         self.claude_cmd = claude_cmd
+        self.codex_cmd = codex_cmd
         self.cli_type = cli_type
         self.debug_screen = debug_screen
         self.debug_verbose = debug_verbose
@@ -863,6 +865,9 @@ class ProxyServer:
         # 写入 PID 文件
         self.pid_file.write_text(str(os.getpid()))
 
+        # 写入会话名映射文件（供 list_active_sessions 恢复原始显示名）
+        get_name_file(self.session_name).write_text(self.session_name)
+
         # 启动 Unix Socket 服务器
         t2 = time.time()
         self.server = await asyncio.start_unix_server(
@@ -915,9 +920,9 @@ class ProxyServer:
         logger.info(f"已重定向 stderr 到 {error_log_path}")
 
         # 添加运行阶段日志文件
-        safe_name = _safe_filename(self.session_name)
+        log_name = _log_filename(self.session_name)
         runtime_handler = logging.FileHandler(
-            f"{SOCKET_DIR}/{safe_name}_server.log",
+            f"{SOCKET_DIR}/{log_name}_server.log",
             encoding="utf-8"
         )
         runtime_handler.setFormatter(logging.Formatter(
@@ -930,7 +935,7 @@ class ProxyServer:
         # DEBUG 级别时额外记录调试日志到独立文件
         if SERVER_LOG_LEVEL_MAP == logging.DEBUG:
             debug_handler = logging.FileHandler(
-                f"{SOCKET_DIR}/{safe_name}_debug.log",
+                f"{SOCKET_DIR}/{log_name}_debug.log",
                 encoding="utf-8"
             )
             debug_handler.setLevel(logging.DEBUG)
@@ -940,14 +945,14 @@ class ProxyServer:
             ))
             debug_handler._debug_handler = True  # 标记，方便后续清理
             root_logger.addHandler(debug_handler)
-            logger.info(f"已启用 DEBUG 日志: {safe_name}_debug.log")
+            logger.info(f"已启用 DEBUG 日志: {log_name}_debug.log")
 
-        logger.info(f"日志已切换到运行阶段: {safe_name}_server.log")
+        logger.info(f"日志已切换到运行阶段: {log_name}_server.log")
 
     def _get_effective_cmd(self) -> str:
-        """根据 cli_type 返回实际执行的命令（codex 时使用 'codex'，否则用 claude_cmd）"""
+        """根据 cli_type 返回实际执行的命令"""
         if self.cli_type == "codex":
-            return "codex"
+            return self.codex_cmd
         return self.claude_cmd
 
     def _start_pty(self):
@@ -1193,21 +1198,27 @@ class ProxyServer:
 
 
 def run_server(session_name: str, claude_args: list = None,
-               claude_cmd: str = "claude",
+               claude_cmd: str = "claude", codex_cmd: str = "codex",
                cli_type: str = "claude",
                debug_screen: bool = False, debug_verbose: bool = False):
     """运行服务器"""
     server = ProxyServer(session_name, claude_args, claude_cmd=claude_cmd,
-                         cli_type=cli_type,
+                         codex_cmd=codex_cmd, cli_type=cli_type,
                          debug_screen=debug_screen, debug_verbose=debug_verbose)
+
+    # atexit 兜底：任何退出路径（包括被 SIGKILL 以外的信号强杀）都记录日志
+    atexit.register(lambda: logger.warning("server 进程退出（atexit）[session=%s]", session_name))
 
     # 信号处理
     def signal_handler(signum, frame):
-        print("\n[Server] 收到退出信号")
+        sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        logger.warning("收到退出信号: %s (signum=%d)", sig_name, signum)
+        print(f"\n[Server] 收到退出信号: {sig_name}")
         asyncio.create_task(server._shutdown())
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGHUP, signal_handler)  # tmux 崩溃时也能优雅退出
 
     # 运行
     try:
@@ -1251,7 +1262,8 @@ if __name__ == "__main__":
     logging.getLogger().addHandler(startup_handler)
 
     claude_cmd = os.environ.get("CLAUDE_COMMAND", "claude")
-    logger.info(f"CLAUDE_COMMAND={claude_cmd!r}")
+    codex_cmd = os.environ.get("CODEX_COMMAND", "codex")
+    logger.info(f"CLAUDE_COMMAND={claude_cmd!r}, CODEX_COMMAND={codex_cmd!r}")
     run_server(args.session_name, args.claude_args, claude_cmd=claude_cmd,
-               cli_type=args.cli_type,
+               codex_cmd=codex_cmd, cli_type=args.cli_type,
                debug_screen=args.debug_screen, debug_verbose=args.debug_verbose)

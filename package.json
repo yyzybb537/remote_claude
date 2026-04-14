@@ -1,6 +1,6 @@
 {
   "name": "remote-claude",
-  "version": "1.0.3",
+  "version": "1.0.6",
   "description": "双端共享 Claude CLI 工具",
   "bin": {
     "remote-claude": "bin/remote-claude",

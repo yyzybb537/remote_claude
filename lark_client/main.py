@@ -250,16 +250,18 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         if action_type == "dir_start":
             path = action_value.get("path", "")
             session_name = action_value.get("session_name", "")
-            print(f"[Lark] dir_start: path={path}, session={session_name}")
-            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}"))
+            cli_type = action_value.get("cli_type", "claude")
+            print(f"[Lark] dir_start: path={path}, session={session_name}, cli_type={cli_type}")
+            asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}", cli_type=cli_type))
             return None
 
         # 目录卡片：在该目录启动会话并创建专属群聊
         if action_type == "dir_new_group":
             path = action_value.get("path", "")
             session_name = action_value.get("session_name", "")
-            print(f"[Lark] dir_new_group: path={path}, session={session_name}")
-            asyncio.create_task(handler._cmd_start_and_new_group(user_id, chat_id, session_name, path))
+            cli_type = action_value.get("cli_type", "claude")
+            print(f"[Lark] dir_new_group: path={path}, session={session_name}, cli_type={cli_type}")
+            asyncio.create_task(handler._cmd_start_and_new_group(user_id, chat_id, session_name, path, cli_type=cli_type))
             return None
 
         # /menu 卡片按钮

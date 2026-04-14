@@ -111,7 +111,7 @@ class RemoteClient:
     async def run(self):
         """运行客户端"""
         if not await self.connect():
-            return
+            raise SystemExit(1)
 
         self.running = True
         _track_stats('terminal', 'connect', session_name=self.session_name)

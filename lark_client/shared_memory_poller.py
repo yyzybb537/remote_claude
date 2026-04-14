@@ -230,12 +230,14 @@ class SharedMemoryPoller:
         agent_panel = state.get("agent_panel")
         option_block = state.get("option_block")
         cli_type = state.get("cli_type", "claude")
+        # timestamp 存在说明 server 已写入有效快照（即使内容全空，如 Codex 就绪等待输入）
+        has_valid_snapshot = state.get("timestamp") is not None
 
         # 步骤 2：仅计算就绪状态，不发送通知
-        should_notify = self._update_ready_state(tracker, blocks, status_line, option_block)
+        should_notify = self._update_ready_state(tracker, blocks, status_line, option_block, agent_panel)
 
         # 步骤 3：卡片操作（含创建/更新/拆分）
-        await self._do_card_update(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type)
+        await self._do_card_update(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type, has_valid_snapshot=has_valid_snapshot)
 
         # 步骤 4：通知在卡片操作之后发送，确保新卡先出现
         if should_notify:
@@ -246,6 +248,7 @@ class SharedMemoryPoller:
         status_line: Optional[dict], bottom_bar: Optional[dict],
         agent_panel: Optional[dict], option_block: Optional[dict],
         cli_type: str,
+        has_valid_snapshot: bool = False,
     ) -> None:
         """卡片操作主体：获取活跃卡片 → 创建/更新/拆分"""
         # 获取活跃卡片（最后一张且未冻结）
@@ -254,7 +257,9 @@ class SharedMemoryPoller:
             active = tracker.cards[-1]
 
         if not blocks and not status_line and not bottom_bar and not agent_panel and not option_block and active is None:
-            return  # 完全无内容且无活跃卡片时不创建卡片
+            if not has_valid_snapshot:
+                return  # 真的还没有快照，不创建卡片
+            # 有效快照但内容全空（如 Codex 就绪等待输入），继续创建就绪卡片
 
         if active is None:
             # 需要创建新卡片
@@ -357,8 +362,8 @@ class SharedMemoryPoller:
                 )
 
         blocks_slice = blocks[start_idx:]
-        if not blocks_slice and not status_line and not bottom_bar and not agent_panel and not option_block:
-            return
+        # 注意：不在此处提前 return，上层 _do_card_update 已做过滤，
+        # 走到这里说明确实需要创建卡片（如 Codex 就绪等待输入的空内容卡片）
 
         from .card_builder import build_stream_card
         card_dict = build_stream_card(blocks_slice, status_line, bottom_bar, agent_panel=agent_panel, option_block=option_block, session_name=tracker.session_name, cli_type=cli_type)
@@ -505,9 +510,10 @@ class SharedMemoryPoller:
     def _update_ready_state(
         self, tracker: StreamTracker,
         blocks: list, status_line: Optional[dict], option_block: Optional[dict],
+        agent_panel: Optional[dict] = None,
     ) -> bool:
         """更新就绪状态，返回是否需要发送就绪通知（不执行发送）"""
-        current_ready = _is_ready(blocks, status_line, option_block)
+        current_ready = _is_ready(blocks, status_line, option_block, agent_panel)
         prev_ready = tracker.prev_is_ready
         tracker.prev_is_ready = current_ready
         return current_ready and not prev_ready and tracker.is_group and _notify_enabled
@@ -615,10 +621,11 @@ class SharedMemoryPoller:
 
 # ── 模块级辅助函数 ────────────────────────────────────────────────────────────
 
-def _is_ready(blocks: list, status_line: Optional[dict], option_block: Optional[dict]) -> bool:
-    """数据层就绪判断：无 streaming block、无 status_line（option_block 不影响就绪）"""
+def _is_ready(blocks: list, status_line: Optional[dict], option_block: Optional[dict], agent_panel: Optional[dict] = None) -> bool:
+    """数据层就绪判断：无 streaming block、无 status_line、无后台 agent（option_block 不影响就绪）"""
     has_streaming = any(b.get("is_streaming", False) for b in blocks)
-    return not has_streaming and status_line is None
+    has_agents = agent_panel is not None
+    return not has_streaming and status_line is None and not has_agents
 
 
 _READY_COUNT_FILE = USER_DATA_DIR / "ready_notify_count"

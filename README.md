@@ -66,143 +66,21 @@ remote-claude attach <会话名>
 
 #### 4.1 配置飞书机器人
 
-1. 登录[飞书开放平台](https://open.feishu.cn/)，创建企业自建应用
-2. 获取 **App ID** 和 **App Secret**
-3. 用`cla`或`cl`启动一次claude(或用cx或cdx启动一次codex), 按照交互提示填入**App ID** 和 **App Secret**
-4. [飞书开放平台]的企业自建应用页面`添加应用能力`（机器人能力）
-5. 企业自建应用页面配置事件回调（如果第3步没启动成功这里配置不了）：
-  - `事件与回调` -> `事件配置` -> `订阅方式`右边的笔图标 -> `选择：使用长连接接收事件` -> `点击保存` -> `下面添加事件: 接收消息 v2.0 (im.message.receive_v1)`
-  - `事件与回调` -> `回调配置` -> `订阅方式`右边的笔图标 -> `选择：使用长连接接收回调` -> `点击保存` -> `下面添加回调: 卡片回传交互 (card.action.trigger)`
-6. 企业自建应用页面配置权限：
-  - `权限管理` -> `批量导入/导出权限` -> 导入以下内容
-```json
-{
-  "scopes": {
-    "tenant": [
-      "base:app:read",
-      "base:field:read",
-      "base:form:read",
-      "base:record:read",
-      "base:record:retrieve",
-      "base:table:read",
-      "board:whiteboard:node:read",
-      "calendar:calendar.free_busy:read",
-      "cardkit:card:write",
-      "contact:contact.base:readonly",
-      "contact:user.employee_id:readonly",
-      "contact:user.id:readonly",
-      "docs:document.comment:read",
-      "docs:document.content:read",
-      "docs:document.media:download",
-      "docs:document.media:upload",
-      "docs:document:import",
-      "docs:permission.member:auth",
-      "docs:permission.member:create",
-      "docs:permission.member:transfer",
-      "docx:document.block:convert",
-      "docx:document:create",
-      "docx:document:readonly",
-      "docx:document:write_only",
-      "drive:drive.metadata:readonly",
-      "drive:drive.search:readonly",
-      "drive:drive:version:readonly",
-      "drive:file:download",
-      "drive:file:upload",
-      "im:chat.members:read",
-      "im:chat.members:write_only",
-      "im:chat.tabs:read",
-      "im:chat.tabs:write_only",
-      "im:chat.top_notice:write_only",
-      "im:chat:create",
-      "im:chat:delete",
-      "im:chat:operate_as_owner",
-      "im:chat:read",
-      "im:chat:update",
-      "im:message.group_at_msg:readonly",
-      "im:message.group_msg",
-      "im:message.p2p_msg:readonly",
-      "im:message.reactions:read",
-      "im:message.reactions:write_only",
-      "im:message.urgent",
-      "im:message.urgent.status:write",
-      "im:message:readonly",
-      "im:message:recall",
-      "im:message:send_as_bot",
-      "im:message:update",
-      "im:resource",
-      "sheets:spreadsheet.meta:read",
-      "sheets:spreadsheet.meta:write_only",
-      "sheets:spreadsheet:create",
-      "sheets:spreadsheet:read",
-      "sheets:spreadsheet:write_only",
-      "space:document:delete",
-      "space:document:retrieve",
-      "wiki:wiki:readonly"
-    ],
-    "user": [
-      "base:app:read",
-      "base:field:read",
-      "base:record:read",
-      "base:record:retrieve",
-      "base:table:read",
-      "calendar:calendar.event:create",
-      "calendar:calendar.event:delete",
-      "calendar:calendar.event:read",
-      "calendar:calendar.event:reply",
-      "calendar:calendar.event:update",
-      "calendar:calendar.free_busy:read",
-      "calendar:calendar:read",
-      "cardkit:card:write",
-      "contact:user.base:readonly",
-      "contact:user.employee_id:readonly",
-      "contact:user.id:readonly",
-      "docs:document.comment:read",
-      "docs:document.content:read",
-      "docs:document.media:download",
-      "docs:document.media:upload",
-      "docx:document.block:convert",
-      "docx:document:create",
-      "docx:document:readonly",
-      "docx:document:write_only",
-      "im:chat.managers:write_only",
-      "im:chat.members:read",
-      "im:chat.members:write_only",
-      "im:chat.tabs:read",
-      "im:chat.tabs:write_only",
-      "im:chat.top_notice:write_only",
-      "im:chat:delete",
-      "im:chat:read",
-      "im:chat:update",
-      "im:message.reactions:read",
-      "im:message.reactions:write_only",
-      "im:message:readonly",
-      "im:message:recall",
-      "im:message:update",
-      "search:docs:read",
-      "sheets:spreadsheet.meta:read",
-      "sheets:spreadsheet.meta:write_only",
-      "sheets:spreadsheet:create",
-      "sheets:spreadsheet:read",
-      "sheets:spreadsheet:write_only",
-      "space:document:retrieve",
-      "task:task:read",
-      "task:task:readonly",
-      "task:task:write",
-      "task:task:writeonly",
-      "task:tasklist:read",
-      "wiki:wiki:readonly"
-    ]
-  }
-}
+运行向导，按提示操作即可（约 5 分钟）：
+
+```bash
+remote-claude lark init
 ```
-7. 企业自建应用页面: `创建版本` -> `发布到线上`
-8. 至此，完成飞书机器人配置
 
-#### 4.2 通过飞书机器人操作claude/codex
+向导会自动完成：扫码创建企业自建应用、开通所需权限、配置事件回调、写入本地配置。
 
-1. 从飞书搜索刚刚创建的飞书机器人（第一次搜比较慢，如果搜不到可能是忘记发布了）
-2. 飞书中与机器人对话，可用命令: 
-  - `/menu` 展示菜单卡片，后续操作都操作这个卡片上的按钮即可
+> **⚠ 向导最后一步会自动弹出发布页面**，按提示创建版本并发布后才能生效。
+> 未发布的应用在飞书中无法被搜索到。
+
+#### 4.2 通过飞书机器人操作 claude/codex
+
+1. 从飞书搜索刚创建的机器人（应用发布后才能搜到，发布约需 1 分钟生效）
+2. 飞书中与机器人对话，发送 `/menu` 展示菜单卡片，后续操作点卡片上的按钮即可
 
 ## 使用指南
 

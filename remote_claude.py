@@ -252,6 +252,44 @@ def cmd_status(args):
     return 0
 
 
+WATCHDOG_SCRIPT = USER_DATA_DIR / "watchdog.sh"
+WATCHDOG_PID_FILE = USER_DATA_DIR / "watchdog.pid"
+
+
+def _start_watchdog():
+    """启动后台 watchdog（如果尚未运行）"""
+    if not WATCHDOG_SCRIPT.exists():
+        return  # 脚本不存在时静默跳过
+    # 检查是否已在运行
+    if WATCHDOG_PID_FILE.exists():
+        try:
+            pid = int(WATCHDOG_PID_FILE.read_text().strip())
+            os.kill(pid, 0)
+            return  # 已在运行
+        except (ProcessLookupError, ValueError, OSError):
+            pass
+    process = subprocess.Popen(
+        ["bash", str(WATCHDOG_SCRIPT)],
+        stdout=subprocess.DEVNULL,  # watchdog 通过 tee 自己写 $LOG，不需要 stdout 捕获
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    print(f"  watchdog: 已启动 (PID: {process.pid})")
+
+
+def _stop_watchdog():
+    """停止后台 watchdog"""
+    if not WATCHDOG_PID_FILE.exists():
+        return
+    try:
+        pid = int(WATCHDOG_PID_FILE.read_text().strip())
+        os.kill(pid, signal.SIGTERM)
+        print(f"  watchdog: 已停止 (PID: {pid})")
+    except (ProcessLookupError, ValueError, OSError):
+        pass
+    WATCHDOG_PID_FILE.unlink(missing_ok=True)
+
+
 def cmd_lark_start(args):
     """启动飞书客户端（守护进程）"""
     if is_lark_running():
@@ -296,6 +334,7 @@ def cmd_lark_start(args):
             print(f"  日志: {log_file}")
             print(f"\n使用 'python3 remote_claude.py lark status' 查看状态")
             print(f"使用 'python3 remote_claude.py lark stop' 停止")
+            _start_watchdog()
             return 0
         else:
             print("✗ 启动失败，请查看日志:")
@@ -342,6 +381,7 @@ def cmd_lark_stop(args):
         if not is_lark_running():
             print("✓ 飞书客户端已停止")
             cleanup_lark()
+            _stop_watchdog()
             return 0
         else:
             print("✗ 无法停止进程，请手动终止:")
@@ -351,6 +391,7 @@ def cmd_lark_stop(args):
     except ProcessLookupError:
         print("进程已不存在，清理残留文件")
         cleanup_lark()
+        _stop_watchdog()
         return 0
     except Exception as e:
         print(f"✗ 停止失败: {e}")
@@ -477,6 +518,198 @@ def cmd_update(args):
     return 0
 
 
+def cmd_deps(args):
+    """检查并安装依赖"""
+    import shutil
+
+    YELLOW = "\033[33m"
+    GREEN = "\033[32m"
+    RED = "\033[31m"
+    RESET = "\033[0m"
+
+    def print_ok(msg):
+        print(f"{GREEN}✓{RESET} {msg}")
+
+    def print_warn(msg):
+        print(f"{YELLOW}⚠{RESET} {msg}")
+
+    def print_err(msg):
+        print(f"{RED}✗{RESET} {msg}")
+
+    print(f"\n{GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+    print(f"{GREEN}  依赖检查{RESET}")
+    print(f"{GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}\n")
+
+    # 检查 uv
+    uv_path = shutil.which("uv")
+    if uv_path:
+        r = subprocess.run(["uv", "--version"], capture_output=True, text=True)
+        print_ok(f"uv: {r.stdout.strip()}")
+    else:
+        print_err("uv: 未安装")
+
+    # 检查 claude CLI
+    claude_path = shutil.which("claude")
+    if claude_path:
+        print_ok("Claude CLI: 已安装")
+    else:
+        print_warn("Claude CLI: 未安装")
+
+    # 检查 codex CLI
+    codex_path = shutil.which("codex")
+    if codex_path:
+        print_ok("Codex CLI: 已安装")
+    else:
+        print_warn("Codex CLI: 未安装（可选）")
+
+    # 检查 tmux
+    REQUIRED_MAJOR = 3
+    REQUIRED_MINOR = 6
+
+    tmux_path = shutil.which("tmux")
+    tmux_ok = False
+    if tmux_path:
+        r = subprocess.run(["tmux", "-V"], capture_output=True, text=True)
+        ver_str = r.stdout.strip().split()[-1] if r.stdout.strip() else "0.0"
+        parts = ver_str.replace("a", "").replace("b", "").replace("c", "").split(".")
+        try:
+            major = int(parts[0])
+            minor = int(parts[1]) if len(parts) > 1 else 0
+        except ValueError:
+            major, minor = 0, 0
+        if major > REQUIRED_MAJOR or (major == REQUIRED_MAJOR and minor >= REQUIRED_MINOR):
+            print_ok(f"tmux: {r.stdout.strip()}（满足 >= {REQUIRED_MAJOR}.{REQUIRED_MINOR}）")
+            tmux_ok = True
+        else:
+            print_warn(f"tmux: {r.stdout.strip()}（需要 >= {REQUIRED_MAJOR}.{REQUIRED_MINOR}）")
+    else:
+        print_err("tmux: 未安装")
+
+    if tmux_ok:
+        print(f"\n{GREEN}所有关键依赖已满足。{RESET}")
+        return 0
+
+    # tmux 版本不满足，提供源码编译安装
+    print(f"\n{YELLOW}tmux 版本不满足要求，是否从源码编译安装 tmux 3.6a？{RESET}")
+    print(f"  安装位置: $HOME/.local（不需要 root 权限）")
+    print(f"  编译依赖安装可能需要 sudo 密码\n")
+
+    try:
+        answer = input("继续？[y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 0
+
+    if answer not in ("y", "yes"):
+        print("已跳过 tmux 安装。")
+        return 0
+
+    # 安装编译依赖
+    print(f"\n{YELLOW}[1/4] 安装编译依赖...{RESET}")
+    os_name = os.uname().sysname
+    if os_name == "Darwin":
+        subprocess.run(["brew", "install", "libevent", "ncurses", "pkg-config", "bison"], check=False)
+    elif os_name == "Linux":
+        if shutil.which("apt-get"):
+            subprocess.run(["sudo", "apt-get", "update"], check=False)
+            subprocess.run(["sudo", "apt-get", "install", "-y",
+                          "build-essential", "libevent-dev", "libncurses5-dev",
+                          "libncursesw5-dev", "bison", "pkg-config"], check=False)
+        elif shutil.which("yum"):
+            subprocess.run(["sudo", "yum", "groupinstall", "-y", "Development Tools"], check=False)
+            subprocess.run(["sudo", "yum", "install", "-y",
+                          "libevent-devel", "ncurses-devel", "bison"], check=False)
+        else:
+            print_warn("无法识别包管理器，请手动安装编译依赖: libevent-dev ncurses-dev bison pkg-config")
+
+    # 下载源码
+    print(f"\n{YELLOW}[2/4] 下载 tmux 3.6a 源码...{RESET}")
+    import tempfile
+    tmpdir = tempfile.mkdtemp()
+    tarball = os.path.join(tmpdir, "tmux.tar.gz")
+    tmux_url = "https://github.com/tmux/tmux/releases/download/3.6a/tmux-3.6a.tar.gz"
+
+    r = subprocess.run(["curl", "-fsSL", tmux_url, "-o", tarball])
+    if r.returncode != 0:
+        print_err("下载失败，请检查网络连接。")
+        return 1
+
+    subprocess.run(["tar", "-xzf", tarball, "-C", tmpdir], check=True)
+    src_dir = os.path.join(tmpdir, "tmux-3.6a")
+
+    # 编译
+    prefix = os.path.join(os.path.expanduser("~"), ".local")
+    print(f"\n{YELLOW}[3/4] 编译 tmux（安装到 {prefix}）...{RESET}")
+
+    nproc = "2"
+    try:
+        r = subprocess.run(["nproc"], capture_output=True, text=True)
+        if r.returncode == 0:
+            nproc = r.stdout.strip()
+    except FileNotFoundError:
+        pass
+
+    r = subprocess.run(
+        f"./configure --prefix={prefix} && make -j{nproc} && make install",
+        shell=True, cwd=src_dir
+    )
+    if r.returncode != 0:
+        print_err("编译失败，请检查编译依赖是否已安装。")
+        return 1
+
+    # 清理临时目录
+    import shutil as _shutil
+    _shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 配置 PATH
+    print(f"\n{YELLOW}[4/4] 配置 PATH...{RESET}")
+    local_bin = os.path.join(prefix, "bin")
+    os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
+
+    if f"{local_bin}" not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{local_bin}:{os.environ['PATH']}"
+
+    # 写入 shell rc
+    shell_name = os.path.basename(os.environ.get("SHELL", "bash"))
+    rc_file = os.path.join(os.path.expanduser("~"), ".zshrc" if shell_name == "zsh" else ".bashrc")
+    path_line = 'export PATH="$HOME/.local/bin:$PATH"'
+    try:
+        rc_content = open(rc_file).read() if os.path.exists(rc_file) else ""
+        if "$HOME/.local/bin" not in rc_content:
+            with open(rc_file, "a") as f:
+                f.write(f"\n# remote-claude: tmux 路径\n{path_line}\n")
+            print_ok(f"已将 $HOME/.local/bin 写入 {rc_file}")
+    except Exception as e:
+        print_warn(f"无法写入 {rc_file}: {e}")
+
+    # 验证
+    tmux_bin = os.path.join(local_bin, "tmux")
+    if os.path.exists(tmux_bin):
+        r = subprocess.run([tmux_bin, "-V"], capture_output=True, text=True)
+        print(f"\n{GREEN}✓ tmux 安装成功: {r.stdout.strip()}{RESET}")
+        print(f"  路径: {tmux_bin}")
+        print(f"  请运行 source {rc_file} 或重新打开终端使 PATH 生效。")
+    else:
+        print_err("安装似乎未成功，请检查上方输出。")
+        return 1
+
+    return 0
+
+
+def cmd_lark_init(args):
+    """飞书机器人配置向导（扫码自动创建应用）"""
+    from lark_client.setup_wizard import SetupWizard
+    check_only = getattr(args, "check", False)
+    new_only = getattr(args, "new", False)
+    wizard = SetupWizard(check_only=check_only, new_only=new_only)
+    rc = wizard.run()
+    # 配置成功后自动重启飞书客户端（--check / --new 模式跳过）
+    if rc == 0 and not check_only and not new_only:
+        print("\n正在重启飞书客户端以应用新配置...")
+        cmd_lark_restart(args)
+    return rc
+
+
 def cmd_lark(args):
     """飞书客户端管理（兼容旧命令）"""
     # 如果没有子命令，默认显示状态或启动
@@ -485,6 +718,7 @@ def cmd_lark(args):
     else:
         print("飞书客户端未运行")
         print("\n可用命令:")
+        print("  python3 remote_claude.py lark init     - 配置向导（首次使用）")
         print("  python3 remote_claude.py lark start    - 启动客户端")
         print("  python3 remote_claude.py lark stop     - 停止客户端")
         print("  python3 remote_claude.py lark restart  - 重启客户端")
@@ -506,6 +740,9 @@ def main():
   %(prog)s status mywork             显示 mywork 会话状态
 
 飞书客户端:
+  %(prog)s lark init                 配置向导（首次使用，扫码自动创建应用）
+  %(prog)s lark init --check         检查当前配置状态
+  %(prog)s lark init --new           扫码创建新应用（不修改已有配置）
   %(prog)s lark start                启动飞书客户端
   %(prog)s lark stop                 停止飞书客户端
   %(prog)s lark restart              重启飞书客户端
@@ -529,6 +766,9 @@ def main():
 
 更新:
   %(prog)s update                    更新到最新版本
+
+依赖管理:
+  %(prog)s deps                      检查依赖并安装（含 tmux 源码编译）
 """
     )
 
@@ -605,6 +845,13 @@ def main():
     lark_status_parser = lark_subparsers.add_parser("status", help="查看飞书客户端状态")
     lark_status_parser.set_defaults(func=cmd_lark_status)
 
+    # lark init
+    lark_init_parser = lark_subparsers.add_parser("init", help="配置向导（扫码自动创建应用）")
+    lark_init_group = lark_init_parser.add_mutually_exclusive_group()
+    lark_init_group.add_argument("--check", action="store_true", help="仅检查当前配置状态")
+    lark_init_group.add_argument("--new", action="store_true", help="扫码创建新应用（不修改已有配置）")
+    lark_init_parser.set_defaults(func=cmd_lark_init)
+
     # 如果只输入 lark 没有子命令，使用默认处理
     lark_parser.set_defaults(func=cmd_lark)
 
@@ -635,6 +882,10 @@ def main():
     # update 命令
     update_parser = subparsers.add_parser("update", help="更新 remote-claude 到最新版本")
     update_parser.set_defaults(func=cmd_update)
+
+    # deps 命令
+    deps_parser = subparsers.add_parser("deps", help="检查并安装依赖（tmux 源码编译等）")
+    deps_parser.set_defaults(func=cmd_deps)
 
     args, remaining = parser.parse_known_args()
 

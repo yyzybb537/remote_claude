@@ -20,11 +20,6 @@ SOCKET_DIR = Path("/tmp/remote-claude")
 USER_DATA_DIR = Path.home() / ".remote-claude"
 TMUX_SESSION_PREFIX = "rc-"
 
-# macOS AF_UNIX sun_path 限制 104 字节
-# /tmp/remote-claude/ = 19 字节, .sock = 5 字节
-_MAX_SOCKET_PATH = 104
-_MAX_FILENAME = _MAX_SOCKET_PATH - len(str(SOCKET_DIR)) - 1 - len(".sock")
-
 
 def get_env_file() -> Path:
     """获取 .env 配置文件路径"""
@@ -47,12 +42,13 @@ def ensure_user_data_dir():
 
 
 def _safe_filename(session_name: str) -> str:
-    """将会话名转为安全文件名（/ 和 . 替换为 _），超长时用完整 MD5"""
-    name = session_name.replace('/', '_').replace('.', '_')
-    if len(name) <= _MAX_FILENAME:
-        return name
-    # 超长：直接用完整 32 字符 MD5，彻底避免路径超限
+    """将会话名转为安全文件名（MD5 hash）"""
     return hashlib.md5(session_name.encode()).hexdigest()
+
+
+def _log_filename(session_name: str) -> str:
+    """将会话名转为可读的安全文件名（用于日志文件，不受路径长度限制）"""
+    return session_name.replace("/", "_").replace(".", "_").replace(" ", "_")
 
 
 def get_socket_path(session_name: str) -> Path:
@@ -73,6 +69,11 @@ def get_mq_path(session_name: str) -> Path:
 def get_env_snapshot_path(session_name: str) -> Path:
     """获取环境变量快照文件路径（cmd_start 写入，_start_pty 读取后删除）"""
     return SOCKET_DIR / f"{_safe_filename(session_name)}_env.json"
+
+
+def get_name_file(session_name: str) -> Path:
+    """获取会话名映射文件路径（存储原始会话名，供 list 恢复显示名）"""
+    return SOCKET_DIR / f"{_safe_filename(session_name)}.name"
 
 
 def ensure_socket_dir():
@@ -221,13 +222,19 @@ def get_process_cwd(pid: int) -> Optional[str]:
 
 
 def list_active_sessions() -> List[dict]:
-    """列出所有活跃会话"""
+    """列出所有活跃会话
+
+    注意：sock 文件的 stem 已经是 MD5 哈希（_safe_filename 的输出），
+    因此直接用 stem 构造 PID/MQ 文件路径，不再经过 get_pid_file 等函数
+    （否则会被 _safe_filename 二次哈希）。
+    """
     ensure_socket_dir()
     sessions = []
 
     for sock_file in SOCKET_DIR.glob("*.sock"):
-        session_name = sock_file.stem
-        pid_file = get_pid_file(session_name)
+        # stem 已经是 _safe_filename() 的输出（MD5 哈希）
+        safe_name = sock_file.stem
+        pid_file = SOCKET_DIR / f"{safe_name}.pid"
 
         # 检查 socket 文件是否有效（进程是否存在）
         if pid_file.exists():
@@ -237,6 +244,17 @@ def list_active_sessions() -> List[dict]:
                 os.kill(pid, 0)
                 # 获取进程 CWD
                 cwd = get_process_cwd(pid)
+
+                # 恢复原始会话名（从 .name 文件读取，不存在则回退到哈希值）
+                name_file = SOCKET_DIR / f"{safe_name}.name"
+                if name_file.exists():
+                    try:
+                        display_name = name_file.read_text().strip()
+                    except OSError:
+                        display_name = safe_name
+                else:
+                    display_name = safe_name
+
                 # 获取启动时间（PID 文件的修改时间，文件可能已被并发清理）
                 import datetime
                 try:
@@ -246,7 +264,7 @@ def list_active_sessions() -> List[dict]:
                     mtime = 0
                     start_time = "?"
 
-                # 读取 .mq 文件获取 cli_type（避免循环导入，在函数内导入）
+                # 读取 .mq 文件获取 cli_type
                 try:
                     import sys
                     from pathlib import Path
@@ -255,29 +273,38 @@ def list_active_sessions() -> List[dict]:
                     if project_root not in sys.path:
                         sys.path.insert(0, project_root)
                     from server.shared_state import SharedStateReader
-                    reader = SharedStateReader(session_name)
+                    # 用 _BypassHashReader 直接传入 safe_name 避免二次哈希
+                    mq_path = SOCKET_DIR / f"{safe_name}.mq"
+                    reader = SharedStateReader.__new__(SharedStateReader)
+                    reader._path = mq_path
                     snapshot = reader.read()
                     cli_type = snapshot.get("cli_type", "claude")
                 except Exception as e:
-                    # 添加详细日志记录，便于诊断问题
                     import logging
                     logger = logging.getLogger('Session')
-                    logger.warning(f"读取共享内存 cli_type 失败: session={session_name}, error={e}")
-                    cli_type = "claude"  # 读取失败时使用默认值
+                    logger.warning(f"读取共享内存 cli_type 失败: session={display_name}, error={e}")
+                    cli_type = "claude"
+
+                # tmux 会话名也用 safe_name 直接构造
+                tmux_name = f"{TMUX_SESSION_PREFIX}{safe_name}"
+                tmux_exists = subprocess.run(
+                    ["tmux", "has-session", "-t", tmux_name],
+                    capture_output=True
+                ).returncode == 0
 
                 sessions.append({
-                    "name": session_name,
+                    "name": display_name,
                     "socket": str(sock_file),
                     "pid": pid,
                     "cwd": cwd or "",
                     "start_time": start_time,
                     "mtime": mtime,
-                    "tmux": tmux_session_exists(session_name),
+                    "tmux": tmux_exists,
                     "cli_type": cli_type
                 })
             except (ProcessLookupError, ValueError, OSError):
                 # 进程不存在或文件被并发清理，清理残留文件
-                cleanup_session(session_name)
+                _cleanup_by_safe_name(safe_name)
         else:
             # 没有 PID 文件，清理 socket
             sock_file.unlink(missing_ok=True)
@@ -287,14 +314,32 @@ def list_active_sessions() -> List[dict]:
 
 
 def cleanup_session(session_name: str):
-    """清理会话残留文件"""
-    sock_path = get_socket_path(session_name)
-    pid_file = get_pid_file(session_name)
+    """清理会话残留文件（传入原始会话名，经过 _safe_filename 转换）"""
+    safe = _safe_filename(session_name)
+    _cleanup_by_safe_name(safe, session_name)
 
-    sock_path.unlink(missing_ok=True)
-    pid_file.unlink(missing_ok=True)
-    get_mq_path(session_name).unlink(missing_ok=True)
-    get_env_snapshot_path(session_name).unlink(missing_ok=True)
+
+def _cleanup_by_safe_name(safe_name: str, session_name: Optional[str] = None):
+    """清理会话残留文件（传入已经是 MD5 哈希的 safe_name，不再二次哈希）"""
+    # 尝试从 .name 文件读取原始会话名（用于清理可读日志文件）
+    if session_name is None:
+        name_file = SOCKET_DIR / f"{safe_name}.name"
+        if name_file.exists():
+            try:
+                session_name = name_file.read_text().strip()
+            except OSError:
+                pass
+    for suffix in [".sock", ".pid", ".mq", ".name", "_env.json"]:
+        (SOCKET_DIR / f"{safe_name}{suffix}").unlink(missing_ok=True)
+    # 清理带后缀的日志文件（使用可读文件名）
+    log_suffixes = ["_messages.log", "_screen.log", "_server.log", "_debug.log", "_pty_raw.log"]
+    if session_name:
+        log_name = _log_filename(session_name)
+        for suffix in log_suffixes:
+            (SOCKET_DIR / f"{log_name}{suffix}").unlink(missing_ok=True)
+    # 兼容旧的 MD5 日志文件
+    for suffix in log_suffixes:
+        (SOCKET_DIR / f"{safe_name}{suffix}").unlink(missing_ok=True)
 
 
 def is_session_active(session_name: str) -> bool:
@@ -346,8 +391,14 @@ def is_lark_running() -> bool:
     try:
         pid = int(pid_file.read_text().strip())
         os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, ValueError, OSError):
+        # 额外验证：确认进程确实是我们的 lark_client（防止 PID 复用误判）
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=2
+        )
+        return "lark_client" in result.stdout
+    except (ProcessLookupError, ValueError, OSError, Exception):
         return False
 
 

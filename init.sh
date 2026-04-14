@@ -26,6 +26,16 @@ print_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+# 非交互 sudo：有免密 sudo 则执行（带 5 分钟超时），否则跳过
+_sudo_or_skip() {
+    if sudo -n true 2>/dev/null; then
+        timeout 300 sudo "$@"
+    else
+        print_warning "sudo 需要密码，跳过: sudo $*"
+        return 1
+    fi
+}
+
 print_header() {
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -200,94 +210,20 @@ check_tmux() {
             brew install tmux 2>/dev/null || true
         elif [[ "$OS" == "Linux" ]]; then
             if command -v apt-get &> /dev/null; then
-                sudo apt-get update && sudo apt-get install -y tmux || true
+                _sudo_or_skip apt-get update && _sudo_or_skip apt-get install -y tmux || true
             elif command -v yum &> /dev/null; then
-                sudo yum install -y tmux || true
+                _sudo_or_skip yum install -y tmux || true
             elif command -v pacman &> /dev/null; then
-                sudo pacman -Sy --noconfirm tmux || true
+                _sudo_or_skip pacman -Sy --noconfirm tmux || true
             elif command -v apk &> /dev/null; then
-                sudo apk add --no-cache tmux || true
+                _sudo_or_skip apk add --no-cache tmux || true
             elif command -v zypper &> /dev/null; then
-                sudo zypper install -y tmux || true
+                _sudo_or_skip zypper install -y tmux || true
             else
-                print_warning "无法识别包管理器，尝试从源码编译 tmux..."
-                install_tmux_from_source
-                return
+                print_warning "无法识别包管理器，请手动安装 tmux 或运行 remote-claude deps"
             fi
         fi
         print_success "tmux 安装成功"
-    }
-
-    install_tmux_from_source() {
-        local TMUX_VERSION_TAG="3.6a"
-        local TMUX_URL="https://github.com/tmux/tmux/releases/download/${TMUX_VERSION_TAG}/tmux-${TMUX_VERSION_TAG}.tar.gz"
-
-        print_warning "包管理器版本不满足要求，尝试从源码编译 tmux ${TMUX_VERSION_TAG}..."
-
-        # 安装编译依赖
-        if [[ "$OS" == "Darwin" ]]; then
-            brew install libevent ncurses pkg-config bison 2>/dev/null || true
-        elif command -v apt-get &> /dev/null; then
-            sudo apt-get install -y build-essential libevent-dev libncurses5-dev libncursesw5-dev bison pkg-config || true
-        elif command -v yum &> /dev/null; then
-            sudo yum groupinstall -y "Development Tools" || true
-            sudo yum install -y libevent-devel ncurses-devel bison || true
-        fi
-
-        # 确定安装前缀
-        local PREFIX="/usr/local"
-        if ! sudo -n true 2>/dev/null; then
-            print_warning "无 sudo 权限，将安装到 \$HOME/.local"
-            PREFIX="$HOME/.local"
-        fi
-
-        # 创建临时目录，编译完成后清理
-        local TMPDIR
-        TMPDIR=$(mktemp -d)
-        trap "rm -rf '$TMPDIR'" RETURN
-
-        print_warning "下载 tmux-${TMUX_VERSION_TAG}.tar.gz..."
-        if ! curl -fsSL "$TMUX_URL" -o "$TMPDIR/tmux.tar.gz"; then
-            print_warning "下载失败，请检查网络或手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-            WARNINGS+=("tmux 源码下载失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+")
-            return
-        fi
-
-        tar -xzf "$TMPDIR/tmux.tar.gz" -C "$TMPDIR"
-        local SRC_DIR
-        SRC_DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "tmux-*" | head -1)
-
-        print_warning "编译 tmux（可能需要几分钟）..."
-        if ! (cd "$SRC_DIR" && ./configure --prefix="$PREFIX" && make -j"$(nproc 2>/dev/null || echo 2)"); then
-            print_warning "编译失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-            WARNINGS+=("tmux 源码编译失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+")
-            return
-        fi
-
-        if [[ "$PREFIX" == "/usr/local" ]]; then
-            sudo make -C "$SRC_DIR" install || { WARNINGS+=("tmux make install 失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"); return; }
-        else
-            make -C "$SRC_DIR" install || { WARNINGS+=("tmux make install 失败，请手动安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"); return; }
-            # 若 $HOME/.local/bin 不在 PATH 中，自动写入 shell 配置
-            if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-                export PATH="$HOME/.local/bin:$PATH"
-                local _RC
-                if [[ "$(basename "$SHELL")" == "zsh" ]]; then
-                    _RC="$HOME/.zshrc"
-                else
-                    _RC="$HOME/.bashrc"
-                fi
-                local _PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
-                if ! grep -qF "$HOME/.local/bin" "$_RC" 2>/dev/null; then
-                    echo "" >> "$_RC"
-                    echo "# remote-claude: tmux 路径" >> "$_RC"
-                    echo "$_PATH_LINE" >> "$_RC"
-                    print_success "已自动将 \$HOME/.local/bin 加入 PATH（写入 $_RC）"
-                fi
-            fi
-        fi
-
-        print_success "tmux ${TMUX_VERSION_TAG} 源码编译安装完成（前缀：${PREFIX}）"
     }
 
     check_version() {
@@ -310,30 +246,27 @@ check_tmux() {
             print_success "$TMUX_VERSION 已安装（满足 >= ${REQUIRED_MAJOR}.${REQUIRED_MINOR}）"
             return
         else
-            print_warning "$TMUX_VERSION 版本过低，需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR} 或更高，正在升级..."
+            print_warning "$TMUX_VERSION 版本过低，需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR} 或更高，尝试通过包管理器升级..."
             install_tmux
-            # 升级后再次验证，版本仍不满足则走源码编译（跨平台）
-            if ! check_version; then
-                install_tmux_from_source
-                if check_version; then
-                    print_success "tmux 已升级至 $(tmux -V)"
-                else
-                    print_warning "源码编译后版本仍不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-                    WARNINGS+=("tmux 版本不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+，请手动升级")
-                fi
-            else
+            if check_version; then
                 print_success "tmux 已升级至 $(tmux -V)"
+            else
+                print_warning "包管理器安装后版本仍不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
+                print_info "请运行 'remote-claude deps' 从源码编译安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
+                WARNINGS+=("tmux 版本不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+，请运行 remote-claude deps 升级")
             fi
         fi
     else
         print_warning "未找到 tmux，正在安装..."
         install_tmux
-        if ! check_version; then
-            install_tmux_from_source
-            if ! check_version; then
-                print_warning "源码编译后版本仍不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-                WARNINGS+=("tmux 版本不满足要求（$(tmux -V)），需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+，请手动升级")
-            fi
+        if command -v tmux &> /dev/null && check_version; then
+            print_success "tmux 已安装: $(tmux -V)"
+        else
+            local _cur_ver=""
+            command -v tmux &> /dev/null && _cur_ver="（当前: $(tmux -V)）"
+            print_warning "tmux 安装后版本仍不满足要求${_cur_ver}，需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
+            print_info "请运行 'remote-claude deps' 从源码编译安装 tmux ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
+            WARNINGS+=("tmux 版本不满足要求，需要 ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+，请运行 remote-claude deps 升级")
         fi
     fi
 }

@@ -183,12 +183,12 @@ class SessionBridge:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug(f"读取错误: {e}")
+                logger.warning(f"读取错误: {e}")
                 break
 
         if self.on_disconnect and not self._manually_disconnected:
             try:
-                self.on_disconnect()
+                self.on_disconnect(self)  # 传递 bridge 实例，供上层验证身份
             except Exception as e:
                 logger.error(f"on_disconnect 回调异常: {e}")
 

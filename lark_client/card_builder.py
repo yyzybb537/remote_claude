@@ -771,6 +771,16 @@ def build_stream_card(
 
 # === 辅助卡片（保留不变）===
 
+def _get_display_name(name: str, cwd: str = None) -> str:
+    """从会话名和 CWD 获取显示名。自定义会话名直接用，默认路径名取 CWD 末段。"""
+    is_default = bool(_re.search(r'_\d{4}_\d{6}$', name))
+    if not is_default:
+        return name
+    if cwd:
+        return cwd.rstrip("/").rsplit("/", 1)[-1] or name
+    return name
+
+
 def _build_session_list_elements(sessions: List[Dict], current_session: Optional[str], session_groups: Optional[Dict[str, str]], page: int = 0) -> List[Dict]:
     """构建会话列表元素（供 build_menu_card 复用）"""
     import os
@@ -794,10 +804,7 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
 
             status_icon = "🟢" if is_current else "⚪"
             current_label = "（当前）" if is_current else ""
-            if cwd:
-                short_name = cwd.rstrip("/").rsplit("/", 1)[-1] or name
-            else:
-                short_name = name
+            short_name = _get_display_name(name, cwd)
 
             # 构建4行内容：名字、cli类型、启动时间、目录
             lines = [f"{status_icon} **{short_name}**{current_label}"]
@@ -1029,22 +1036,44 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
                 for sn, cid in session_groups.items():
                     if sn == auto_session or sn.startswith(auto_session + "_"):
                         matched_group_cid = cid
-            group_btn = {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "进入群聊" if matched_group_cid else "创建群聊"},
-                "type": "default",
-                "behaviors": [{"type": "open_url",
-                               "default_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
-                               "android_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
-                               "ios_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
-                               "pc_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}"}]
-                if matched_group_cid else
-                [{"type": "callback", "value": {
-                    "action": "dir_new_group",
-                    "path": full_path,
-                    "session_name": auto_session
-                }}]
-            }
+            if matched_group_cid:
+                action_btns = [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "进入群聊"},
+                        "type": "default",
+                        "behaviors": [{"type": "open_url",
+                                       "default_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
+                                       "android_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
+                                       "ios_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}",
+                                       "pc_url": f"https://applink.feishu.cn/client/chat/open?openChatId={matched_group_cid}"}]
+                    }
+                ]
+            else:
+                action_btns = [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Claude群聊"},
+                        "type": "primary",
+                        "behaviors": [{"type": "callback", "value": {
+                            "action": "dir_new_group",
+                            "path": full_path,
+                            "session_name": auto_session,
+                            "cli_type": "claude"
+                        }}]
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Codex群聊"},
+                        "type": "default",
+                        "behaviors": [{"type": "callback", "value": {
+                            "action": "dir_new_group",
+                            "path": full_path,
+                            "session_name": auto_session,
+                            "cli_type": "codex"
+                        }}]
+                    }
+                ]
             elements.append({
                 "tag": "column_set",
                 "flex_mode": "none",
@@ -1067,19 +1096,7 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
                         "tag": "column",
                         "width": "weighted",
                         "weight": 2,
-                        "elements": [
-                            {
-                                "tag": "button",
-                                "text": {"tag": "plain_text", "content": "Claude"},
-                                "type": "primary",
-                                "behaviors": [{"type": "callback", "value": {
-                                    "action": "dir_start",
-                                    "path": full_path,
-                                    "session_name": auto_session
-                                }}]
-                            },
-                            group_btn
-                        ]
+                        "elements": action_btns
                     }
                 ]
             })
@@ -1151,6 +1168,9 @@ def build_help_card() -> Dict[str, Any]:
 
 **群聊协作**
 • `/new-group <会话名>` - 创建专属群聊，多人共用同一 Claude
+
+**按键控制**
+• `/press <按键>` - 发送按键到会话（如 `/press ctrl+c`、`/press esc`、`/press ctrl+f`）
 
 **其他**
 • `/help` - 显示此帮助

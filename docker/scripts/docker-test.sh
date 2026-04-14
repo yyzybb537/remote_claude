@@ -307,10 +307,13 @@ EOF
     log_info "验证 remote-claude start 能成功启动会话（预期 20s 内不退出）..."
 
     local session="docker-test-session"
-    local socket_path="/tmp/remote-claude/${session}.sock"
+    # socket 路径使用 MD5 哈希（避免 AF_UNIX path too long），tmux 会话名用原始名
+    local session_hash=$(echo -n "$session" | md5sum | cut -d' ' -f1)
+    local socket_path="/tmp/remote-claude/${session_hash}.sock"
+    local tmux_name="rc-${session}"
     # 清理可能残留的同名会话
     uv run python3 remote_claude.py kill "$session" > /dev/null 2>&1 || true
-    tmux kill-session -t "rc-$session" 2>/dev/null || true
+    tmux kill-session -t "$tmux_name" 2>/dev/null || true
 
     # 启动会话，限时 20s；正常情况下 Claude 运行中，timeout 会触发（rc=124）
     timeout 20 uv run python3 remote_claude.py start "$session" \
@@ -329,7 +332,7 @@ EOF
             log_info "=== startup.log（最后 20 行）==="
             tail -20 "$server_log"
         fi
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
+        tmux kill-session -t "$tmux_name" 2>/dev/null || true
         return 1
     fi
 
@@ -339,7 +342,7 @@ EOF
     if [ ! -S "$socket_path" ]; then
         log_error "socket 文件不存在: $socket_path"
         report "✗ start 命令：socket 未创建"
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
+        tmux kill-session -t "$tmux_name" 2>/dev/null || true
         return 1
     fi
     log_success "socket 文件已存在: $socket_path"
@@ -353,7 +356,7 @@ EOF
         log_error "remote-claude list 中未找到会话: $session"
         log_info "list 输出：$list_out"
         report "✗ start 命令：会话在 list 中不可见"
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
+        tmux kill-session -t "$tmux_name" 2>/dev/null || true
         return 1
     fi
 
@@ -368,7 +371,7 @@ EOF
 
     # 清理同名残留会话
     uv run python3 remote_claude.py kill "$session" > /dev/null 2>&1 || true
-    tmux kill-session -t "rc-$session" 2>/dev/null || true
+    tmux kill-session -t "$tmux_name" 2>/dev/null || true
 
     timeout 20 uv run python3 remote_claude.py start "$session" \
         > "$RESULTS_DIR/start_fail.log" 2>&1
@@ -380,7 +383,7 @@ EOF
     if [ $fail_rc -eq 124 ]; then
         log_error "负面测试失败：CLAUDE_COMMAND=claudeyy 时 start 未在 20s 内退出（测试有效性存疑）"
         report "✗ 负面测试：无效命令未被检测到"
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
+        tmux kill-session -t "$tmux_name" 2>/dev/null || true
         return 1
     elif [ $fail_rc -eq 0 ]; then
         log_error "负面测试失败：CLAUDE_COMMAND=claudeyy 时 start 返回 rc=0（不应成功）"
@@ -395,9 +398,11 @@ EOF
     log_info "验证 remote-claude start --cli codex 能成功启动会话（预期 20s 内不退出）..."
 
     local codex_session="docker-codex-session"
-    local codex_socket="/tmp/remote-claude/${codex_session}.sock"
+    local codex_hash=$(echo -n "$codex_session" | md5sum | cut -d' ' -f1)
+    local codex_socket="/tmp/remote-claude/${codex_hash}.sock"
+    local codex_tmux="rc-${codex_session}"
     uv run python3 remote_claude.py kill "$codex_session" > /dev/null 2>&1 || true
-    tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+    tmux kill-session -t "$codex_tmux" 2>/dev/null || true
 
     timeout 20 uv run python3 remote_claude.py start "$codex_session" --cli codex \
         > "$RESULTS_DIR/start_codex.log" 2>&1
@@ -413,7 +418,7 @@ EOF
             log_info "=== startup.log（最后 20 行）==="
             tail -20 "$server_log"
         fi
-        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+        tmux kill-session -t "$codex_tmux" 2>/dev/null || true
         return 1
     fi
 
@@ -422,7 +427,7 @@ EOF
     if [ ! -S "$codex_socket" ]; then
         log_error "Codex socket 不存在: $codex_socket"
         report "✗ Codex start：socket 未创建"
-        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+        tmux kill-session -t "$codex_tmux" 2>/dev/null || true
         return 1
     fi
     log_success "Codex socket 已存在: $codex_socket"
@@ -436,7 +441,7 @@ EOF
         log_error "remote-claude list 中未找到 Codex 会话: $codex_session"
         log_info "list 输出：$codex_list_out"
         report "✗ Codex start：会话在 list 中不可见"
-        tmux kill-session -t "rc-$codex_session" 2>/dev/null || true
+        tmux kill-session -t "$codex_tmux" 2>/dev/null || true
         return 1
     fi
 

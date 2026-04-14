@@ -17,25 +17,16 @@ fi
 if [ "$1" = "log" ]; then
     LOG_DIR="/tmp/remote-claude"
     if [ -n "$2" ]; then
-        # 指定 session 名，/ 和 . 替换为 _（与 _safe_filename 一致）
-        SESSION_SAFE=$(echo "$2" | tr '/.' '__')
-        LOG_FILE="$LOG_DIR/${SESSION_SAFE}_messages.log"
+        # 指定 session 名，/ . 空格替换为 _（与 _log_filename 一致）
+        SESSION_LOG=$(echo "$2" | tr '/. ' '___')
+        LOG_FILE="$LOG_DIR/${SESSION_LOG}_messages.log"
     else
-        # 找最后启动的 session（按创建时间排序，排除 lark.pid）
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            # macOS: stat -f "%B" 返回创建时间（秒）
-            LATEST_PID=$(ls "$LOG_DIR"/_*.pid 2>/dev/null | while read f; do
-                stat -f "%B:%N" "$f" 2>/dev/null
-            done | sort -rn | head -1 | cut -d: -f2)
-        else
-            # Linux: stat -c "%W" 返回创建时间（秒）
-            LATEST_PID=$(ls "$LOG_DIR"/_*.pid 2>/dev/null | while read f; do
-                stat -c "%W:%N" "$f" 2>/dev/null
-            done | sort -rn | head -1 | cut -d: -f2)
-        fi
-        if [ -n "$LATEST_PID" ]; then
-            SESSION_SAFE=$(basename "$LATEST_PID" .pid)
-            LOG_FILE="$LOG_DIR/${SESSION_SAFE}_messages.log"
+        # 找最后启动的 session（按 .name 文件修改时间排序）
+        LATEST_NAME=$(ls -t "$LOG_DIR"/*.name 2>/dev/null | head -1)
+        if [ -n "$LATEST_NAME" ]; then
+            SESSION_NAME=$(cat "$LATEST_NAME" 2>/dev/null)
+            SESSION_LOG=$(echo "$SESSION_NAME" | tr '/. ' '___')
+            LOG_FILE="$LOG_DIR/${SESSION_LOG}_messages.log"
         fi
     fi
 
@@ -46,11 +37,6 @@ if [ "$1" = "log" ]; then
 
     echo "📄 $LOG_FILE"
     exec tail -50f "$LOG_FILE"
-fi
-
-# lark 子命令：检查 .env 配置
-if [ "$1" = "lark" ]; then
-    source "$INSTALL_DIR/scripts/check-env.sh" "$INSTALL_DIR"
 fi
 
 exec uv run --project "$INSTALL_DIR" python3 "$INSTALL_DIR/remote_claude.py" "$@"
