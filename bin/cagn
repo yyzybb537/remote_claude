@@ -1,0 +1,28 @@
+#!/bin/bash
+# 解析符号链接，兼容 macOS（不支持 readlink -f）
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && cd .. && pwd)"
+
+# uv 路径兜底
+if ! command -v uv &>/dev/null; then
+    [ -f "$HOME/.local/bin/uv" ] && export PATH="$HOME/.local/bin:$PATH"
+fi
+
+# 检查飞书配置
+source "$SCRIPT_DIR/scripts/check-env.sh" "$SCRIPT_DIR"
+
+# 会话名：第一个参数非 - 开头时作为自定义名，否则用 PWD_时间戳
+if [ -n "$1" ] && [[ "$1" != -* ]]; then
+    SESSION_NAME="$1"
+    shift
+else
+    SESSION_NAME="${PWD}_$(date +%m%d_%H%M%S)"
+fi
+
+uv run --project "$SCRIPT_DIR" python3 "$SCRIPT_DIR/remote_claude.py" lark start
+uv run --project "$SCRIPT_DIR" python3 "$SCRIPT_DIR/remote_claude.py" start "$SESSION_NAME" --cli agent -- "$@"

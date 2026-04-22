@@ -312,7 +312,7 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             return None
 
         if action_type == "menu_toggle_notify":
-            asyncio.create_task(handler._cmd_toggle_notify(user_id, chat_id, message_id=message_id))
+            asyncio.create_task(handler._cmd_cycle_notify_mode(user_id, chat_id, message_id=message_id))
             return None
 
         if action_type == "menu_toggle_urgent":
@@ -421,6 +421,13 @@ class LarkBot:
 
 def main():
     """入口函数"""
+    # 设置进程标题：在活动监视器 / ps 中显示为 "remote-claude lark"
+    try:
+        import setproctitle
+        setproctitle.setproctitle("remote-claude lark")
+    except Exception:
+        pass
+
     bot = LarkBot()
     bot.start()
 

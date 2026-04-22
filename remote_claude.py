@@ -189,6 +189,7 @@ def cmd_list(args):
     # ANSI 颜色码
     YELLOW = "\033[33m"
     GREEN = "\033[32m"
+    MAGENTA = "\033[35m"
     RESET = "\033[0m"
 
     print("活跃会话:")
@@ -200,10 +201,8 @@ def cmd_list(args):
         tmux_status = "是" if s["tmux"] else "否"
         cli_type = s.get('cli_type', 'claude')
         # 根据类型选择颜色
-        if cli_type == 'codex':
-            cli_colored = f"{GREEN}{cli_type}{RESET}"
-        else:
-            cli_colored = f"{YELLOW}{cli_type}{RESET}"
+        _CLI_COLOR_MAP = {'codex': GREEN, 'agent': MAGENTA, 'claude': YELLOW}
+        cli_colored = f"{_CLI_COLOR_MAP.get(cli_type, YELLOW)}{cli_type}{RESET}"
         # 带颜色的字段需要单独计算宽度
         padding = " " * (8 - len(cli_type))
         print(f"{cli_colored}{padding} {s['pid']:<10} {tmux_status:<10} {s['name']}")
@@ -562,6 +561,13 @@ def cmd_deps(args):
     else:
         print_warn("Codex CLI: 未安装（可选）")
 
+    # 检查 Cursor Agent CLI（二进制名：agent）
+    agent_path = shutil.which("agent")
+    if agent_path:
+        print_ok(f"Cursor Agent CLI: 已安装 ({agent_path})")
+    else:
+        print_warn("Cursor Agent CLI: 未安装（可选）")
+
     # 检查 tmux
     REQUIRED_MAJOR = 3
     REQUIRED_MINOR = 6
@@ -734,6 +740,7 @@ def main():
 示例:
   %(prog)s start mywork              启动名为 mywork 的会话
   %(prog)s start mywork --cli codex  启动 codex 会话
+  %(prog)s start mywork --cli agent  启动 Cursor Agent 会话
   %(prog)s attach mywork             连接到 mywork 会话
   %(prog)s list                      列出所有会话
   %(prog)s kill mywork               终止 mywork 会话
@@ -801,8 +808,8 @@ def main():
     start_parser.add_argument(
         "--cli",
         default="claude",
-        choices=["claude", "codex"],
-        help="后端 CLI 类型（默认 claude）"
+        choices=["claude", "codex", "agent"],
+        help="后端 CLI 类型（默认 claude；agent = Cursor Agent CLI）"
     )
     start_parser.set_defaults(func=cmd_start)
 

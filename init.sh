@@ -420,7 +420,7 @@ configure_shell() {
     print_header "安装快捷命令"
 
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    chmod +x "$SCRIPT_DIR/bin/cla" "$SCRIPT_DIR/bin/cl" "$SCRIPT_DIR/bin/cx" "$SCRIPT_DIR/bin/cdx" "$SCRIPT_DIR/bin/remote-claude" 2>/dev/null || true
+    chmod +x "$SCRIPT_DIR/bin/cla" "$SCRIPT_DIR/bin/cl" "$SCRIPT_DIR/bin/cx" "$SCRIPT_DIR/bin/cdx" "$SCRIPT_DIR/bin/cag" "$SCRIPT_DIR/bin/cagn" "$SCRIPT_DIR/bin/remote-claude" 2>/dev/null || true
 
     # 优先 /usr/local/bin，权限不够则选 ~/bin 或 ~/.local/bin 中已在 PATH 里的
     BIN_DIR="/usr/local/bin"
@@ -452,19 +452,25 @@ configure_shell() {
         ln -sf "$SCRIPT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
+        ln -sf "$SCRIPT_DIR/bin/cag"           "$BIN_DIR/cag"          2>/dev/null || true
+        ln -sf "$SCRIPT_DIR/bin/cagn"          "$BIN_DIR/cagn"         2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
     else
         ln -sf "$SCRIPT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
+        ln -sf "$SCRIPT_DIR/bin/cag"           "$BIN_DIR/cag"          2>/dev/null || true
+        ln -sf "$SCRIPT_DIR/bin/cagn"          "$BIN_DIR/cagn"         2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
     fi
 
-    print_success "已安装 cla、cl、cx、cdx 和 remote-claude 到 $BIN_DIR"
+    print_success "已安装 cla、cl、cx、cdx、cag、cagn 和 remote-claude 到 $BIN_DIR"
     print_info "  cla           - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Claude"
     print_info "  cl            - 同 cla，但跳过权限确认"
     print_info "  cx            - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Codex（跳过权限）"
     print_info "  cdx           - 同 cx，但需确认权限"
+    print_info "  cag           - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Cursor Agent（--yolo 免确认）"
+    print_info "  cagn          - 同 cag，但需确认权限（不传 --yolo）"
     print_info "  remote-claude - Remote Claude 主命令（start/attach/list/kill/lark）"
 
     # 安装 shell 自动补全
@@ -515,6 +521,8 @@ ${YELLOW}快捷命令：${NC}
   ${GREEN}cl${NC}   - 同 cla，但跳过权限确认
   ${GREEN}cx${NC}   - 启动飞书客户端 + 以当前目录+时间戳为会话名启动 Codex（跳过权限）
   ${GREEN}cdx${NC}  - 同 cx，但需确认权限
+  ${GREEN}cag${NC}  - 启动飞书客户端 + 以当前目录+时间戳为会话名启动 Cursor Agent（--yolo 免确认）
+  ${GREEN}cagn${NC} - 同 cag，但需确认权限（不传 --yolo）
 
 详细使用说明请阅读 README.md
 

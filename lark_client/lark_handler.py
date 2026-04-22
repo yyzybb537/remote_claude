@@ -57,6 +57,19 @@ except Exception:
     def _track_stats(*args, **kwargs): pass
 
 
+# CLI 类型对应的免权限确认 flag（对应菜单上的 "新会话 bypass" 开关）
+_CLI_BYPASS_FLAGS: Dict[str, List[str]] = {
+    "claude": ["--dangerously-skip-permissions", "--permission-mode=dontAsk"],
+    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+    # Cursor Agent: --yolo = --force，配合 --approve-mcps 免 MCP 确认
+    "agent": ["--yolo", "--approve-mcps"],
+}
+
+
+def _bypass_flags_for(cli_type: str) -> List[str]:
+    return _CLI_BYPASS_FLAGS.get(cli_type, _CLI_BYPASS_FLAGS["claude"])
+
+
 class LarkHandler:
     """飞书消息处理器（群聊/私聊统一逻辑）"""
 
@@ -356,13 +369,10 @@ class LarkHandler:
         script_dir = Path(__file__).parent.parent.absolute()
         server_script = script_dir / "server" / "server.py"
         cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
-        if cli_type == "codex":
-            cmd += ["--cli-type", "codex"]
+        if cli_type != "claude":
+            cmd += ["--cli-type", cli_type]
         if self._poller.get_bypass_enabled():
-            if cli_type == "codex":
-                cmd += ["--", "--dangerously-bypass-approvals-and-sandbox"]
-            else:
-                cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
+            cmd += ["--", *_bypass_flags_for(cli_type)]
 
         logger.info(f"启动会话: {session_name}, 工作目录: {work_dir}, cli_type: {cli_type}, 命令: {' '.join(cmd)}")
         _track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
@@ -439,13 +449,10 @@ class LarkHandler:
         script_dir = Path(__file__).parent.parent.absolute()
         server_script = script_dir / "server" / "server.py"
         cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
-        if cli_type == "codex":
-            cmd += ["--cli-type", "codex"]
+        if cli_type != "claude":
+            cmd += ["--cli-type", cli_type]
         if self._poller.get_bypass_enabled():
-            if cli_type == "codex":
-                cmd += ["--", "--dangerously-bypass-approvals-and-sandbox"]
-            else:
-                cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
+            cmd += ["--", *_bypass_flags_for(cli_type)]
 
         try:
             env = _os.environ.copy()
@@ -660,16 +667,15 @@ class LarkHandler:
             if cid in self._chat_bindings
         }
         card = build_menu_card(sessions, current_session=current, session_groups=session_groups, page=page,
-                               notify_enabled=self._poller.get_notify_enabled(),
+                               notify_mode=self._poller.get_notify_mode(),
                                urgent_enabled=self._poller.get_urgent_enabled(),
                                bypass_enabled=self._poller.get_bypass_enabled())
         await self._send_or_update_card(chat_id, card, message_id)
 
-    async def _cmd_toggle_notify(self, user_id: str, chat_id: str,
-                                  message_id: Optional[str] = None):
-        """切换就绪通知开关并刷新菜单卡片"""
-        new_value = not self._poller.get_notify_enabled()
-        self._poller.set_notify_enabled(new_value)
+    async def _cmd_cycle_notify_mode(self, user_id: str, chat_id: str,
+                                      message_id: Optional[str] = None):
+        """循环切换完成通知频率模式并刷新菜单卡片"""
+        self._poller.cycle_notify_mode()
         await self._cmd_menu(user_id, chat_id, message_id=message_id)
 
     async def _cmd_toggle_urgent(self, user_id: str, chat_id: str,

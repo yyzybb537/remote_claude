@@ -37,7 +37,8 @@ BOT_NAME = os.getenv("BOT_NAME", "Claude")
 GROUP_NAME_PREFIX = os.getenv("GROUP_NAME_PREFIX", "【Remote-Claude】")
 
 # 流式卡片配置
-MAX_CARD_BLOCKS = int(os.getenv("MAX_CARD_BLOCKS", "50"))
+# 单张卡片最多容纳 N 个 blocks，超限时冻结+开新卡（值越小 → 活跃卡片越短，越贴近对话底部）
+MAX_CARD_BLOCKS = int(os.getenv("MAX_CARD_BLOCKS", "15"))
 
 # lark_client 日志级别（可选，默认 INFO）
 # 支持: DEBUG / INFO / WARNING / ERROR

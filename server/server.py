@@ -159,7 +159,7 @@ class ClaudeWindow:
     input_area_ansi_text: str = ''
     timestamp: float = 0.0
     layout_mode: str = "normal"  # "normal" | "option" | "detail" | "agent_list" | "agent_detail"
-    cli_type: str = "claude"     # "claude" | "codex"（决定 lark 侧的标题文案）
+    cli_type: str = "claude"     # "claude" | "codex" | "agent"（决定 lark 侧的标题文案与 parser）
 
 
 
@@ -805,12 +805,14 @@ class ProxyServer:
 
     def __init__(self, session_name: str, claude_args: list = None,
                  claude_cmd: str = "claude", codex_cmd: str = "codex",
+                 agent_cmd: str = "agent",
                  cli_type: str = "claude",
                  debug_screen: bool = False, debug_verbose: bool = False):
         self.session_name = session_name
         self.claude_args = claude_args or []
         self.claude_cmd = claude_cmd
         self.codex_cmd = codex_cmd
+        self.agent_cmd = agent_cmd
         self.cli_type = cli_type
         self.debug_screen = debug_screen
         self.debug_verbose = debug_verbose
@@ -895,9 +897,11 @@ class ProxyServer:
 
     def _get_parser(self):
         """根据 cli_type 返回对应的解析器实例"""
-        from parsers import ClaudeParser, CodexParser
+        from parsers import ClaudeParser, CodexParser, AgentParser
         if self.cli_type == "codex":
             return CodexParser()
+        if self.cli_type == "agent":
+            return AgentParser()
         return ClaudeParser()
 
     def _switch_to_runtime_logging(self):
@@ -953,6 +957,8 @@ class ProxyServer:
         """根据 cli_type 返回实际执行的命令"""
         if self.cli_type == "codex":
             return self.codex_cmd
+        if self.cli_type == "agent":
+            return self.agent_cmd
         return self.claude_cmd
 
     def _start_pty(self):
@@ -1199,11 +1205,13 @@ class ProxyServer:
 
 def run_server(session_name: str, claude_args: list = None,
                claude_cmd: str = "claude", codex_cmd: str = "codex",
+               agent_cmd: str = "agent",
                cli_type: str = "claude",
                debug_screen: bool = False, debug_verbose: bool = False):
     """运行服务器"""
     server = ProxyServer(session_name, claude_args, claude_cmd=claude_cmd,
-                         codex_cmd=codex_cmd, cli_type=cli_type,
+                         codex_cmd=codex_cmd, agent_cmd=agent_cmd,
+                         cli_type=cli_type,
                          debug_screen=debug_screen, debug_verbose=debug_verbose)
 
     # atexit 兜底：任何退出路径（包括被 SIGKILL 以外的信号强杀）都记录日志
@@ -1231,14 +1239,23 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Remote Claude Server")
     parser.add_argument("session_name", help="会话名称")
-    parser.add_argument("claude_args", nargs="*", help="传递给 Claude/Codex 的参数")
-    parser.add_argument("--cli-type", default="claude", choices=["claude", "codex"],
-                        help="后端 CLI 类型（默认 claude）")
+    parser.add_argument("claude_args", nargs="*", help="传递给 Claude/Codex/Cursor Agent 的参数")
+    parser.add_argument("--cli-type", default="claude", choices=["claude", "codex", "agent"],
+                        help="后端 CLI 类型（默认 claude；agent = Cursor Agent CLI）")
     parser.add_argument("--debug-screen", action="store_true",
                         help="开启 pyte 屏幕快照调试日志（写入 _screen.log）")
     parser.add_argument("--debug-verbose", action="store_true",
                         help="debug 日志输出完整诊断信息（indicator、repr 等）")
     args = parser.parse_args()
+
+    # 设置进程标题：在活动监视器 / ps 中显示为 "remote-claude [session=...] [cli=...]"
+    try:
+        import setproctitle
+        setproctitle.setproctitle(
+            f"remote-claude server [session={args.session_name}] [cli={args.cli_type}]"
+        )
+    except Exception:
+        pass
 
     # 配置日志：启动阶段输出到 stdout + startup.log
     from utils.session import USER_DATA_DIR, _safe_filename
@@ -1263,7 +1280,9 @@ if __name__ == "__main__":
 
     claude_cmd = os.environ.get("CLAUDE_COMMAND", "claude")
     codex_cmd = os.environ.get("CODEX_COMMAND", "codex")
-    logger.info(f"CLAUDE_COMMAND={claude_cmd!r}, CODEX_COMMAND={codex_cmd!r}")
+    agent_cmd = os.environ.get("AGENT_COMMAND", "agent")
+    logger.info(f"CLAUDE_COMMAND={claude_cmd!r}, CODEX_COMMAND={codex_cmd!r}, AGENT_COMMAND={agent_cmd!r}")
     run_server(args.session_name, args.claude_args, claude_cmd=claude_cmd,
-               codex_cmd=codex_cmd, cli_type=args.cli_type,
+               codex_cmd=codex_cmd, agent_cmd=agent_cmd,
+               cli_type=args.cli_type,
                debug_screen=args.debug_screen, debug_verbose=args.debug_verbose)

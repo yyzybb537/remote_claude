@@ -38,8 +38,10 @@ except Exception:
 from utils.session import ensure_user_data_dir, USER_DATA_DIR
 
 # ── 常量 ──────────────────────────────────────────────────────────────────────
-INITIAL_WINDOW = 30    # 首次 attach 最多显示最近 30 个 blocks
 from .config import MAX_CARD_BLOCKS  # 单张卡片最多 N 个 blocks → 超限冻结（可通过 .env 配置）
+# 首次 attach / 元素超限后重建时显示的最近 blocks 数量，与 MAX_CARD_BLOCKS 对齐，
+# 保证活跃卡片长度始终 ≤ MAX_CARD_BLOCKS，避免长对话时卡片越堆越高。
+INITIAL_WINDOW = MAX_CARD_BLOCKS
 CARD_SIZE_LIMIT = 25 * 1024  # 25KB，飞书限制 30KB，留 5KB 余量
 POLL_INTERVAL = 1.0    # 轮询间隔（秒）
 RAPID_INTERVAL = 0.2   # 快速轮询间隔（秒）
@@ -69,6 +71,7 @@ class StreamTracker:
     prev_is_ready: bool = True     # 上一帧是否就绪（初始 True 避免首次误触发）
     notify_user_id: Optional[str] = None  # 就绪通知 @ 的用户 open_id
     last_notify_message_id: Optional[str] = None  # 上一条就绪通知的 message_id（用于后续加急复用）
+    last_notify_ts: float = 0.0    # 上一次就绪通知时间戳（用于 notify_mode 间隔控制，once 模式下=0 表示尚未通知）
 
 
 # ── 轮询器 ────────────────────────────────────────────────────────────────────
@@ -516,7 +519,14 @@ class SharedMemoryPoller:
         current_ready = _is_ready(blocks, status_line, option_block, agent_panel)
         prev_ready = tracker.prev_is_ready
         tracker.prev_is_ready = current_ready
-        return current_ready and not prev_ready and tracker.is_group and _notify_enabled
+
+        # ready → not_ready：新任务开始，重置 once 模式的通知标记
+        if prev_ready and not current_ready:
+            tracker.last_notify_ts = 0.0
+
+        if not (current_ready and not prev_ready and tracker.is_group):
+            return False
+        return _should_notify_for_mode(_notify_mode, tracker.last_notify_ts, time.time())
 
     async def _send_ready_notification(
         self, tracker: StreamTracker, cli_type: str = "claude"
@@ -524,10 +534,12 @@ class SharedMemoryPoller:
         """发送就绪通知（加急或新消息），应在卡片操作完成后调用"""
         count = _increment_ready_count()
         uid = tracker.notify_user_id or "all"
-        cli_name = "Claude" if cli_type == "claude" else "Codex"
+        from .card_builder import CLI_NAMES
+        cli_name = CLI_NAMES.get(cli_type, "Claude")
         logger.info(f"就绪提醒: chat_id={tracker.chat_id[:8]}..., count={count}, uid={uid}, "
                     f"last_msg={'有' if tracker.last_notify_message_id else '无'}")
 
+        notified = False
         if tracker.last_notify_message_id and uid != "all" and _urgent_enabled:
             # 已有通知消息 + 加急开关开启 → 尝试加急
             try:
@@ -539,6 +551,7 @@ class SharedMemoryPoller:
                     asyncio.create_task(self._cancel_urgent_later(
                         tracker.last_notify_message_id, [uid], delay=5
                     ))
+                    notified = True
                 else:
                     # 加急失败（权限未开通等）→ 降级发新消息
                     label = ""
@@ -546,6 +559,7 @@ class SharedMemoryPoller:
                     msg_id = await self._card_service.send_text(tracker.chat_id, text)
                     if msg_id:
                         tracker.last_notify_message_id = msg_id
+                        notified = True
             except Exception as e:
                 logger.warning(f"加急通知失败: {e}")
         else:
@@ -556,8 +570,12 @@ class SharedMemoryPoller:
                 msg_id = await self._card_service.send_text(tracker.chat_id, text)
                 if msg_id:
                     tracker.last_notify_message_id = msg_id
+                    notified = True
             except Exception as e:
                 logger.warning(f"就绪提醒发送失败: {e}")
+
+        if notified:
+            tracker.last_notify_ts = time.time()
 
     async def _cancel_urgent_later(self, message_id: str, user_ids: list, delay: float = 15) -> None:
         """延迟取消加急通知"""
@@ -567,16 +585,26 @@ class SharedMemoryPoller:
         except Exception as e:
             logger.warning(f"延迟取消加急失败: {e}")
 
-    def get_notify_enabled(self) -> bool:
-        """获取就绪通知开关状态"""
-        return _notify_enabled
+    def get_notify_mode(self) -> str:
+        """获取就绪通知模式：off / once / 5m / 15m / 30m"""
+        return _notify_mode
 
-    def set_notify_enabled(self, enabled: bool) -> None:
-        """更新就绪通知开关状态并持久化"""
-        global _notify_enabled
-        _notify_enabled = enabled
-        _save_notify_enabled(enabled)
-        logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
+    def set_notify_mode(self, mode: str) -> None:
+        """更新就绪通知模式并持久化"""
+        global _notify_mode
+        if mode not in NOTIFY_MODES:
+            logger.warning(f"未知 notify_mode={mode}，忽略")
+            return
+        _notify_mode = mode
+        _save_notify_mode(mode)
+        logger.info(f"就绪通知模式已切换为 {mode}")
+
+    def cycle_notify_mode(self) -> str:
+        """按预设顺序循环切换通知模式，返回新模式"""
+        idx = NOTIFY_MODES.index(_notify_mode) if _notify_mode in NOTIFY_MODES else 0
+        new_mode = NOTIFY_MODES[(idx + 1) % len(NOTIFY_MODES)]
+        self.set_notify_mode(new_mode)
+        return new_mode
 
     def get_urgent_enabled(self) -> bool:
         """获取加急通知开关状态"""
@@ -629,26 +657,63 @@ def _is_ready(blocks: list, status_line: Optional[dict], option_block: Optional[
 
 
 _READY_COUNT_FILE = USER_DATA_DIR / "ready_notify_count"
-_NOTIFY_ENABLED_FILE = USER_DATA_DIR / "ready_notify_enabled"
+_NOTIFY_ENABLED_FILE = USER_DATA_DIR / "ready_notify_enabled"  # 旧版布尔开关，仅用于迁移
+_NOTIFY_MODE_FILE = USER_DATA_DIR / "ready_notify_mode"
 _URGENT_ENABLED_FILE = USER_DATA_DIR / "urgent_notify_enabled"
 _BYPASS_ENABLED_FILE = USER_DATA_DIR / "bypass_enabled"
 
+# 就绪通知模式（按 cycle_notify_mode 循环顺序排列）
+NOTIFY_MODES = ["once", "5m", "15m", "30m", "off"]
+_NOTIFY_MODE_INTERVALS = {"once": 0, "5m": 300, "15m": 900, "30m": 1800, "off": -1}
+_NOTIFY_MODE_LABELS = {
+    "off": "关闭",
+    "once": "仅一次",
+    "5m": "每 5 分钟",
+    "15m": "每 15 分钟",
+    "30m": "每 30 分钟",
+}
 
-def _load_notify_enabled() -> bool:
-    """读取就绪通知开关状态，不存在或解析失败返回 True（默认开启）"""
+
+def _should_notify_for_mode(mode: str, last_notify_ts: float, now: float) -> bool:
+    """根据 notify_mode 判断当前 ready 翻转是否应发送通知"""
+    if mode == "off":
+        return False
+    if mode == "once":
+        return last_notify_ts == 0.0
+    interval = _NOTIFY_MODE_INTERVALS.get(mode)
+    if interval is None or interval <= 0:
+        return False
+    return (now - last_notify_ts) >= interval
+
+
+def notify_mode_label(mode: str) -> str:
+    """模式显示文案（给卡片按钮使用）"""
+    return _NOTIFY_MODE_LABELS.get(mode, mode)
+
+
+def _load_notify_mode() -> str:
+    """读取就绪通知模式，若无新字段则从旧的布尔开关迁移（True→once，False→off），默认 once"""
     try:
-        return _NOTIFY_ENABLED_FILE.read_text().strip() == "1"
+        raw = _NOTIFY_MODE_FILE.read_text().strip()
+        if raw in NOTIFY_MODES:
+            return raw
     except Exception:
-        return True
+        pass
+    # 迁移旧字段
+    try:
+        old_raw = _NOTIFY_ENABLED_FILE.read_text().strip()
+        return "once" if old_raw == "1" else "off"
+    except Exception:
+        return "once"
 
 
-def _save_notify_enabled(enabled: bool) -> None:
-    """持久化就绪通知开关状态"""
+def _save_notify_mode(mode: str) -> None:
+    """持久化就绪通知模式"""
     try:
         ensure_user_data_dir()
-        _NOTIFY_ENABLED_FILE.write_text("1" if enabled else "0")
+        _NOTIFY_MODE_FILE.write_text(mode)
     except Exception as e:
-        logger.warning(f"_save_notify_enabled 失败: {e}")
+        logger.warning(f"_save_notify_mode 失败: {e}")
 
 
 def _load_urgent_enabled() -> bool:
@@ -686,7 +751,7 @@ def _save_bypass_enabled(enabled: bool) -> None:
 
 
 # 模块级开关状态：启动时加载一次
-_notify_enabled: bool = _load_notify_enabled()
+_notify_mode: str = _load_notify_mode()
 _urgent_enabled: bool = _load_urgent_enabled()
 _bypass_enabled: bool = _load_bypass_enabled()
 

@@ -21,6 +21,14 @@ _cb_logger = logging.getLogger('CardBuilder')
 CLI_NAMES: Dict[str, str] = {
     "claude": "Claude",
     "codex": "Codex",
+    "agent": "Cursor",
+}
+
+# CLI 类型 → 列表/卡片颜色（list 命令、目录群聊按钮等共用）
+CLI_COLORS: Dict[str, str] = {
+    "claude": "yellow",
+    "codex": "green",
+    "agent": "purple",
 }
 
 # 版本号：从 package.json 读取，import 时只读一次
@@ -799,7 +807,7 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
             is_current = (name == current_session)
 
             # CLI 类型颜色和标签：Claude=黄色，Codex=绿色
-            cli_color = "yellow" if cli_type == "claude" else "green"
+            cli_color = CLI_COLORS.get(cli_type, "yellow")
             cli_label = CLI_NAMES.get(cli_type, "Claude")
 
             status_icon = "🟢" if is_current else "⚪"
@@ -1072,6 +1080,17 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
                             "session_name": auto_session,
                             "cli_type": "codex"
                         }}]
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Cursor群聊"},
+                        "type": "default",
+                        "behaviors": [{"type": "callback", "value": {
+                            "action": "dir_new_group",
+                            "path": full_path,
+                            "session_name": auto_session,
+                            "cli_type": "agent"
+                        }}]
                     }
                 ]
             elements.append({
@@ -1229,7 +1248,7 @@ def build_session_closed_card(session_name: str) -> Dict[str, Any]:
 
 def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                     session_groups: Optional[Dict[str, str]] = None, page: int = 0,
-                    notify_enabled: bool = True, urgent_enabled: bool = False,
+                    notify_mode: str = "once", urgent_enabled: bool = False,
                     bypass_enabled: bool = False) -> Dict[str, Any]:
     """构建快捷操作菜单卡片（/menu 和 /list 共用）：内嵌会话列表 + 快捷操作"""
     elements = []
@@ -1280,7 +1299,10 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
         ]
     })
 
-    notify_label = "🔔 完成通知: 开" if notify_enabled else "🔕 完成通知: 关"
+    from .shared_memory_poller import notify_mode_label
+    notify_enabled = notify_mode != "off"
+    notify_icon = "🔕" if not notify_enabled else "🔔"
+    notify_label = f"{notify_icon} 完成通知: {notify_mode_label(notify_mode)}"
     if not notify_enabled:
         urgent_label = "🔇 加急通知: 关"
         urgent_button: Dict[str, Any] = {
