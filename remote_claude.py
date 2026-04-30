@@ -312,8 +312,13 @@ def cmd_lark_start(args):
 
     try:
         # 启动进程
+        # stdin=DEVNULL：避免 daemon 继承父终端的 stdin。父终端关闭后，
+        # 该 fd 在 macOS 上会被 revoke，后续 daemon 派生 server 子进程时
+        # 子进程继承到 revoked fd，Python 解释器初始化阶段会报
+        # "Bad file descriptor" 直接退出（exitcode=1）。
         process = subprocess.Popen(
             ["uv", "run", "--project", str(SCRIPT_DIR), "python3", "-m", "lark_client.main"],
+            stdin=subprocess.DEVNULL,
             stdout=open(log_file, 'a'),
             stderr=subprocess.STDOUT,
             start_new_session=True,  # 创建新的进程组
