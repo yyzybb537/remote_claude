@@ -377,6 +377,7 @@ class LarkHandler:
             with open(log_path, 'a') as stderr_fd:
                 proc = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=stderr_fd,
                     start_new_session=True,
@@ -456,7 +457,7 @@ class LarkHandler:
 
             with open(log_path, 'a') as stderr_fd:
                 proc = subprocess.Popen(
-                    cmd, stdout=subprocess.DEVNULL, stderr=stderr_fd,
+                    cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr_fd,
                     start_new_session=True, cwd=work_dir, env=env,
                 )
 
